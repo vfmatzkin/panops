@@ -8,18 +8,21 @@ AUDIO=tests/fixtures/audio
 VIDEO=tests/fixtures/video
 SHOTS=tests/fixtures/screenshots
 
+WORK=$(mktemp -d -t panops)
+trap 'rm -rf "$WORK"' EXIT
+
 echo "[1/4] EN audio"
-say -v Samantha -r 130 -o /tmp/panops_en.aiff -f "$AUDIO/en_30s.transcript.txt"
-ffmpeg -y -loglevel error -i /tmp/panops_en.aiff -ar 16000 -ac 1 -c:a pcm_s16le "$AUDIO/en_30s.wav"
-rm /tmp/panops_en.aiff
+say -v Samantha -r 130 -o "$WORK/en.aiff" -f "$AUDIO/en_30s.transcript.txt"
+ffmpeg -y -loglevel error -i "$WORK/en.aiff" -ar 16000 -ac 1 -c:a pcm_s16le "$AUDIO/en_30s.wav"
 
 echo "[2/4] ES audio"
+VOICES=$(say -v "?")
 ES_VOICE=""
 for v in "Mónica" "Paulina" "Jorge" "Diego"; do
-  if say -v "?" | grep -qE "^${v} +es_"; then ES_VOICE="$v"; break; fi
+  if printf '%s\n' "$VOICES" | grep -qE "^${v} +es_"; then ES_VOICE="$v"; break; fi
 done
 if [ -z "$ES_VOICE" ]; then
-  ES_VOICE=$(say -v "?" | awk '/ es_[A-Z]+ +#/ { sub(/ +es_.*/, ""); print; exit }')
+  ES_VOICE=$(printf '%s\n' "$VOICES" | awk '/ es_[A-Z]+ +#/ { sub(/ +es_.*/, ""); print; exit }')
 fi
 if [ -z "$ES_VOICE" ]; then
   cat <<'MSG' >&2
@@ -36,9 +39,8 @@ MSG
   exit 1
 fi
 echo "  using voice: $ES_VOICE"
-say -v "$ES_VOICE" -r 130 -o /tmp/panops_es.aiff -f "$AUDIO/es_30s.transcript.txt"
-ffmpeg -y -loglevel error -i /tmp/panops_es.aiff -ar 16000 -ac 1 -c:a pcm_s16le "$AUDIO/es_30s.wav"
-rm /tmp/panops_es.aiff
+say -v "$ES_VOICE" -r 130 -o "$WORK/es.aiff" -f "$AUDIO/es_30s.transcript.txt"
+ffmpeg -y -loglevel error -i "$WORK/es.aiff" -ar 16000 -ac 1 -c:a pcm_s16le "$AUDIO/es_30s.wav"
 
 echo "[3/4] Mixed audio"
 ffmpeg -y -loglevel error \
