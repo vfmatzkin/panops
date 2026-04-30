@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/panops-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Fran Matzkin"]
+repository = "https://github.com/vfmatzkin/panops"
+rust-version = "1.85"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
