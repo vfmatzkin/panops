@@ -1,4 +1,6 @@
-# panops
+<p align="center">
+  <img src="docs/assets/panops-banner.png" alt="panops" width="600" />
+</p>
 
 Open-source local-first macOS recorder with screenshot-anchored meeting notes. Captures audio (mic + system + per-app), screen, and time-anchored screenshots; transcribes live and refines with a higher-quality post-pass; emits markdown notes with embedded screenshots via a BYO local-or-cloud LLM.
 
@@ -6,10 +8,12 @@ The wedge no other OSS tool occupies: **screen + audio + screenshot-anchored not
 
 ## Architecture
 
-Hexagonal Rust core engine + SwiftUI macOS shell + Swift sidecars (WhisperKit + FluidAudio for ASR, Apple FoundationModels for the on-device LLM). Every platform-specific concern is a port (trait) with a `mac-native` adapter and a `portable` fallback — drop the Mac code and the engine compiles for Linux/Windows.
+Hexagonal Rust core engine + SwiftUI macOS shell + Swift sidecars (WhisperKit + FluidAudio for ASR, Apple FoundationModels for the on-device LLM). Every platform-specific concern is a port (trait) with a `mac-native` adapter and a `portable` fallback. Drop the Mac code and the engine compiles for Linux/Windows.
 
-Status: design phase. No code yet.
+## Status
+
+Pre-alpha. Slice 01 (skeleton) lands the Cargo workspace and test fixtures. See `docs/superpowers/plans/` for the active slice and `docs/superpowers/specs/` for the design.
 
 ## License
 
-MIT. See `LICENSE` (added with the first slice).
+MIT.
