@@ -1,0 +1,48 @@
+# ----- Agent / IDE working context (internal, do not publish) -----
+AGENTS.md
+AGENTS.local.md
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.cursor/
+.cursorrules
+.aider*
+.specstory/
+GEMINI.md
+
+# ----- Internal docs: sessions, plans, research, specs (working notes) -----
+docs/superpowers/
+docs/research/
+docs/internal/
+
+# ----- Rust -----
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# ----- Swift / Xcode -----
+*.xcuserdata/
+DerivedData/
+*.xcworkspace/xcuserdata/
+.swiftpm/
+
+# ----- macOS -----
+.DS_Store
+*.swp
+*.swo
+
+# ----- Editors -----
+.idea/
+.vscode/
+*.iml
+
+# ----- Local config / secrets -----
+*.local.toml
+.env
+.env.local
+.envrc
+
+# ----- Logs / scratch -----
+*.log
+scratch/
+tmp/
