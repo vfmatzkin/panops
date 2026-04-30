@@ -11,7 +11,7 @@ Regenerate locally with `./scripts/generate.sh` after changing source text.
 | `audio/en_30s.wav` | ~30s | macOS `say -v Samantha` | `audio/en_30s.transcript.txt` |
 | `audio/es_30s.wav` | ~30s | macOS `say` (auto-detected `es_*` voice) | `audio/es_30s.transcript.txt` |
 | `audio/mixed_60s.wav` | ~60s | ffmpeg concat of `en_30s.wav` + `es_30s.wav` | `audio/mixed_60s.transcript.txt` |
-| `video/screen_60s.mp4` | 60s | ffmpeg lavfi: 6 solid-color scenes (10s each) with scene-number overlay | n/a |
+| `video/screen_60s.mp4` | 60s | ffmpeg lavfi: 6 solid-color scenes (10s each), red/blue/green/yellow/purple/orange | n/a |
 | `screenshots/*.jpg` | n/a | ffmpeg extraction, 1 frame every 5s from `screen_60s.mp4` (12 frames) | n/a |
 
 Format: 16 kHz, mono, 16-bit PCM WAV for audio. 1280x720 H.264 MP4 for video. JPEG for screenshots.
