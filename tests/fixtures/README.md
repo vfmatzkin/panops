@@ -1,0 +1,24 @@
+# Test fixtures
+
+Deterministic media exercised by the conformance suite. Committed to the repo because regenerating in CI is brittle (TTS varies across macOS versions, ffmpeg output drifts).
+
+Regenerate locally with `./scripts/generate.sh` after changing source text.
+
+## Files
+
+| Path | Duration | Source | Ground truth |
+|---|---|---|---|
+| `audio/en_30s.wav` | ~30s | macOS `say -v Samantha` | `audio/en_30s.transcript.txt` |
+| `audio/es_30s.wav` | ~30s | macOS `say` (auto-detected `es_*` voice) | `audio/es_30s.transcript.txt` |
+| `audio/mixed_60s.wav` | ~60s | ffmpeg concat of `en_30s.wav` + `es_30s.wav` | `audio/mixed_60s.transcript.txt` |
+| `video/screen_60s.mp4` | 60s | ffmpeg lavfi: 6 solid-color scenes (10s each) with scene-number overlay | n/a |
+| `screenshots/*.jpg` | n/a | ffmpeg extraction, 1 frame every 5s from `screen_60s.mp4` (12 frames) | n/a |
+
+Format: 16 kHz, mono, 16-bit PCM WAV for audio. 1280x720 H.264 MP4 for video. JPEG for screenshots.
+
+## Why these specific fixtures
+
+- 30s EN + 30s ES: smallest meaningful sample for `AsrProvider::transcribe_full` conformance per language.
+- 60s mixed EN+ES: covers the language-toggle / mid-meeting language-switch path.
+- 60s synthetic video: covers `ScreenshotSampler` with 5 known scene changes (one per 10s boundary).
+- 12 pre-extracted screenshots: stand in for `ScreenshotSampler` output before the live capture path exists (slice 07).
