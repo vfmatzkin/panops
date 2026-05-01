@@ -1,9 +1,9 @@
 //! panops-core: domain types and ports. Zero platform code.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn workspace_compiles() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+pub mod asr;
+pub mod conformance;
+pub mod segment;
+pub mod wer;
+
+pub use asr::{AsrError, AsrProvider};
+pub use segment::{Segment, Transcript};
