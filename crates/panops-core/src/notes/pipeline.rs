@@ -8,6 +8,8 @@
 //!
 //! A failed per-section LLM call falls back to a transcript-block narrative
 //! with a `<!-- panops: llm error -->` marker; the pipeline does not abort.
+//! A failed frontmatter LLM call falls back to `title = "Untitled meeting"`
+//! and an empty tag list; the pipeline does not abort.
 
 use std::collections::HashSet;
 
@@ -87,9 +89,9 @@ impl NotesGenerator<'_> {
             .collect();
         let fm_req =
             build_frontmatter_prompt(&summaries, &language, input.meeting_metadata.duration_ms);
-        let (title, tags) = match self.llm.complete(fm_req)? {
-            LlmResponse::Json(v) => extract_frontmatter(v),
-            LlmResponse::Text(_) => ("Untitled meeting".to_string(), Vec::new()),
+        let (title, tags) = match self.llm.complete(fm_req) {
+            Ok(LlmResponse::Json(v)) => extract_frontmatter(v),
+            Ok(LlmResponse::Text(_)) | Err(_) => ("Untitled meeting".to_string(), Vec::new()),
         };
 
         let speakers = collect_speakers(&input.transcript);

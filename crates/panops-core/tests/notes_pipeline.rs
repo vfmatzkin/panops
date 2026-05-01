@@ -85,3 +85,58 @@ fn one_section_pipeline_produces_structured_notes() {
     assert_eq!(notes.frontmatter.tags, vec!["meeting", "intro"]);
     assert_eq!(notes.frontmatter.speakers, vec!["speaker_0"]);
 }
+
+#[test]
+fn frontmatter_llm_failure_falls_back_to_untitled() {
+    let segments = vec![seg(0, 60_000, 0, "hello and welcome to the meeting")];
+
+    let section_prompt = build_section_narrative_prompt(&segments, MarkdownDialect::Basic, "en");
+    let frontmatter_prompt = build_frontmatter_prompt(
+        &[SectionSummary {
+            title: "Welcome".into(),
+            key_points: vec!["meeting opened".into()],
+        }],
+        "en",
+        60_000,
+    );
+
+    let mock = MockLlm::default()
+        .with_response_for(
+            section_prompt.system.as_deref(),
+            &section_prompt.user,
+            LlmResponse::Json(serde_json::json!({
+                "title": "Welcome",
+                "narrative_md": "The meeting opened with introductions.",
+                "key_points": ["meeting opened"],
+                "action_items": []
+            })),
+        )
+        .with_error_for(
+            frontmatter_prompt.system.as_deref(),
+            &frontmatter_prompt.user,
+            "simulated timeout",
+        );
+
+    let generator = NotesGenerator {
+        llm: &mock,
+        dialect: MarkdownDialect::Basic,
+    };
+    let input = NotesInput {
+        transcript: segments,
+        screenshots: vec![],
+        meeting_metadata: MeetingMetadata {
+            started_at: FixedOffset::east_opt(0)
+                .unwrap()
+                .with_ymd_and_hms(2026, 5, 1, 10, 0, 0)
+                .unwrap(),
+            duration_ms: 60_000,
+            source_path: None,
+            language_hint: Some("en".into()),
+        },
+    };
+
+    let notes = generator.generate(input).expect("generate should not abort on frontmatter error");
+    assert_eq!(notes.frontmatter.title, "Untitled meeting");
+    assert!(notes.frontmatter.tags.is_empty());
+    assert_eq!(notes.sections.len(), 1, "section content should still be present");
+}

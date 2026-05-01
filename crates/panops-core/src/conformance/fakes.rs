@@ -101,11 +101,12 @@ use std::sync::Mutex;
 use crate::llm::{LlmError, LlmProvider, LlmRequest, LlmResponse, prompt_fingerprint};
 
 /// Deterministic `LlmProvider` fake. Tests register `(system, user) ->
-/// response` pairs via `with_response_for`. Unmatched prompts panic loudly so
-/// prompt drift is caught immediately.
+/// response` pairs via `with_response_for`, or `(system, user) -> error`
+/// pairs via `with_error_for`. Unmatched prompts panic loudly so prompt
+/// drift is caught immediately.
 #[derive(Default)]
 pub struct MockLlm {
-    table: Mutex<HashMap<String, LlmResponse>>,
+    table: Mutex<HashMap<String, Result<LlmResponse, String>>>,
 }
 
 impl MockLlm {
@@ -116,7 +117,16 @@ impl MockLlm {
         response: LlmResponse,
     ) -> Self {
         let key = prompt_fingerprint(system, user);
-        self.table.lock().unwrap().insert(key, response);
+        self.table.lock().unwrap().insert(key, Ok(response));
+        self
+    }
+
+    pub fn with_error_for(self, system: Option<&str>, user: &str, message: &str) -> Self {
+        let key = prompt_fingerprint(system, user);
+        self.table
+            .lock()
+            .unwrap()
+            .insert(key, Err(message.to_string()));
         self
     }
 }
@@ -126,7 +136,8 @@ impl LlmProvider for MockLlm {
         let key = prompt_fingerprint(req.system.as_deref(), &req.user);
         let map = self.table.lock().unwrap();
         match map.get(&key) {
-            Some(r) => Ok(r.clone()),
+            Some(Ok(r)) => Ok(r.clone()),
+            Some(Err(msg)) => Err(LlmError::Provider(msg.clone())),
             None => panic!(
                 "MockLlm: no canned response for prompt fingerprint {key}\nsystem={:?}\nuser={:?}",
                 req.system, req.user
