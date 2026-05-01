@@ -68,6 +68,6 @@ The wedge nobody owns: **open-source, local-first, audio + screen + screenshot-a
 1. MVP scope: audio+notes only (replace existing chain) vs full screen+screenshots from v0.1?
 2. Stack: Tauri (Rust+web UI, easiest cross-target later) vs SwiftUI native (best ScreenCaptureKit story, Mac-only)?
 3. Live engine default: Parakeet or Whisper-turbo? (auto-detect by language?)
-4. Multi-language? Fran works in English/Spanish/Italian — Parakeet is English-heavy.
+4. Multi-language? Target users include English/Spanish/Italian speakers — Parakeet is English-heavy.
 5. Distribution: GitHub release dmg, Homebrew cask, or Mac App Store?
 6. Should it record meetings end-to-end OR also do "anywhere dictation" (Superwhisper space)? Probably no — stay focused.
