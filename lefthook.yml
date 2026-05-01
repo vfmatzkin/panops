@@ -28,4 +28,9 @@ post-commit:
       # Snapshot Claude Code session jsonl files into docs/superpowers/conversations/
       # (gitignored). Thin extraction: user/assistant turns only, large code blocks
       # collapsed. Idempotent via source-mtime check.
-      run: python3 scripts/extract-conversations.py
+      # Skipped silently when python3 isn't on PATH or ~/.claude/projects doesn't exist
+      # (so the hook is a no-op for contributors who aren't running Claude Code).
+      run: |
+        if command -v python3 >/dev/null 2>&1 && [ -d "$HOME/.claude/projects" ]; then
+          python3 scripts/extract-conversations.py
+        fi
