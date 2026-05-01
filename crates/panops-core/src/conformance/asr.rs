@@ -3,14 +3,10 @@ use std::path::Path;
 use crate::asr::AsrProvider;
 use crate::wer::wer;
 
-const FIXTURES: &[&str] = &["en_30s", "es_30s", "mixed_60s"];
-// 0.35 vs the spec's original 0.30. tiny.q5_1 on synthetic TTS Spanish scores
-// 0.338 (the model hallucinates punctuation and substitutes phonetically:
-// "indúcomía" for "hindú comía", "15 extraños vueltas" for "quince extraños vodkas").
-// Headroom is tight (~3.5%); a single bad fixture regen flips CI red. If that
-// happens, the fix is to swap the model to ggml-base-q5_1.bin (~57 MB, slower
-// but accurate) rather than loosening this further.
-const WER_MAX: f32 = 0.35;
+const FIXTURES: &[&str] = &["en_30s", "es_30s", "mixed_60s", "multi_speaker_60s"];
+// Verified against base.q5_1: en_30s ≈ 0.05, es_30s observed at 0.189 (TTS accent mismatch).
+// Full 5% headroom would require 0.239; capped at 0.20 per policy.
+const WER_MAX: f32 = 0.20;
 
 pub fn run_suite<P: AsrProvider>(provider: &P, fixtures_dir: &Path) {
     for &name in FIXTURES {
@@ -59,6 +55,7 @@ fn run_one<P: AsrProvider>(provider: &P, fixtures_dir: &Path, name: &str) {
         "en_30s" => &["en"],
         "es_30s" => &["es"],
         "mixed_60s" => &["en", "es"],
+        "multi_speaker_60s" => &["en"],
         other => panic!("unknown fixture {other}"),
     };
     let any_match = langs.iter().any(|l| expected.contains(l));
@@ -67,7 +64,7 @@ fn run_one<P: AsrProvider>(provider: &P, fixtures_dir: &Path, name: &str) {
         "[{name}] expected one of {expected:?}, got {langs:?}"
     );
 
-    if !provider.is_fake() && name != "mixed_60s" {
+    if !provider.is_fake() && name != "mixed_60s" && name != "multi_speaker_60s" {
         let ground_truth = std::fs::read_to_string(&transcript_path)
             .unwrap_or_else(|e| panic!("[{name}] read transcript: {e}"));
         let hypothesis = result
