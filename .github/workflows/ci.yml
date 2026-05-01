@@ -106,6 +106,10 @@ jobs:
               exit 1
             fi
             tar -xjf "$SEG_TAR" -C .panops-models
+            if [ ! -f "$PANOPS_DIAR_SEG" ]; then
+              echo "expected $PANOPS_DIAR_SEG after tar extract; sherpa-onnx archive layout changed?" >&2
+              exit 1
+            fi
           fi
           # Embedding model
           if [ ! -f "$PANOPS_DIAR_EMB" ]; then
