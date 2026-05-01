@@ -1,0 +1,41 @@
+name: Feature
+description: A new capability not yet planned in a slice.
+title: "<short summary>"
+labels: ["type:feature"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - "area:asr"
+        - "area:diar"
+        - "area:notes"
+        - "area:llm"
+        - "area:ci"
+        - "area:storage"
+        - "area:ipc"
+        - "area:mac-shell"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What gap in the current behavior motivates this?
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Proposed approach
+      description: Sketch — port shape, adapter, prompt, etc. Reference design spec sections if applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance
+      description: How will we know this is done? Test, behavior, threshold.
+    validations:
+      required: true

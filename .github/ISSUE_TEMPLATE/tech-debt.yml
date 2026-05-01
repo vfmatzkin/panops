@@ -1,0 +1,60 @@
+name: Tech debt
+description: A known limitation, shortcut, or deferred work item.
+title: "<short summary>"
+labels: ["type:debt"]
+body:
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - "severity:critical — blocks correctness or release"
+        - "severity:high — bites real meetings; pay before v0.1"
+        - "severity:medium — schedule when nearby"
+        - "severity:low — polish, paper-cuts"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - "area:asr"
+        - "area:diar"
+        - "area:notes"
+        - "area:llm"
+        - "area:ci"
+        - "area:storage"
+        - "area:ipc"
+        - "area:mac-shell"
+    validations:
+      required: true
+  - type: input
+    id: slice
+    attributes:
+      label: Slice introduced
+      description: Which slice incurred this debt? (e.g. 02, 03, 04)
+      placeholder: "03"
+    validations:
+      required: true
+  - type: textarea
+    id: blocks
+    attributes:
+      label: What it blocks
+      description: What capability, quality bar, or release gate is held back by this?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why deferred
+      description: What was the trade-off — cost, scope, missing dependency, intentional sequencing?
+    validations:
+      required: true
+  - type: textarea
+    id: links
+    attributes:
+      label: Links
+      description: Spec sections, related PRs, related issues, prior commits.
+    validations:
+      required: false
