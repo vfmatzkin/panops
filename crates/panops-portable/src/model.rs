@@ -182,7 +182,12 @@ pub fn ensure_model(name: &str, dest: &Path) -> Result<PathBuf, AsrError> {
     );
     let client = http_client()?;
     let n = download(&client, info.url, dest)?;
-    verify_sha256(dest, info.sha256)?;
+    if let Err(e) = verify_sha256(dest, info.sha256) {
+        // Self-heal: a checksum mismatch means we have a poisoned cache.
+        // Drop the file so a subsequent run re-downloads instead of looping.
+        let _ = fs::remove_file(dest);
+        return Err(e);
+    }
     eprintln!("Downloaded {n} bytes to {dest:?}");
     Ok(dest.to_path_buf())
 }
@@ -195,9 +200,10 @@ pub fn ensure_diar_models() -> Result<(PathBuf, PathBuf), AsrError> {
     let seg = default_diar_seg_path()?;
     let emb = default_diar_emb_path()?;
 
-    // Embedding model is a bare .onnx; standard ensure_model.
+    // Embedding model is a bare .onnx.
     let emb_info = lookup_model("3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k")?;
-    if !emb.exists() {
+    let emb_existed_before = emb.exists();
+    if !emb_existed_before {
         if let Some(parent) = emb.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -210,17 +216,34 @@ pub fn ensure_diar_models() -> Result<(PathBuf, PathBuf), AsrError> {
     }
     let skip_checksum = std::env::var("PANOPS_SKIP_MODEL_CHECKSUM").is_ok();
     let emb_user_override = std::env::var("PANOPS_DIAR_EMB").is_ok();
-    if !skip_checksum && !emb_user_override {
-        verify_sha256(&emb, emb_info.sha256)?;
+    // Always verify what we just downloaded; only honor the override skip
+    // for files that pre-existed (the user-trusted case).
+    let verify_emb = !skip_checksum && (!emb_existed_before || !emb_user_override);
+    if verify_emb {
+        if let Err(e) = verify_sha256(&emb, emb_info.sha256) {
+            if !emb_existed_before {
+                let _ = fs::remove_file(&emb);
+            }
+            return Err(e);
+        }
     }
 
-    // Segmentation model is in a tar.bz2; download + extract.
+    // Segmentation model is in a tar.bz2.
     if !seg.exists() {
+        // If the user explicitly pointed PANOPS_DIAR_SEG at a path, we don't
+        // know where to extract on their behalf — error early with a clear
+        // message instead of silently extracting into the default data dir.
+        if std::env::var("PANOPS_DIAR_SEG").is_ok() {
+            return Err(AsrError::Model(format!(
+                "PANOPS_DIAR_SEG points to {seg:?} but the file does not exist; pre-extract the segmentation tarball there or unset the env var to use the default data dir"
+            )));
+        }
         let seg_info = lookup_model("sherpa-onnx-pyannote-segmentation-3-0")?;
         let dir = data_dir()?;
         fs::create_dir_all(&dir)?;
         let tar_path = dir.join("sherpa-onnx-pyannote-segmentation-3-0.tar.bz2");
-        if !tar_path.exists() {
+        let tar_existed_before = tar_path.exists();
+        if !tar_existed_before {
             eprintln!(
                 "Downloading {} (~{} MB)...",
                 seg_info.name, seg_info.approx_size_mb
@@ -228,8 +251,13 @@ pub fn ensure_diar_models() -> Result<(PathBuf, PathBuf), AsrError> {
             let client = http_client()?;
             download(&client, seg_info.url, &tar_path)?;
         }
-        if std::env::var("PANOPS_SKIP_MODEL_CHECKSUM").is_err() {
-            verify_sha256(&tar_path, seg_info.sha256)?;
+        if !skip_checksum {
+            if let Err(e) = verify_sha256(&tar_path, seg_info.sha256) {
+                if !tar_existed_before {
+                    let _ = fs::remove_file(&tar_path);
+                }
+                return Err(e);
+            }
         }
         let f = fs::File::open(&tar_path)
             .map_err(|e| AsrError::Model(format!("open {tar_path:?}: {e}")))?;
