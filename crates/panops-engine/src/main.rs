@@ -59,6 +59,8 @@ enum Cmd {
         llm_model: Option<String>,
         #[arg(long)]
         model: Option<PathBuf>,
+        #[arg(long)]
+        language: Option<String>,
     },
 }
 
@@ -90,6 +92,7 @@ fn main() -> ExitCode {
             llm_provider,
             llm_model,
             model,
+            language,
         }) => run_notes(
             audio,
             screenshots,
@@ -99,6 +102,7 @@ fn main() -> ExitCode {
             llm_provider,
             llm_model,
             model,
+            language,
         ),
     };
     match res {
@@ -139,8 +143,9 @@ fn run_notes(
     llm_provider: String,
     llm_model: Option<String>,
     model: Option<PathBuf>,
+    language: Option<String>,
 ) -> Result<(), (u8, String)> {
-    let mut transcript = transcribe(&audio, model, None)?;
+    let mut transcript = transcribe(&audio, model, language.as_deref())?;
     if !no_diarize {
         let turns = diarize(&audio)?;
         transcript.segments = merge_speaker_turns(transcript.segments, &turns);
@@ -176,7 +181,7 @@ fn run_notes(
             started_at,
             duration_ms: transcript.audio_duration_ms,
             source_path: Some(audio.clone()),
-            language_hint: None,
+            language_hint: language,
         },
     };
 

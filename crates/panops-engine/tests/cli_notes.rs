@@ -22,4 +22,5 @@ fn notes_subcommand_help_lists_expected_flags() {
     assert!(s.contains("--dialect"), "{s}");
     assert!(s.contains("--no-diarize"), "{s}");
     assert!(s.contains("--llm-provider"), "{s}");
+    assert!(s.contains("--language"), "{s}");
 }
