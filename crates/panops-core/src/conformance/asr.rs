@@ -3,18 +3,50 @@ use std::path::Path;
 use crate::asr::AsrProvider;
 use crate::wer::wer;
 
-const FIXTURES: &[&str] = &["en_30s", "es_30s", "mixed_60s", "multi_speaker_60s"];
-// Verified against base.q5_1: en_30s ≈ 0.05, es_30s observed at 0.189 (TTS accent mismatch).
-// Full 5% headroom would require 0.239; capped at 0.20 per policy.
-const WER_MAX: f32 = 0.20;
+/// Conformance fixture metadata. Kept as a single source of truth so the
+/// fixture set, expected languages, and WER policy stay in sync.
+///
+/// `wer_max = None` means no WER assertion runs for this fixture, by spec:
+/// see slice 02 design (`mixed_60s`: auto-detect transcript too unstable to
+/// gate on) and slice 03 design (`multi_speaker_60s`: multi-voice TTS pushes
+/// WER too high to gate). Single-voice fixtures keep a tight cap.
+struct FixtureMeta {
+    name: &'static str,
+    expected_languages: &'static [&'static str],
+    wer_max: Option<f32>,
+}
+
+const FIXTURES: &[FixtureMeta] = &[
+    FixtureMeta {
+        name: "en_30s",
+        expected_languages: &["en"],
+        wer_max: Some(0.20),
+    },
+    FixtureMeta {
+        name: "es_30s",
+        expected_languages: &["es"],
+        wer_max: Some(0.20),
+    },
+    FixtureMeta {
+        name: "mixed_60s",
+        expected_languages: &["en", "es"],
+        wer_max: None,
+    },
+    FixtureMeta {
+        name: "multi_speaker_60s",
+        expected_languages: &["en"],
+        wer_max: None,
+    },
+];
 
 pub fn run_suite<P: AsrProvider>(provider: &P, fixtures_dir: &Path) {
-    for &name in FIXTURES {
-        run_one(provider, fixtures_dir, name);
+    for meta in FIXTURES {
+        run_one(provider, fixtures_dir, meta);
     }
 }
 
-fn run_one<P: AsrProvider>(provider: &P, fixtures_dir: &Path, name: &str) {
+fn run_one<P: AsrProvider>(provider: &P, fixtures_dir: &Path, meta: &FixtureMeta) {
+    let name = meta.name;
     let audio = fixtures_dir.join("audio").join(format!("{name}.wav"));
     let transcript_path = fixtures_dir
         .join("audio")
@@ -51,20 +83,14 @@ fn run_one<P: AsrProvider>(provider: &P, fixtures_dir: &Path, name: &str) {
         .collect();
     assert!(!langs.is_empty(), "[{name}] no language_detected populated");
 
-    let expected: &[&str] = match name {
-        "en_30s" => &["en"],
-        "es_30s" => &["es"],
-        "mixed_60s" => &["en", "es"],
-        "multi_speaker_60s" => &["en"],
-        other => panic!("unknown fixture {other}"),
-    };
-    let any_match = langs.iter().any(|l| expected.contains(l));
+    let any_match = langs.iter().any(|l| meta.expected_languages.contains(l));
     assert!(
         any_match,
-        "[{name}] expected one of {expected:?}, got {langs:?}"
+        "[{name}] expected one of {expected:?}, got {langs:?}",
+        expected = meta.expected_languages
     );
 
-    if !provider.is_fake() && name != "mixed_60s" && name != "multi_speaker_60s" {
+    if let (false, Some(wer_max)) = (provider.is_fake(), meta.wer_max) {
         let ground_truth = std::fs::read_to_string(&transcript_path)
             .unwrap_or_else(|e| panic!("[{name}] read transcript: {e}"));
         let hypothesis = result
@@ -75,8 +101,8 @@ fn run_one<P: AsrProvider>(provider: &P, fixtures_dir: &Path, name: &str) {
             .join(" ");
         let wer_value = wer(&ground_truth, &hypothesis);
         assert!(
-            wer_value <= WER_MAX,
-            "[{name}] WER {wer_value:.3} > {WER_MAX}\n  gt: {ground_truth:?}\n  hy: {hypothesis:?}"
+            wer_value <= wer_max,
+            "[{name}] WER {wer_value:.3} > {wer_max}\n  gt: {ground_truth:?}\n  hy: {hypothesis:?}"
         );
     }
 }
