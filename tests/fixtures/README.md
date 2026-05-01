@@ -13,6 +13,7 @@ Regenerate locally with `./scripts/generate.sh` after changing source text.
 | `audio/mixed_60s.wav` | ~60s | ffmpeg concat of `en_30s.wav` + `es_30s.wav` | `audio/mixed_60s.transcript.txt` |
 | `video/screen_60s.mp4` | 60s | ffmpeg lavfi: 6 solid-color scenes (10s each), red/blue/green/yellow/purple/orange | n/a |
 | `screenshots/*.jpg` | n/a | ffmpeg extraction, 1 frame every 5s from `screen_60s.mp4` (12 frames) | n/a |
+| `audio/multi_speaker_60s.wav` | ~60s | 3 turns: Samantha -> Daniel -> Samantha (A-B-A pattern, tests speaker re-identification) | `audio/multi_speaker_60s.{transcript,turns}.{txt,json}` |
 
 Format: 16 kHz, mono, 16-bit PCM WAV for audio. 1280x720 H.264 MP4 for video. JPEG for screenshots.
 
