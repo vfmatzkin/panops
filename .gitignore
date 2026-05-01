@@ -1,7 +1,7 @@
-# ----- Agent / IDE working context (internal, do not publish) -----
-AGENTS.md
+# ----- Agent / IDE working context -----
+# AGENTS.md and CLAUDE.md ARE tracked (workflow rules survive fresh clones).
+# *.local.md and IDE-specific dirs stay private.
 AGENTS.local.md
-CLAUDE.md
 CLAUDE.local.md
 .claude/
 .cursor/
