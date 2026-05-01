@@ -127,6 +127,14 @@ jobs:
         if: matrix.os == 'macos-latest'
         with:
           tool: cargo-nextest
+      # rust-cache strips `target/<profile>/build/*/out` from the cache to keep
+      # it small, which deletes sherpa-rs-sys's downloaded prebuilt libs while
+      # keeping its rlib. The rlib then references nonexistent link paths and
+      # the test link fails. Force sherpa-rs-sys to rebuild its build script
+      # output (it re-downloads from its own ~/.../Caches/sherpa-rs cache).
+      - name: Force sherpa-rs-sys rebuild
+        shell: bash
+        run: cargo clean -p sherpa-rs-sys || true
       - name: Compile tests (linux)
         if: matrix.os == 'ubuntu-latest'
         run: cargo test --workspace --locked --no-run
