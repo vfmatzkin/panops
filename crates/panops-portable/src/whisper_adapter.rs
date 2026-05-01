@@ -145,6 +145,7 @@ impl AsrProvider for WhisperRsAsr {
                 language_detected: detected_lang.clone(),
                 confidence,
                 is_partial: false,
+                speaker_id: None,
             });
         }
 
@@ -153,6 +154,7 @@ impl AsrProvider for WhisperRsAsr {
             model: self.model_name(),
             audio_path: audio_path.to_path_buf(),
             audio_duration_ms,
+            diarized: false,
             segments,
         })
     }
