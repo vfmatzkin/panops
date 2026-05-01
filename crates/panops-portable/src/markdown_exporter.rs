@@ -12,6 +12,11 @@ pub struct MarkdownExporter;
 
 impl NotesExporter for MarkdownExporter {
     fn export(&self, notes: &StructuredNotes, dest: &Path) -> Result<ExportArtifact, ExportError> {
+        if dest.exists() && !dest.is_dir() {
+            return Err(ExportError::InvalidDest(format!(
+                "{dest:?} exists but is not a directory"
+            )));
+        }
         if !dest.exists() {
             fs::create_dir_all(dest)?;
         }
@@ -115,6 +120,7 @@ fn render_section(
     if !sec.screenshots.is_empty() {
         s.push_str(&render_screenshots(
             &sec.screenshots,
+            sec.index,
             dialect,
             screenshots_dir,
             assets,
@@ -125,6 +131,7 @@ fn render_section(
 
 fn render_screenshots(
     shots: &[Screenshot],
+    section_index: u32,
     dialect: MarkdownDialect,
     screenshots_dir: &Path,
     assets: &mut Vec<PathBuf>,
@@ -136,21 +143,25 @@ fn render_screenshots(
     let imgs: Vec<String> = shots
         .iter()
         .map(|shot| -> Result<String, ExportError> {
-            let file_name = shot
+            let original = shot
                 .path
                 .file_name()
                 .ok_or_else(|| ExportError::Render("screenshot has no file_name".into()))?;
-            let dest = screenshots_dir.join(file_name);
+            let ext = shot
+                .path
+                .extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default();
+            // Stable, collision-free name: section + timestamp.
+            let unique_name = format!("section{section_index:02}_{:08}{ext}", shot.ms_since_start);
+            let dest = screenshots_dir.join(&unique_name);
             fs::copy(&shot.path, &dest)?;
             assets.push(dest.clone());
             let alt = shot
                 .caption
                 .clone()
-                .unwrap_or_else(|| file_name.to_string_lossy().to_string());
-            Ok(format!(
-                "![{alt}](screenshots/{})",
-                file_name.to_string_lossy()
-            ))
+                .unwrap_or_else(|| original.to_string_lossy().to_string());
+            Ok(format!("![{alt}](screenshots/{unique_name})"))
         })
         .collect::<Result<_, _>>()?;
     match dialect {

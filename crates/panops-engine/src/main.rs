@@ -153,8 +153,12 @@ fn run_notes(
             None => GenaiLlm::auto().map_err(|e| (3, e.to_string()))?,
         },
         other => {
-            let m = llm_model.unwrap_or_else(|| default_model_for(other).into());
-            GenaiLlm::new(m).map_err(|e| (3, e.to_string()))?
+            return Err((
+                1,
+                format!(
+                    "--llm-provider {other:?} is not yet wired through; only \"auto\" is supported in slice 04. Set provider env vars (ANTHROPIC_API_KEY / OPENAI_API_KEY / OLLAMA_HOST) to control detection."
+                ),
+            ));
         }
     };
 
@@ -194,14 +198,6 @@ fn run_notes(
         .map_err(|e| (2, e.to_string()))?;
     eprintln!("wrote {:?} ({} assets)", art.primary_file, art.assets.len());
     Ok(())
-}
-
-fn default_model_for(provider: &str) -> &'static str {
-    match provider {
-        "anthropic" => "claude-haiku-4-5-20251001",
-        "openai" => "gpt-4o-mini",
-        _ => "gemma3:4b",
-    }
 }
 
 fn collect_screenshots(
