@@ -50,7 +50,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     env:
-      PANOPS_MODEL: ${{ github.workspace }}/.panops-models/ggml-tiny-q5_1.bin
+      PANOPS_MODEL: ${{ github.workspace }}/.panops-models/ggml-base-q5_1.bin
+      PANOPS_DIAR_SEG: ${{ github.workspace }}/.panops-models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx
+      PANOPS_DIAR_EMB: ${{ github.workspace }}/.panops-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
@@ -59,29 +61,63 @@ jobs:
       # Linux runner pool has heterogeneous CPUs; whisper.cpp's -march=native
       # build segfaults (SIGILL) when build-host SIMD features differ from
       # run-host. Compile but don't run on Linux. macOS is the primary target.
-      - name: Cache Whisper model
+      - name: Cache ASR + diarization models
         if: matrix.os == 'macos-latest'
         uses: actions/cache@v4
         with:
           path: .panops-models
-          key: ggml-tiny-q5_1-${{ hashFiles('crates/panops-portable/src/model.rs') }}
-      - name: Ensure model
+          key: panops-models-v3-${{ hashFiles('crates/panops-portable/src/model.rs') }}
+      - name: Ensure ASR model
         if: matrix.os == 'macos-latest'
         shell: bash
         env:
-          MODEL_SHA256: 818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7
+          MODEL_SHA256: 422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898
         run: |
           mkdir -p .panops-models
           if [ ! -f "$PANOPS_MODEL" ]; then
             curl -fL -o "$PANOPS_MODEL.partial" \
-              https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin
+              https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin
             mv "$PANOPS_MODEL.partial" "$PANOPS_MODEL"
           fi
           actual=$(shasum -a 256 "$PANOPS_MODEL" | awk '{print $1}')
           if [ "$actual" != "$MODEL_SHA256" ]; then
-            echo "model checksum mismatch: expected $MODEL_SHA256, got $actual" >&2
+            echo "asr model checksum mismatch: expected $MODEL_SHA256, got $actual" >&2
             rm -f "$PANOPS_MODEL"
             exit 1
+          fi
+      - name: Ensure diarization models
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        env:
+          SEG_SHA256: 24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488
+          EMB_SHA256: 1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b
+        run: |
+          mkdir -p .panops-models
+          # Segmentation tarball
+          SEG_TAR=.panops-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+          if [ ! -f "$PANOPS_DIAR_SEG" ]; then
+            curl -fL -o "$SEG_TAR.partial" \
+              https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+            mv "$SEG_TAR.partial" "$SEG_TAR"
+            actual=$(shasum -a 256 "$SEG_TAR" | awk '{print $1}')
+            if [ "$actual" != "$SEG_SHA256" ]; then
+              echo "diar seg tarball checksum mismatch: expected $SEG_SHA256, got $actual" >&2
+              rm -f "$SEG_TAR"
+              exit 1
+            fi
+            tar -xjf "$SEG_TAR" -C .panops-models
+          fi
+          # Embedding model
+          if [ ! -f "$PANOPS_DIAR_EMB" ]; then
+            curl -fL -o "$PANOPS_DIAR_EMB.partial" \
+              https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
+            mv "$PANOPS_DIAR_EMB.partial" "$PANOPS_DIAR_EMB"
+            actual=$(shasum -a 256 "$PANOPS_DIAR_EMB" | awk '{print $1}')
+            if [ "$actual" != "$EMB_SHA256" ]; then
+              echo "diar emb checksum mismatch: expected $EMB_SHA256, got $actual" >&2
+              rm -f "$PANOPS_DIAR_EMB"
+              exit 1
+            fi
           fi
       - uses: taiki-e/install-action@v2.75.27
         if: matrix.os == 'macos-latest'
