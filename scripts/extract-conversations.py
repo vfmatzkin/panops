@@ -25,13 +25,10 @@ HERE = Path(__file__).resolve().parent.parent
 OUT_DIR = HERE / "docs" / "superpowers" / "conversations"
 
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
-SOURCE_DIRS = [
-    CLAUDE_PROJECTS / "-Users-fran-Code-panops",
-    CLAUDE_PROJECTS / "-Users-fran-Code",
-]
-
-# Skip sessions in -Users-fran-Code that don't mention panops.
-PANOPS_FILTER_DIRS = {CLAUDE_PROJECTS / "-Users-fran-Code"}
+# Project dirs whose name contains "panops" are treated as panops-only (every
+# session counts). Any other project dir gets a panops-mention filter so
+# generic Code-folder conversations only show up when relevant.
+PANOPS_DIR_MARKER = "panops"
 
 CODE_BLOCK_THRESHOLD_LINES = 30  # collapse code blocks longer than this
 LONG_TEXT_THRESHOLD_CHARS = 6000  # collapse very long single text blocks
@@ -131,7 +128,7 @@ def parse_session(path: Path) -> tuple[list[Turn], str | None]:
     """Return (turns, started_at_iso)."""
     turns: list[Turn] = []
     started_at: str | None = None
-    for line in path.open():
+    for line in path.open(encoding="utf-8", errors="replace"):
         try:
             r = json.loads(line)
         except Exception:
@@ -202,7 +199,7 @@ def existing_source_mtime(out_path: Path) -> str | None:
     if not out_path.exists():
         return None
     seen_first_fence = False
-    with out_path.open() as f:
+    with out_path.open(encoding="utf-8") as f:
         for line in f:
             stripped = line.strip()
             if stripped == "---":
@@ -218,15 +215,21 @@ def existing_source_mtime(out_path: Path) -> str | None:
 
 
 def main() -> int:
+    if not CLAUDE_PROJECTS.exists():
+        print(f"extract-conversations: {CLAUDE_PROJECTS} not found, nothing to do")
+        return 0
     if not OUT_DIR.exists():
         OUT_DIR.mkdir(parents=True)
     written = skipped = scanned = 0
-    for src_dir in SOURCE_DIRS:
-        if not src_dir.exists():
+    for src_dir in sorted(CLAUDE_PROJECTS.iterdir()):
+        if not src_dir.is_dir():
             continue
+        is_panops_dir = PANOPS_DIR_MARKER in src_dir.name.lower()
         for jsonl in sorted(src_dir.glob("*.jsonl")):
             scanned += 1
-            if src_dir in PANOPS_FILTER_DIRS and not session_mentions_panops(jsonl):
+            # Always include sessions from a panops-named project dir; otherwise
+            # only include sessions that actually mention panops.
+            if not is_panops_dir and not session_mentions_panops(jsonl):
                 continue
             session_id = jsonl.stem
             turns, started_at = parse_session(jsonl)
@@ -240,7 +243,7 @@ def main() -> int:
             if prev == current_mtime:
                 skipped += 1
                 continue
-            out.write_text(render(turns, session_id, jsonl, started_at))
+            out.write_text(render(turns, session_id, jsonl, started_at), encoding="utf-8")
             written += 1
     print(f"extract-conversations: scanned={scanned} written={written} skipped={skipped} -> {OUT_DIR}")
     return 0

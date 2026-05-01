@@ -51,19 +51,19 @@ Hexagonal / Ports & Adapters in Rust. The core domain has zero platform code. Ev
         ┌──────────────────────────┼──────────────────────────┐
         ▼                          ▼                          ▼
    AsrProvider              AudioCapture               LlmProvider
-   ┌──────────┐             ┌────────────┐            ┌────────────┐
-   │ mac:     │             │ mac:       │            │ mac:       │
-   │ panops-  │             │ ScreenCap- │            │ Foundation │
-   │ asr-mac  │             │ tureKit    │            │ Models     │
-   │ (Swift   │             │ (objc2)    │            │ (Swift)    │
-   │ sidecar) │             ├────────────┤            ├────────────┤
-   ├──────────┤             │ portable:  │            │ portable:  │
-   │ portable:│             │ cpal       │            │ rust-genai │
-   │ whisper- │             │            │            │ (Ollama,   │
-   │ rs       │             │            │            │ OpenAI,    │
-   │          │             │            │            │ Anthropic, │
-   │          │             │            │            │ Groq, …)   │
-   └──────────┘             └────────────┘            └────────────┘
+   ┌──────────┐             ┌──────────────────┐      ┌────────────┐
+   │ mac:     │             │ mac:             │      │ mac:       │
+   │ panops-  │             │ ScreenCaptureKit │      │ Foundation │
+   │ asr-mac  │             │ (objc2)          │      │ Models     │
+   │ (Swift   │             ├──────────────────┤      │ (Swift)    │
+   │ sidecar) │             │ portable:        │      ├────────────┤
+   ├──────────┤             │ cpal             │      │ portable:  │
+   │ portable:│             │                  │      │ rust-genai │
+   │ whisper- │             │                  │      │ (Ollama,   │
+   │ rs       │             │                  │      │ OpenAI,    │
+   │          │             │                  │      │ Anthropic, │
+   │          │             │                  │      │ Groq, …)   │
+   └──────────┘             └──────────────────┘      └────────────┘
 ```
 
 The Swift sidecar `panops-asr-mac` is a tiny binary that wraps WhisperKit (Argmax Pro SDK 2) and FluidAudio (CoreML/ANE Parakeet TDT v3). It exposes one stdin/stdout protocol: receive PCM frames, emit JSON segments. The Rust engine treats it like any other `AsrProvider` adapter. On Linux/Windows the sidecar isn't built; the engine uses `whisper-rs` with whatever backend (CUDA, Vulkan, CPU).
