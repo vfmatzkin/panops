@@ -2,7 +2,7 @@
 
 Open-source local-first macOS recorder with screenshot-anchored meeting notes. Hexagonal Rust core + SwiftUI Mac shell + Swift sidecars (WhisperKit/FluidAudio for ASR, Apple FoundationModels for LLM).
 
-This file IS the workflow contract. Every rule here is enforced. If a rule is unclear or you (the agent) disagree with it, raise it with Fran before acting — don't reinterpret silently.
+This file IS the workflow contract. Every rule here is enforced. If a rule is unclear or you (the agent) disagree with it, raise it with the maintainer before acting — don't reinterpret silently.
 
 ## Sources of truth
 
@@ -46,7 +46,7 @@ Mac app build commands land in slice 06.
 - **MUST** introduce one trait at a time + one real impl + one fake. **NEVER** pre-trait for hypothetical future adapters.
 - **MUST** keep test fixtures in `tests/fixtures/` as adapters that satisfy the same conformance suite as live impls.
 - **MUST** write a conformance fn per port. Every adapter passes the same harness.
-- **MUST** keep one slice = one PR = Fran's review gate. **NEVER** start slice N+1 until slice N's PR is merged.
+- **MUST** keep one slice = one PR = the maintainer's review gate. **NEVER** start slice N+1 until slice N's PR is merged.
 - **MUST** scope plans per-slice. **NEVER** write whole-project step lists.
 
 ## Slice sequence
@@ -71,7 +71,7 @@ Slices 1–3 shipped. Active slice: see project board milestones (`slice-04-note
 4. Read the active plan in `docs/superpowers/plans/` (latest file not in `done/`).
 5. Identify next action: top-severity open issue in the active milestone with `Status: Todo` and no blocker, OR next unchecked step in the active plan.
 6. State explicitly: `"Slice 0N is X/Y done. Last session: <slug>. Next: <issue #N or step>. Blockers: <list or 'none'>."`
-7. **MUST** wait for Fran's "go" before resuming code changes.
+7. **MUST** wait for the maintainer's "go" before resuming code changes.
 
 ### Handoff ritual (run when STOPPING for the session)
 
@@ -83,12 +83,24 @@ Slices 1–3 shipped. Active slice: see project board milestones (`slice-04-note
 6. **NEVER** auto-commit. Leave changes staged or note them in the session log.
 7. End message: `"Stopping at <step or issue #>. Next pickup: project board, then sessions/<latest>.md and plans/<active>.md."`
 
-### When a slice ships (after Fran merges its PR)
+### When a slice ships (after the maintainer merges its PR)
 
 1. Move `docs/superpowers/plans/<slice>.md` into `docs/superpowers/plans/done/`.
 2. Close the slice's milestone on the project board (`gh api -X PATCH repos/vfmatzkin/panops/milestones/<n> -f state=closed`).
 3. Brainstorm the next slice via the `superpowers:brainstorming` skill, then `superpowers:writing-plans`. **NEVER** queue multiple slice plans ahead.
 4. Open a slice tracking issue for the new milestone (label `type:feature`, milestone = new slice's). Body links to spec + plan + key tasks.
+
+### PR merge rule (MUST follow)
+
+Before merging ANY PR — even one-line trivial changes:
+
+1. **Wait for CI to finish** (`gh pr checks <num>` until all required checks are `pass`).
+2. **Wait for Copilot's review** (`gh pr view <num> --json reviews` shows `copilot-pull-request-reviewer: COMMENTED` or similar). Copilot is automatic but isn't always immediate; give it a minute after the PR opens.
+3. **Read every inline comment** (`gh api repos/vfmatzkin/panops/pulls/<num>/comments`). For each: either fix it and push, or post a reply explaining why you're declining (technical reasoning, not "it's fine").
+4. **Resolve every thread** (`gh api graphql` with `resolveReviewThread`) once handled.
+5. Only then `gh pr merge <num> --rebase --delete-branch`.
+
+**NEVER** merge before Copilot has reviewed and threads are resolved. The bot catches real issues — the PRs in this repo's history (#11, #13, #28) all had legitimate Copilot findings that would have shipped without the wait.
 
 ## Debt rule (MUST follow)
 
@@ -116,7 +128,7 @@ Issue templates live at `.github/ISSUE_TEMPLATE/`.
 - **NEVER** propose live-capture work or native API bindings before slice 6/7.
 - **NEVER** add features beyond the active slice's plan.
 - **NEVER** pre-trait. One trait when needed, one real impl, one fake.
-- **NEVER** auto-commit or push. Fran commits when he wants.
+- **NEVER** auto-commit or push. The maintainer commits when they want.
 - **NEVER** give time estimates (no "ships in weeks", "X-day project", schedule framing). Compare options on capability/risk/cleanliness.
 - **NEVER** phone home. Zero telemetry, ever, even opt-in.
 - **NEVER** delete or rewrite files in `docs/superpowers/{specs,plans,sessions}/` or `docs/research/` without explicit instruction. They're history.
