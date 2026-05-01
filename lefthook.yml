@@ -21,3 +21,11 @@ commit-msg:
     length:
       run: |
         head -1 "{1}" | awk 'length > 72 { exit 1 }'
+
+post-commit:
+  commands:
+    extract-conversations:
+      # Snapshot Claude Code session jsonl files into docs/superpowers/conversations/
+      # (gitignored). Thin extraction: user/assistant turns only, large code blocks
+      # collapsed. Idempotent via source-mtime check.
+      run: python3 scripts/extract-conversations.py
