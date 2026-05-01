@@ -94,11 +94,14 @@ fn screenshots_are_copied_into_dest_screenshots_dir_and_referenced_relatively() 
 
     let exporter = MarkdownExporter;
     let art = exporter.export(&notes, dir.path()).unwrap();
-    let copied = dir.path().join("screenshots").join("frame.jpg");
+    let copied = dir
+        .path()
+        .join("screenshots")
+        .join("section01_00030000.jpg");
     assert!(copied.exists(), "screenshot not copied");
     assert!(art.assets.iter().any(|p| p == &copied));
     let body = fs::read_to_string(&art.primary_file).unwrap();
-    assert!(body.contains("](screenshots/frame.jpg)"));
+    assert!(body.contains("](screenshots/section01_00030000.jpg)"));
 }
 
 /// Producer for the slice 04 golden fixtures. Gated to avoid clobbering the

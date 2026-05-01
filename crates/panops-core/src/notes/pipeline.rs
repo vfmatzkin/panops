@@ -37,7 +37,11 @@ impl NotesGenerator<'_> {
             return Err(NotesError::EmptyTranscript);
         }
 
-        let language = dominant_language(&input.transcript);
+        let language = input
+            .meeting_metadata
+            .language_hint
+            .clone()
+            .unwrap_or_else(|| dominant_language(&input.transcript));
 
         // Stage 1
         let raw_sections = segment_topics(&input.transcript, &TopicSegmentationConfig::default());
