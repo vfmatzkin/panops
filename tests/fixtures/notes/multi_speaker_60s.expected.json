@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "frontmatter": {
+    "title": "Quarterly budget review kickoff",
+    "date": "2026-05-01",
+    "started_at": "2026-05-01T10:00:00Z",
+    "duration_ms": 60000,
+    "speakers": [
+      "speaker_0",
+      "speaker_1"
+    ],
+    "tags": [
+      "budget-review",
+      "quarterly",
+      "kickoff"
+    ],
+    "template": "default",
+    "dialect": "notion-enhanced",
+    "panops_version": "TESTING",
+    "source_audio": "tests/fixtures/audio/multi_speaker_60s.wav"
+  },
+  "sections": [
+    {
+      "index": 1,
+      "title": "Meeting kickoff and quarterly budget review",
+      "time_range_ms": [
+        0,
+        60000
+      ],
+      "narrative_md": "The meeting opened with a welcome and agenda overview covering the next sixty minutes. The first item was a budget review for next quarter, with approval required before week's end. The review walks through marketing line items first, then engineering, then any remaining operations expenses.",
+      "key_points": [
+        "Agenda includes budget review for next quarter",
+        "Spending plan needs approval before end of week",
+        "Review covers marketing, engineering, and operations line items"
+      ],
+      "action_items": [
+        {
+          "description": "Approve quarterly spending plan before end of week",
+          "owner": null
+        }
+      ],
+      "screenshots": []
+    }
+  ],
+  "language": "en",
+  "generated_at": "2026-05-01T00:00:00Z"
+}
