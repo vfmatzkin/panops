@@ -159,7 +159,11 @@ fn run_notes(
         other => {
             return Err((
                 1,
-                format!("--llm-provider {other:?} is not supported; use \"auto\" or \"ollama\""),
+                format!(
+                    "--llm-provider {other:?} not supported. Use \"auto\" (detects from \
+                     ANTHROPIC_API_KEY / OPENAI_API_KEY / OLLAMA_HOST) or \"ollama\" \
+                     (defaults to model gemma3:4b on http://localhost:11434)."
+                ),
             ));
         }
     };

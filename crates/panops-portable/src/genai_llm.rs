@@ -97,11 +97,13 @@ impl LlmProvider for GenaiLlm {
 
 fn strip_markdown_fences(s: &str) -> &str {
     let s = s.trim();
-    if let Some(inner) = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")) {
-        inner.trim_end_matches("```").trim()
-    } else {
-        s
-    }
+    let Some(inner) = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")) else {
+        return s;
+    };
+    let trimmed = inner.trim();
+    // Use strip_suffix (single match) rather than trim_end_matches (greedy) so
+    // a JSON value containing literal triple-backticks isn't corrupted.
+    trimmed.strip_suffix("```").unwrap_or(trimmed).trim()
 }
 
 #[cfg(test)]
@@ -130,5 +132,20 @@ mod tests {
     fn strip_fences_handles_trailing_whitespace_inside_block() {
         let input = "  ```json\n{\"k\":1}\n```  ";
         assert_eq!(strip_markdown_fences(input), "{\"k\":1}");
+    }
+
+    #[test]
+    fn strip_fences_does_not_eat_literal_backticks_inside_json_strings() {
+        // Bare JSON whose value contains a triple-backtick token must round-trip.
+        let input = "{\"text\":\"```code```\"}";
+        assert_eq!(strip_markdown_fences(input), "{\"text\":\"```code```\"}");
+    }
+
+    #[test]
+    fn strip_fences_only_strips_one_trailing_fence_inside_block() {
+        // A fenced block whose JSON value itself contains ```. The closing
+        // fence is removed once; the JSON content is preserved.
+        let input = "```json\n{\"text\":\"```code```\"}\n```";
+        assert_eq!(strip_markdown_fences(input), "{\"text\":\"```code```\"}");
     }
 }
