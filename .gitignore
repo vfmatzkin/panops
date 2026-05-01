@@ -1,7 +1,7 @@
-# ----- Agent / IDE working context (internal, do not publish) -----
-AGENTS.md
+# ----- Agent / IDE working context -----
+# AGENTS.md, CLAUDE.md, and design specs ARE tracked (public roadmap).
+# *.local.md and IDE-specific dirs stay private.
 AGENTS.local.md
-CLAUDE.md
 CLAUDE.local.md
 .claude/
 .cursor/
@@ -10,9 +10,12 @@ CLAUDE.local.md
 .specstory/
 GEMINI.md
 
-# ----- Internal docs: sessions, plans, research, specs (working notes) -----
-docs/superpowers/
-docs/research/
+# ----- Internal working notes (private) -----
+# Sessions = work journal. Plans = in-flight task checkboxes. Conversations = chat snapshots.
+# Specs and research are tracked at docs/superpowers/specs/ and docs/research/.
+docs/superpowers/plans/
+docs/superpowers/sessions/
+docs/superpowers/conversations/
 docs/internal/
 
 # ----- Rust -----
