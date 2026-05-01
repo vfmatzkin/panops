@@ -1,6 +1,6 @@
 [package]
 name = "panops-portable"
-description = "Portable AsrProvider adapter wrapping whisper-rs."
+description = "Portable AsrProvider + Diarizer adapters."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,10 @@ publish = false
 [dependencies]
 panops-core = { path = "../panops-core" }
 whisper-rs = "0.16"
+sherpa-rs = "0.6"
 hound = "3.5"
 directories = "5"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 sha2 = "0.10"
+tar = "0.4"
+bzip2 = "0.6"
