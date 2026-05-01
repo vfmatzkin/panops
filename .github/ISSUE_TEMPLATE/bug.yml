@@ -1,0 +1,57 @@
+name: Bug
+description: Broken behavior in shipped code.
+title: "<short summary>"
+labels: ["type:bug"]
+body:
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - "severity:critical — blocks correctness or release"
+        - "severity:high — bites real meetings"
+        - "severity:medium — workaround exists"
+        - "severity:low — paper-cut"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - "area:asr"
+        - "area:diar"
+        - "area:notes"
+        - "area:llm"
+        - "area:ci"
+        - "area:storage"
+        - "area:ipc"
+        - "area:mac-shell"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Minimal commands or steps to reproduce.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS / arch / panops version / model paths if relevant.
+    validations:
+      required: false
