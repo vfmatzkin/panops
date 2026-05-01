@@ -44,7 +44,7 @@ impl GenaiLlm {
 
 impl LlmProvider for GenaiLlm {
     fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
-        use genai::chat::{ChatMessage, ChatRequest};
+        use genai::chat::{ChatMessage, ChatOptions, ChatRequest};
 
         let mut messages: Vec<ChatMessage> = Vec::new();
         if let Some(sys) = req.system.clone() {
@@ -54,11 +54,15 @@ impl LlmProvider for GenaiLlm {
 
         let chat_req = ChatRequest::new(messages);
 
+        let options = ChatOptions::default()
+            .with_temperature(req.temperature as f64)
+            .with_max_tokens(req.max_tokens);
+
         let client = self.client.clone();
         let model = self.model.clone();
         let resp = self.rt.block_on(async move {
             client
-                .exec_chat(&model, chat_req, None)
+                .exec_chat(&model, chat_req, Some(&options))
                 .await
                 .map_err(|e| LlmError::Provider(e.to_string()))
         })?;
@@ -70,7 +74,8 @@ impl LlmProvider for GenaiLlm {
             .to_string();
 
         if req.schema.is_some() {
-            match serde_json::from_str::<serde_json::Value>(&text) {
+            let json_text = strip_markdown_fences(&text);
+            match serde_json::from_str::<serde_json::Value>(json_text) {
                 Ok(v) => Ok(LlmResponse::Json(v)),
                 Err(e) => Err(LlmError::InvalidSchema {
                     expected: "json object".into(),
@@ -80,5 +85,14 @@ impl LlmProvider for GenaiLlm {
         } else {
             Ok(LlmResponse::Text(text))
         }
+    }
+}
+
+fn strip_markdown_fences(s: &str) -> &str {
+    let s = s.trim();
+    if let Some(inner) = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")) {
+        inner.trim_end_matches("```").trim()
+    } else {
+        s
     }
 }
