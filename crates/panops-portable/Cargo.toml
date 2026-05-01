@@ -1,0 +1,16 @@
+[package]
+name = "panops-portable"
+description = "Portable AsrProvider adapter wrapping whisper-rs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+panops-core = { path = "../panops-core" }
+whisper-rs = "0.16"
+hound = "3.5"
+directories = "5"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+sha2 = "0.10"
+thiserror = "2"
