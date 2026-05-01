@@ -1,0 +1,3 @@
+[default.extend-words]
+ANE = "ANE"     # Apple Neural Engine
+ture = "ture"   # split-cell artifact in markdown tables
