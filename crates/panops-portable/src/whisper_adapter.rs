@@ -139,8 +139,8 @@ impl AsrProvider for WhisperRsAsr {
             };
 
             segments.push(Segment {
-                start_ms: t0.max(0) as u64 * 10,
-                end_ms: t1.max(0) as u64 * 10,
+                start_ms: (t0.max(0) as u64 * 10).min(audio_duration_ms),
+                end_ms: (t1.max(0) as u64 * 10).min(audio_duration_ms),
                 text,
                 language_detected: detected_lang.clone(),
                 confidence,
