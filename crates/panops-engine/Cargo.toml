@@ -1,0 +1,20 @@
+[package]
+name = "panops-engine"
+description = "panops engine binary. Dev/CI tool. See Panops.app for the actual product."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "panops-engine"
+path = "src/main.rs"
+
+[dependencies]
+panops-core = { path = "../panops-core" }
+panops-portable = { path = "../panops-portable" }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+serde_json = "1"
