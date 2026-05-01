@@ -49,11 +49,26 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+    env:
+      PANOPS_MODEL: ${{ github.workspace }}/.panops-models/ggml-tiny-q5_1.bin
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: stable
+      - name: Cache Whisper model
+        uses: actions/cache@v4
+        with:
+          path: .panops-models
+          key: ggml-tiny-q5_1-${{ hashFiles('crates/panops-portable/src/model.rs') }}
+      - name: Ensure model
+        shell: bash
+        run: |
+          mkdir -p .panops-models
+          if [ ! -f "$PANOPS_MODEL" ]; then
+            curl -fL -o "$PANOPS_MODEL" \
+              https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin
+          fi
       - uses: taiki-e/install-action@v2.75.27
         with:
           tool: cargo-nextest
