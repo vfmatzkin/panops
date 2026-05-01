@@ -44,7 +44,7 @@ impl GenaiLlm {
 
 impl LlmProvider for GenaiLlm {
     fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
-        use genai::chat::{ChatMessage, ChatRequest};
+        use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat};
 
         let mut messages: Vec<ChatMessage> = Vec::new();
         if let Some(sys) = req.system.clone() {
@@ -54,11 +54,22 @@ impl LlmProvider for GenaiLlm {
 
         let chat_req = ChatRequest::new(messages);
 
+        // reason: always forward temperature/max_tokens so the provider honours
+        // the request parameters; additionally, when a schema is requested, set
+        // JsonMode so real LLMs (e.g. gemma3 via Ollama) emit raw JSON instead
+        // of markdown-fenced blocks.
+        let mut opts = ChatOptions::default()
+            .with_temperature(f64::from(req.temperature))
+            .with_max_tokens(req.max_tokens);
+        if req.schema.is_some() {
+            opts = opts.with_response_format(ChatResponseFormat::JsonMode);
+        }
+
         let client = self.client.clone();
         let model = self.model.clone();
         let resp = self.rt.block_on(async move {
             client
-                .exec_chat(&model, chat_req, None)
+                .exec_chat(&model, chat_req, Some(&opts))
                 .await
                 .map_err(|e| LlmError::Provider(e.to_string()))
         })?;
