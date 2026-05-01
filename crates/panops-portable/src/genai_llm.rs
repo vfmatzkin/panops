@@ -74,6 +74,13 @@ impl LlmProvider for GenaiLlm {
             .to_string();
 
         if req.schema.is_some() {
+            // We do NOT request `ChatResponseFormat::JsonMode`. Tested via
+            // genai 0.5.3 against Ollama's OpenAI-compat `/v1/chat/completions`
+            // endpoint with gemma3:4b: JsonMode causes the model to return an
+            // empty `{}` regardless of prompt. The native Ollama `/api/chat`
+            // endpoint honors `format: "json"` correctly, but genai doesn't
+            // route there. Until that lands upstream, we let the model emit
+            // its natural fenced output and strip the fences.
             let json_text = strip_markdown_fences(&text);
             match serde_json::from_str::<serde_json::Value>(json_text) {
                 Ok(v) => Ok(LlmResponse::Json(v)),
@@ -94,5 +101,34 @@ fn strip_markdown_fences(s: &str) -> &str {
         inner.trim_end_matches("```").trim()
     } else {
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_fences_passes_through_bare_json() {
+        assert_eq!(strip_markdown_fences("{\"k\":1}"), "{\"k\":1}");
+        assert_eq!(strip_markdown_fences("  {\"k\":1}  "), "{\"k\":1}");
+    }
+
+    #[test]
+    fn strip_fences_unwraps_json_tagged_block() {
+        let input = "```json\n{\"k\":1}\n```";
+        assert_eq!(strip_markdown_fences(input), "{\"k\":1}");
+    }
+
+    #[test]
+    fn strip_fences_unwraps_plain_block() {
+        let input = "```\n{\"k\":1}\n```";
+        assert_eq!(strip_markdown_fences(input), "{\"k\":1}");
+    }
+
+    #[test]
+    fn strip_fences_handles_trailing_whitespace_inside_block() {
+        let input = "  ```json\n{\"k\":1}\n```  ";
+        assert_eq!(strip_markdown_fences(input), "{\"k\":1}");
     }
 }
