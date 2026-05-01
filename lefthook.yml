@@ -9,6 +9,9 @@ pre-commit:
       run: cargo clippy --workspace --all-targets --locked -- -D warnings
     typos:
       run: typos
+    deny:
+      glob: "{Cargo.toml,Cargo.lock,**/Cargo.toml,deny.toml}"
+      run: cargo deny check
   skip:
     - merge
     - rebase

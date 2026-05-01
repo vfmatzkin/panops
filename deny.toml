@@ -16,15 +16,12 @@ version = 2
 allow = [
     "MIT",
     "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
-    "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
-    "Zlib",
+    "Unlicense",
+    "CDLA-Permissive-2.0",
     "MPL-2.0",
-    "CC0-1.0",
 ]
 confidence-threshold = 0.9
 exceptions = []
@@ -32,6 +29,7 @@ exceptions = []
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+allow-wildcard-paths = true
 highlight = "all"
 deny = []
 skip = []
