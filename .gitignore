@@ -3,6 +3,7 @@
 # *.local.md and IDE-specific dirs stay private.
 AGENTS.local.md
 CLAUDE.local.md
+lefthook-local.yml
 .claude/
 .cursor/
 .cursorrules
