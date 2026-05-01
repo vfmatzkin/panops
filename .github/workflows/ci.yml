@@ -63,11 +63,20 @@ jobs:
           key: ggml-tiny-q5_1-${{ hashFiles('crates/panops-portable/src/model.rs') }}
       - name: Ensure model
         shell: bash
+        env:
+          MODEL_SHA256: 818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7
         run: |
           mkdir -p .panops-models
           if [ ! -f "$PANOPS_MODEL" ]; then
-            curl -fL -o "$PANOPS_MODEL" \
+            curl -fL -o "$PANOPS_MODEL.partial" \
               https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin
+            mv "$PANOPS_MODEL.partial" "$PANOPS_MODEL"
+          fi
+          actual=$(shasum -a 256 "$PANOPS_MODEL" | awk '{print $1}')
+          if [ "$actual" != "$MODEL_SHA256" ]; then
+            echo "model checksum mismatch: expected $MODEL_SHA256, got $actual" >&2
+            rm -f "$PANOPS_MODEL"
+            exit 1
           fi
       - uses: taiki-e/install-action@v2.75.27
         with:

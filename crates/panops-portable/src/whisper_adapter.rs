@@ -15,9 +15,9 @@ pub struct WhisperRsAsr {
 
 impl WhisperRsAsr {
     pub fn new(model_path: PathBuf) -> Result<Self, AsrError> {
-        if !model_path.exists() {
+        if !model_path.is_file() {
             return Err(AsrError::Model(format!(
-                "model file not found: {model_path:?}"
+                "expected model path to be a file: {model_path:?}"
             )));
         }
         let path_str = model_path

@@ -782,7 +782,6 @@ dependencies = [
  "panops-core",
  "reqwest",
  "sha2",
- "thiserror 2.0.18",
  "whisper-rs",
 ]
 
