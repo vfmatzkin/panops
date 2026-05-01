@@ -1,5 +1,7 @@
+use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use directories::ProjectDirs;
 use panops_core::asr::AsrError;
@@ -26,10 +28,11 @@ pub fn default_model_path() -> Result<PathBuf, AsrError> {
 
 pub fn ensure_model(name: &str, dest: &Path) -> Result<PathBuf, AsrError> {
     if dest.exists() {
+        verify_existing(name, dest)?;
         return Ok(dest.to_path_buf());
     }
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent)?;
     }
     let url = match name {
         DEFAULT_MODEL => DEFAULT_MODEL_URL,
@@ -40,30 +43,88 @@ pub fn ensure_model(name: &str, dest: &Path) -> Result<PathBuf, AsrError> {
         }
     };
     eprintln!("Downloading {name} (~31 MB) from {url}...");
-    let resp = reqwest::blocking::get(url)
+
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(180))
+        .build()
+        .map_err(|e| AsrError::Model(format!("http client: {e}")))?;
+    let resp = client
+        .get(url)
+        .send()
         .map_err(|e| AsrError::Model(format!("download failed: {e}")))?;
     if !resp.status().is_success() {
         return Err(AsrError::Model(format!("download HTTP {}", resp.status())));
     }
-    let mut bytes = Vec::with_capacity(32 * 1024 * 1024);
-    let mut reader = resp;
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|e| AsrError::Model(format!("download read: {e}")))?;
+
+    // Stream into a sibling .partial file, hashing as we go. Atomic rename on success.
+    let tmp = dest.with_extension("partial");
+    let mut hasher = Sha256::new();
+    let mut bytes_written: u64 = 0;
+    {
+        let mut file =
+            fs::File::create(&tmp).map_err(|e| AsrError::Model(format!("create {tmp:?}: {e}")))?;
+        let mut reader = resp;
+        let mut buf = [0_u8; 64 * 1024];
+        loop {
+            let n = reader
+                .read(&mut buf)
+                .map_err(|e| AsrError::Model(format!("download read: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            file.write_all(&buf[..n])
+                .map_err(|e| AsrError::Model(format!("write {tmp:?}: {e}")))?;
+            bytes_written += n as u64;
+        }
+        file.sync_all()
+            .map_err(|e| AsrError::Model(format!("fsync {tmp:?}: {e}")))?;
+    }
 
     if name == DEFAULT_MODEL && std::env::var("PANOPS_SKIP_MODEL_CHECKSUM").is_err() {
-        let actual = format!("{:x}", Sha256::digest(&bytes));
+        let actual = format!("{:x}", hasher.finalize());
         if actual != DEFAULT_MODEL_SHA256 {
+            let _ = fs::remove_file(&tmp);
             return Err(AsrError::Model(format!(
                 "checksum mismatch for {name}: expected {DEFAULT_MODEL_SHA256}, got {actual}"
             )));
         }
     }
 
-    let mut f = std::fs::File::create(dest)
-        .map_err(|e| AsrError::Model(format!("create {dest:?}: {e}")))?;
-    f.write_all(&bytes)
-        .map_err(|e| AsrError::Model(format!("write {dest:?}: {e}")))?;
-    eprintln!("Downloaded {} bytes to {dest:?}", bytes.len());
+    fs::rename(&tmp, dest)
+        .map_err(|e| AsrError::Model(format!("rename {tmp:?} -> {dest:?}: {e}")))?;
+    eprintln!("Downloaded {bytes_written} bytes to {dest:?}");
     Ok(dest.to_path_buf())
+}
+
+fn verify_existing(name: &str, dest: &Path) -> Result<(), AsrError> {
+    let meta = fs::metadata(dest).map_err(|e| AsrError::Model(format!("stat {dest:?}: {e}")))?;
+    if !meta.is_file() {
+        return Err(AsrError::Model(format!(
+            "model path {dest:?} exists but is not a regular file"
+        )));
+    }
+    if name == DEFAULT_MODEL && std::env::var("PANOPS_SKIP_MODEL_CHECKSUM").is_err() {
+        let mut f =
+            fs::File::open(dest).map_err(|e| AsrError::Model(format!("open {dest:?}: {e}")))?;
+        let mut hasher = Sha256::new();
+        let mut buf = [0_u8; 64 * 1024];
+        loop {
+            let n = f
+                .read(&mut buf)
+                .map_err(|e| AsrError::Model(format!("read {dest:?}: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        let actual = format!("{:x}", hasher.finalize());
+        if actual != DEFAULT_MODEL_SHA256 {
+            return Err(AsrError::Model(format!(
+                "checksum mismatch for cached {name} at {dest:?}: expected {DEFAULT_MODEL_SHA256}, got {actual}"
+            )));
+        }
+    }
+    Ok(())
 }

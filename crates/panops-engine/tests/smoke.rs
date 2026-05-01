@@ -2,6 +2,12 @@ use std::path::PathBuf;
 
 #[test]
 fn binary_emits_valid_json_for_en_fixture() {
+    if std::env::var_os("PANOPS_MODEL").is_none() {
+        eprintln!(
+            "skipping binary_emits_valid_json_for_en_fixture: set PANOPS_MODEL to a local Whisper model path"
+        );
+        return;
+    }
     let bin = env!("CARGO_BIN_EXE_panops-engine");
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
