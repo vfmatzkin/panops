@@ -86,7 +86,7 @@ impl LlmProvider for GenaiLlm {
                 Ok(v) => Ok(LlmResponse::Json(v)),
                 Err(e) => Err(LlmError::InvalidSchema {
                     expected: "json object".into(),
-                    got: format!("text ({e})"),
+                    got: format!("text ({e}); preview: {}", preview_for_error(json_text)),
                 }),
             }
         } else {
@@ -104,6 +104,22 @@ fn strip_markdown_fences(s: &str) -> &str {
     // Use strip_suffix (single match) rather than trim_end_matches (greedy) so
     // a JSON value containing literal triple-backticks isn't corrupted.
     trimmed.strip_suffix("```").unwrap_or(trimmed).trim()
+}
+
+/// Truncates a string for inclusion in an error message. Splits at a char
+/// boundary (so we never panic on UTF-8) and appends an ellipsis marker plus
+/// the dropped byte count when truncation occurred. Used when the LLM emits
+/// non-JSON and we need a self-describing failure without dumping kilobytes.
+fn preview_for_error(s: &str) -> String {
+    const MAX: usize = 200;
+    if s.len() <= MAX {
+        return s.to_string();
+    }
+    let mut end = MAX;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…[+{} bytes]", &s[..end], s.len() - end)
 }
 
 #[cfg(test)]
@@ -147,5 +163,36 @@ mod tests {
         // fence is removed once; the JSON content is preserved.
         let input = "```json\n{\"text\":\"```code```\"}\n```";
         assert_eq!(strip_markdown_fences(input), "{\"text\":\"```code```\"}");
+    }
+
+    #[test]
+    fn preview_short_input_is_unchanged() {
+        assert_eq!(preview_for_error("hello world"), "hello world");
+    }
+
+    #[test]
+    fn preview_input_exactly_at_max_is_unchanged() {
+        // <= MAX is the inclusive boundary — verify the off-by-one.
+        let s = "a".repeat(200);
+        assert_eq!(preview_for_error(&s), s);
+    }
+
+    #[test]
+    fn preview_long_input_is_truncated_with_byte_count() {
+        let s = "a".repeat(500);
+        let p = preview_for_error(&s);
+        assert!(p.starts_with(&"a".repeat(200)));
+        assert!(p.ends_with("…[+300 bytes]"));
+    }
+
+    #[test]
+    fn preview_handles_multibyte_at_truncation_boundary() {
+        // 199 ASCII bytes + a 4-byte emoji = 203 bytes. MAX=200 lands inside
+        // the emoji's UTF-8 sequence, so the function must back off to byte
+        // 199 (the last char boundary) and report the dropped 4 bytes.
+        let s = format!("{}🦀", "a".repeat(199));
+        let p = preview_for_error(&s);
+        assert!(p.starts_with(&"a".repeat(199)));
+        assert!(p.ends_with("…[+4 bytes]"));
     }
 }
