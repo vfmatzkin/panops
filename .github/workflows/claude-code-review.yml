@@ -12,7 +12,8 @@ on:
 
 jobs:
   claude-review:
-    # Skip forked PRs: repository secrets are not exposed to fork workflows
+    # Skip forked PRs: repository secrets are not exposed to fork workflows,
+    # so the action would fail immediately on missing CLAUDE_CODE_OAUTH_TOKEN.
     if: github.event.pull_request.head.repo.full_name == github.repository
     # Optional: Filter by PR author
     # if: |
