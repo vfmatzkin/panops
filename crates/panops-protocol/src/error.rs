@@ -100,6 +100,7 @@ mod from_domain {
     use super::IpcError;
     use panops_core::asr::AsrError;
     use panops_core::diar::DiarError;
+    use panops_core::exporter::ExportError;
     use panops_core::llm::LlmError;
     use panops_core::notes::error::NotesError;
 
@@ -168,6 +169,27 @@ mod from_domain {
             }
         }
     }
+
+    impl From<ExportError> for IpcError {
+        fn from(e: ExportError) -> Self {
+            match e {
+                // The destination directory came from caller input
+                // (`notes.generate`'s computed `out_dir`). A failure here
+                // means the path itself was rejected — surface as
+                // invalid-input with an opaque message so the wire never
+                // echoes the FS layout the caller probed.
+                ExportError::InvalidDest(_) => IpcError::InvalidInput {
+                    message: "invalid export destination".into(),
+                },
+                // Io / Render are server-side conditions (disk, template
+                // engine). Keep them opaque on the wire; full detail is
+                // emitted via `tracing::error!` at the call site.
+                ExportError::Io(_) | ExportError::Render(_) => IpcError::Internal {
+                    message: "export failed".into(),
+                },
+            }
+        }
+    }
 }
 
 #[cfg(all(test, feature = "domain-conversions"))]
@@ -175,6 +197,7 @@ mod from_domain_tests {
     use super::IpcError;
     use panops_core::asr::AsrError;
     use panops_core::diar::DiarError;
+    use panops_core::exporter::ExportError;
     use panops_core::llm::LlmError;
     use panops_core::notes::error::NotesError;
     use std::path::PathBuf;
@@ -287,5 +310,39 @@ mod from_domain_tests {
     fn notes_invalid_input_maps_to_invalid_input() {
         let e: IpcError = NotesError::InvalidInput("bad".into()).into();
         assert!(matches!(e, IpcError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn export_invalid_dest_maps_to_invalid_input() {
+        let e: IpcError = ExportError::InvalidDest("not a directory".into()).into();
+        assert!(matches!(e, IpcError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn export_io_maps_to_internal() {
+        let io = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let e: IpcError = ExportError::Io(io).into();
+        assert!(matches!(e, IpcError::Internal { .. }));
+    }
+
+    #[test]
+    fn export_render_maps_to_internal() {
+        let e: IpcError = ExportError::Render("template failure".into()).into();
+        assert!(matches!(e, IpcError::Internal { .. }));
+    }
+
+    #[test]
+    fn export_invalid_dest_does_not_leak_caller_path() {
+        // Wire boundary: an attacker probing `notes.generate` with a
+        // crafted destination must not see the path echoed back.
+        let e: IpcError = ExportError::InvalidDest("/etc/passwd".into()).into();
+        if let IpcError::InvalidInput { message } = e {
+            assert!(
+                !message.contains("/etc/passwd"),
+                "leaked caller path: {message}"
+            );
+        } else {
+            panic!("expected InvalidInput");
+        }
     }
 }

@@ -37,8 +37,9 @@ use crate::server::handlers::{IpcImpl, IpcServer};
 /// Wiring point for slice-05 server tests AND the production CLI `serve`
 /// path. Tests construct an `EngineServices` with fakes (`MockLlm`,
 /// `TranscriptFileFake`, `KnownTurnsFake`, `FakeNotesExporter`); the CLI
-/// wires adapters via [`stub_services`] — still fakes today (issue #74
-/// tracks the real-adapter wiring deferred from Wave 5K).
+/// wires adapters via [`temporary_stub_services_issue_74`] — still
+/// fakes today (issue #74 tracks the real-adapter wiring deferred from
+/// Wave 5K).
 pub struct EngineServices {
     pub llm: Arc<dyn LlmProvider + Send + Sync>,
     pub asr: Arc<dyn AsrProvider + Send + Sync>,
@@ -77,7 +78,7 @@ pub fn run_serve(socket: Option<PathBuf>) -> Result<(), (u8, String)> {
         // anyway; the in-process integration tests inject real adapters
         // directly through `run_serve_in_process`. Tracking real-adapter
         // wiring (lazy `OnceLock` or eager-after-bind) as issue #74.
-        let services = stub_services(llm_handle);
+        let services = temporary_stub_services_issue_74(llm_handle);
         // No external shutdown: `run_serve_in_process` installs its
         // own signal handler before bind, so the SIGTERM-between-
         // bind-and-handler window from earlier waves is gone.
@@ -175,8 +176,14 @@ pub async fn run_serve_in_process(
     });
 
     let conn_id = Arc::new(AtomicU32::new(0));
-    // Cap concurrent connections — slice 05 is single-user; 100 is
-    // generous for the test client + Mac shell.
+    // Cap concurrent connections at 100. Slice 05 is single-user (one
+    // Mac shell + the integration test harness opening 1-2 clients per
+    // case), so 100 is two orders of magnitude over the realistic
+    // ceiling. When the cap is hit, `try_acquire` returns `None` and
+    // the per-request handler responds with HTTP 429 (`too_many_requests`)
+    // rather than stalling — keeps a runaway client from exhausting the
+    // accept loop. Revisit alongside the DoS bound on `notes.generate`
+    // (file as `severity:high area:ipc` debt).
     let conn_guard = Arc::new(ConnectionGuard::new(100));
 
     let cleanup_path = path.to_path_buf();
@@ -261,26 +268,33 @@ pub async fn run_serve_in_process(
     Ok(())
 }
 
-/// Slice 05 stand-in for `EngineServices`. Real `WhisperRsAsr` /
-/// `SherpaDiarizer` constructors load multi-hundred-MB models eagerly,
-/// which would push `serve` past the 5-second "socket appears" budget
-/// integration tests rely on. Issue #74 tracks the follow-up — either
-/// an eager-after-bind path (background-task adapter init) or per-call
-/// lazy factories.
+/// DO NOT SHIP THIS TO USERS. Slice 05 stand-in for `EngineServices`
+/// — `notes.generate` against this build runs on FAKE ASR / diar /
+/// exporter adapters that emit canned data, so users hitting `serve`
+/// would get garbage notes silently.
 ///
-/// The placeholder uses `GenaiLlm::with_handle` (cheap; constructs
-/// only the genai client) plus `panops-core`'s deterministic fakes
-/// for ASR / diar / exporter. `notes.generate` against `panops-engine
-/// serve` from a shell will therefore use fake ASR/diar — the
-/// in-process integration tests inject real adapters directly through
-/// `run_serve_in_process`, so the test surface isn't affected.
-fn stub_services(llm_handle: tokio::runtime::Handle) -> EngineServices {
+/// Why this exists: real `WhisperRsAsr` / `SherpaDiarizer` constructors
+/// load multi-hundred-MB models eagerly, which would push `serve` past
+/// the 5-second "socket appears" budget the integration tests rely on.
+/// Issue #74 tracks the proper follow-up — eager-after-bind path
+/// (background-task adapter init) or per-call lazy factories.
+///
+/// The function name is deliberately verbose so that `git grep` for it
+/// surfaces this scaffold immediately, and so accidentally calling it
+/// from a non-stub code path would scream in review. Slice 06 must
+/// delete this function as part of wiring real sidecars.
+///
+/// LLM wiring deviates from `GenaiLlm::auto` on purpose: `auto` returns
+/// a `Result` and uses the lazy shared CLI runtime, while server mode
+/// must (a) bind outbound HTTP to Runtime B via `with_handle`, and
+/// (b) pick a non-failing default so `serve` always boots even with
+/// no provider configured (the fake ASR/diar pipeline never reaches
+/// the LLM in slice 05's smoke). Provider precedence still mirrors
+/// `auto` — keep them in sync until #74 collapses both paths.
+fn temporary_stub_services_issue_74(llm_handle: tokio::runtime::Handle) -> EngineServices {
     use panops_core::conformance::fakes::{FakeNotesExporter, KnownTurnsFake, TranscriptFileFake};
     use panops_portable::genai_llm::GenaiLlm;
 
-    // Same provider precedence as `GenaiLlm::auto`, but bound to
-    // Runtime B's handle via `with_handle` so outbound HTTP doesn't
-    // collide with Runtime A's RPC accept loop.
     let model = if std::env::var("ANTHROPIC_API_KEY").is_ok() {
         "claude-haiku-4-5-20251001"
     } else if std::env::var("OPENAI_API_KEY").is_ok() {

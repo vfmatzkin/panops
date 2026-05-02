@@ -58,7 +58,11 @@ pub(super) async fn bind_with_lifecycle(path: &Path) -> Result<UnixListener, Bin
     }
 
     if path.exists() {
-        // Probe for a live listener with a short timeout.
+        // Probe for a live listener with a short timeout. Local UDS
+        // connect is sub-millisecond on a healthy box; 250ms covers
+        // paged-out kernel state under load (e.g. fresh boot, heavy
+        // disk pressure) without making a stale-socket recovery feel
+        // sluggish.
         let probe = timeout(Duration::from_millis(250), UnixStream::connect(path)).await;
         match probe {
             Ok(Ok(_)) => return Err(BindError::EngineAlreadyRunning(path.to_path_buf())),
