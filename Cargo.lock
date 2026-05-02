@@ -1490,6 +1490,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "panops-protocol"
+version = "0.1.0"
+dependencies = [
+ "panops-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
