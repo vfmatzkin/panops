@@ -81,6 +81,7 @@ impl From<DialectArg> for MarkdownDialect {
 }
 
 fn main() -> ExitCode {
+    init_tracing();
     let cli = Cli::parse();
     let res = match cli.cmd {
         None => run_default(cli.audio, cli.model, cli.language, cli.no_diarize),
@@ -113,6 +114,15 @@ fn main() -> ExitCode {
             ExitCode::from(code)
         }
     }
+}
+
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
 }
 
 fn run_default(
@@ -208,7 +218,7 @@ fn run_notes(
     let art = MarkdownExporter
         .export(&notes, &out_dir)
         .map_err(|e| (2, e.to_string()))?;
-    eprintln!("wrote {:?} ({} assets)", art.primary_file, art.assets.len());
+    tracing::info!(file = ?art.primary_file, assets = art.assets.len(), "wrote notes");
     Ok(())
 }
 

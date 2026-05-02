@@ -176,9 +176,11 @@ pub fn ensure_model(name: &str, dest: &Path) -> Result<PathBuf, AsrError> {
         }
         return Ok(dest.to_path_buf());
     }
-    eprintln!(
-        "Downloading {} (~{} MB) from {}...",
-        info.name, info.approx_size_mb, info.url
+    tracing::info!(
+        name = info.name,
+        approx_mb = info.approx_size_mb,
+        url = info.url,
+        "downloading model"
     );
     let client = http_client()?;
     let n = download(&client, info.url, dest)?;
@@ -188,7 +190,7 @@ pub fn ensure_model(name: &str, dest: &Path) -> Result<PathBuf, AsrError> {
         let _ = fs::remove_file(dest);
         return Err(e);
     }
-    eprintln!("Downloaded {n} bytes to {dest:?}");
+    tracing::info!(bytes = n, dest = ?dest, "model download complete");
     Ok(dest.to_path_buf())
 }
 
@@ -207,9 +209,10 @@ pub fn ensure_diar_models() -> Result<(PathBuf, PathBuf), AsrError> {
         if let Some(parent) = emb.parent() {
             fs::create_dir_all(parent)?;
         }
-        eprintln!(
-            "Downloading {} (~{} MB)...",
-            emb_info.name, emb_info.approx_size_mb
+        tracing::info!(
+            name = emb_info.name,
+            approx_mb = emb_info.approx_size_mb,
+            "downloading diar embedding model"
         );
         let client = http_client()?;
         download(&client, emb_info.url, &emb)?;
@@ -244,9 +247,10 @@ pub fn ensure_diar_models() -> Result<(PathBuf, PathBuf), AsrError> {
         let tar_path = dir.join("sherpa-onnx-pyannote-segmentation-3-0.tar.bz2");
         let tar_existed_before = tar_path.exists();
         if !tar_existed_before {
-            eprintln!(
-                "Downloading {} (~{} MB)...",
-                seg_info.name, seg_info.approx_size_mb
+            tracing::info!(
+                name = seg_info.name,
+                approx_mb = seg_info.approx_size_mb,
+                "downloading diar segmentation model"
             );
             let client = http_client()?;
             download(&client, seg_info.url, &tar_path)?;
