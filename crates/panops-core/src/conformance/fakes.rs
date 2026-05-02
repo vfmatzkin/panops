@@ -145,3 +145,38 @@ impl LlmProvider for MockLlm {
         }
     }
 }
+
+/// Minimal `NotesExporter` for the conformance harness. Writes a single
+/// `notes.txt` file containing the rendered title and section count under
+/// `dest`. Refuses (with `ExportError::InvalidDest`) when `dest` exists but
+/// is a file rather than a directory — this is the universal contract every
+/// exporter must hold to avoid silent data loss.
+pub struct FakeNotesExporter;
+
+impl crate::exporter::NotesExporter for FakeNotesExporter {
+    fn export(
+        &self,
+        notes: &crate::notes::ir::StructuredNotes,
+        dest: &std::path::Path,
+    ) -> Result<crate::exporter::ExportArtifact, crate::exporter::ExportError> {
+        if dest.exists() && !dest.is_dir() {
+            return Err(crate::exporter::ExportError::InvalidDest(format!(
+                "{dest:?} exists but is not a directory"
+            )));
+        }
+        if !dest.exists() {
+            std::fs::create_dir_all(dest)?;
+        }
+        let primary_file = dest.join("notes.txt");
+        let body = format!(
+            "title: {}\nsections: {}\n",
+            notes.frontmatter.title,
+            notes.sections.len()
+        );
+        std::fs::write(&primary_file, body)?;
+        Ok(crate::exporter::ExportArtifact {
+            primary_file,
+            assets: vec![],
+        })
+    }
+}
