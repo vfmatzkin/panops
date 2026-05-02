@@ -21,12 +21,11 @@ source_audio: tests/fixtures/audio/multi_speaker_60s.wav
 
 *[0:00 – 1:00]*
 
-The meeting opened with a welcome and agenda overview covering the next sixty minutes. The first item was a budget review for next quarter, with approval required before week's end. The review walks through marketing line items first, then engineering, then any remaining operations expenses.
+The session opened with a welcome and a brief handoff into the agenda. The first agenda item framed the rest of the meeting, with the discussion organising the review into a clear sequence so each functional area would get its own slot.
 
 **Key points:**
-- Agenda includes budget review for next quarter
-- Spending plan needs approval before end of week
-- Review covers marketing, engineering, and operations line items
+- Budget review scoped to next quarter only
+- Review sequence: marketing, engineering, operations
 
 **Action items:**
 - Approve quarterly spending plan before end of week (owner: owner TBD)

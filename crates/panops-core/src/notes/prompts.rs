@@ -50,8 +50,22 @@ pub fn build_section_narrative_prompt(
          Output language: {language}\n\n\
          Speaker attribution rule (STRICT): never attribute a quote to a speaker_id\n\
          that does not appear in the transcript. When in doubt, use passive voice.\n\n\
+         Non-duplication rule (STRICT): `narrative_md`, `key_points`, and `action_items`\n\
+         must NOT restate the same facts in different shapes. They are three\n\
+         distinct views of the section:\n\
+         - `narrative_md`: connective prose — context, who arrived/left, how the\n\
+           conversation moved, transitions between topics, mood/tone where it\n\
+           matters. NO bullet lists. NO embedded \"Key points:\" or \"Action items:\"\n\
+           sections. Do NOT restate the bullets in prose form.\n\
+         - `key_points`: durable takeaways the reader scans for later — facts,\n\
+           numbers, decisions, named outcomes. Punchy and self-contained. Each\n\
+           bullet is a fact that does NOT appear (in any paraphrase) in\n\
+           `narrative_md`.\n\
+         - `action_items`: explicit commitments — \"who will do what by when\".\n\
+           A commitment that is also a key takeaway belongs HERE, not in\n\
+           `key_points`. Owner is a speaker_id (or null when unassigned).\n\n\
          Return JSON matching exactly:\n\
-         {{\n  \"title\": \"string (descriptive, <80 chars)\",\n  \"narrative_md\": \"string (markdown body in the dialect above; 100–600 words)\",\n  \"key_points\": [\"string\", ...] (0–6 short bullets),\n  \"action_items\": [{{\"description\": \"string\", \"owner\": \"speaker_0\"}}] or [{{\"description\": \"string\", \"owner\": null}}]\n}}"
+         {{\n  \"title\": \"string (descriptive, <80 chars)\",\n  \"narrative_md\": \"string (prose only — no bullets — in the dialect above; up to 400 words, scaled to section length)\",\n  \"key_points\": [\"string\", ...] (0–6 short bullets, each a fact NOT in narrative_md),\n  \"action_items\": [{{\"description\": \"string\", \"owner\": \"speaker_0\"}}] or [{{\"description\": \"string\", \"owner\": null}}]\n}}"
     );
     LlmRequest {
         system: Some(SECTION_NARRATIVE_SYSTEM.to_string()),
@@ -185,6 +199,16 @@ mod tests {
         assert!(p.user.contains("speaker_1"));
         assert!(p.user.contains("hello"));
         assert!(p.user.contains("hi"));
+    }
+
+    #[test]
+    fn section_narrative_prompt_includes_non_duplication_rule() {
+        let segs = vec![seg(0, 5000, Some(0), "hello")];
+        let p = build_section_narrative_prompt(&segs, MarkdownDialect::Basic, "en");
+        assert!(p.user.contains("Non-duplication rule"));
+        assert!(p.user.contains("must NOT restate the same facts"));
+        assert!(p.user.contains("NO bullet lists"));
+        assert!(p.user.contains("NOT in narrative_md"));
     }
 
     #[test]

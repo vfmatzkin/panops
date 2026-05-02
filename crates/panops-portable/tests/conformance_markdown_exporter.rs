@@ -217,24 +217,26 @@ fn regenerate_multi_speaker_60s_goldens() {
     let summaries = vec![SectionSummary {
         title: "Meeting kickoff and quarterly budget review".into(),
         key_points: vec![
-            "Agenda includes budget review for next quarter".into(),
-            "Spending plan needs approval before end of week".into(),
-            "Review covers marketing, engineering, and operations line items".into(),
+            "Budget review scoped to next quarter only".into(),
+            "Review sequence: marketing, engineering, operations".into(),
         ],
     }];
     let frontmatter_prompt = build_frontmatter_prompt(&summaries, "en", 60_000);
 
+    // Goldens demonstrate the non-duplication rule (#35):
+    // - `narrative_md` is connective prose: who arrived, how the conversation
+    //   moved, transitions. Carries no facts that also appear in key_points.
+    // - `key_points` are durable takeaways NOT restated in narrative_md.
+    // - `action_items` carry the commitment (NOT also in key_points).
     let canned_section = serde_json::json!({
         "title": "Meeting kickoff and quarterly budget review",
-        "narrative_md": "The meeting opened with a welcome and agenda overview \
-            covering the next sixty minutes. The first item was a budget review \
-            for next quarter, with approval required before week's end. The \
-            review walks through marketing line items first, then engineering, \
-            then any remaining operations expenses.",
+        "narrative_md": "The session opened with a welcome and a brief handoff \
+            into the agenda. The first agenda item framed the rest of the \
+            meeting, with the discussion organising the review into a clear \
+            sequence so each functional area would get its own slot.",
         "key_points": [
-            "Agenda includes budget review for next quarter",
-            "Spending plan needs approval before end of week",
-            "Review covers marketing, engineering, and operations line items"
+            "Budget review scoped to next quarter only",
+            "Review sequence: marketing, engineering, operations"
         ],
         "action_items": [
             {"description": "Approve quarterly spending plan before end of week", "owner": null}
