@@ -89,6 +89,71 @@ fn one_section_pipeline_produces_structured_notes() {
 }
 
 #[test]
+fn verifier_replaces_section_narrative_when_llm_invents_speaker_id() {
+    // Transcript only has speaker_0. LLM hallucinates speaker_99.
+    // Verifier must catch the violation and the pipeline falls back to a
+    // deterministic transcript dump for that section instead of shipping
+    // the bogus narrative.
+    let segments = vec![seg(0, 60_000, 0, "hello and welcome to the meeting")];
+
+    let section_prompt = build_section_narrative_prompt(&segments, MarkdownDialect::Basic, "en");
+    let frontmatter_prompt = build_frontmatter_prompt(
+        &[SectionSummary {
+            title: "Section".into(),
+            key_points: vec![],
+        }],
+        "en",
+        60_000,
+    );
+    let mock = MockLlm::default()
+        .with_response_for(
+            section_prompt.system.as_deref(),
+            &section_prompt.user,
+            LlmResponse::Json(serde_json::json!({
+                "title": "Welcome",
+                "narrative_md": "**speaker_99:** said something they did not say.",
+                "key_points": [],
+                "action_items": []
+            })),
+        )
+        .with_response_for(
+            frontmatter_prompt.system.as_deref(),
+            &frontmatter_prompt.user,
+            LlmResponse::Json(serde_json::json!({"title": "Meeting", "tags": []})),
+        );
+
+    let generator = NotesGenerator {
+        llm: &mock,
+        dialect: MarkdownDialect::Basic,
+    };
+    let input = NotesInput {
+        transcript: segments,
+        screenshots: vec![],
+        meeting_metadata: MeetingMetadata {
+            started_at: FixedOffset::east_opt(0)
+                .unwrap()
+                .with_ymd_and_hms(2026, 5, 1, 10, 0, 0)
+                .unwrap(),
+            duration_ms: 60_000,
+            source_path: None,
+            language_hint: Some("en".into()),
+        },
+    };
+
+    let notes = generator.generate(input).expect("generate failed");
+    assert_eq!(notes.sections.len(), 1);
+    let body = &notes.sections[0].narrative_md;
+    assert!(
+        !body.contains("speaker_99"),
+        "verifier should have stripped the bogus speaker; got: {body}"
+    );
+    assert!(
+        body.contains("verifier:") || body.contains("speaker_0:"),
+        "fallback should emit a verifier marker and/or transcript dump; got: {body}"
+    );
+}
+
+#[test]
 fn frontmatter_llm_failure_falls_back_to_untitled() {
     let segments = vec![seg(0, 60_000, 0, "hello and welcome to the meeting")];
 
