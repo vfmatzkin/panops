@@ -2,6 +2,8 @@
 ANE = "ANE"     # Apple Neural Engine
 
 [files]
+# Private workflow ephemera (gitignored), often containing verbatim
+# user quotes from chat transcripts. Don't second-guess the quotes.
 extend-exclude = [
     "docs/superpowers/reviews/",
     "docs/superpowers/conversations/",
