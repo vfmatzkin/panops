@@ -24,7 +24,7 @@ pub enum DiarError {
     Io(#[from] std::io::Error),
 }
 
-pub trait Diarizer {
+pub trait Diarizer: Send + Sync {
     /// Run speaker diarization on a complete audio file. Stateless.
     /// Returns turns ordered by `start_ms`, non-overlapping. Speaker IDs
     /// are stable within one call only; meaningless across calls.
