@@ -65,12 +65,14 @@ fn fixture_segments() -> Vec<Segment> {
 fn canned_mock(dialect: MarkdownDialect) -> MockLlm {
     let segments = fixture_segments();
     let section_prompt = build_section_narrative_prompt(&segments, dialect, "en");
+    // Mirrors the canonical canned response in conformance_markdown_exporter.rs
+    // (#35 non-duplication: narrative is connective prose; key_points are
+    // distinct facts; action_items hold the commitment).
     let summaries = vec![SectionSummary {
         title: "Meeting kickoff and quarterly budget review".into(),
         key_points: vec![
-            "Agenda includes budget review for next quarter".into(),
-            "Spending plan needs approval before end of week".into(),
-            "Review covers marketing, engineering, and operations line items".into(),
+            "Budget review scoped to next quarter only".into(),
+            "Review sequence: marketing, engineering, operations".into(),
         ],
     }];
     let frontmatter_prompt = build_frontmatter_prompt(&summaries, "en", 60_000);
@@ -80,15 +82,13 @@ fn canned_mock(dialect: MarkdownDialect) -> MockLlm {
             &section_prompt.user,
             LlmResponse::Json(serde_json::json!({
                 "title": "Meeting kickoff and quarterly budget review",
-                "narrative_md": "The meeting opened with a welcome and agenda overview \
-                    covering the next sixty minutes. The first item was a budget review \
-                    for next quarter, with approval required before week's end. The \
-                    review walks through marketing line items first, then engineering, \
-                    then any remaining operations expenses.",
+                "narrative_md": "The session opened with a welcome and a brief \
+                    handoff into the agenda. The first agenda item framed the rest \
+                    of the meeting, with the discussion organising the review into \
+                    a clear sequence so each functional area would get its own slot.",
                 "key_points": [
-                    "Agenda includes budget review for next quarter",
-                    "Spending plan needs approval before end of week",
-                    "Review covers marketing, engineering, and operations line items"
+                    "Budget review scoped to next quarter only",
+                    "Review sequence: marketing, engineering, operations"
                 ],
                 "action_items": [
                     {"description": "Approve quarterly spending plan before end of week", "owner": null}
@@ -166,4 +166,33 @@ fn rendered_markdown_matches_basic_golden() {
     )
     .unwrap();
     assert_eq!(actual.trim(), expected.trim(), "basic markdown drift");
+}
+
+/// Per #35 — narrative_md and key_points must be distinct views; a key_point
+/// must NOT appear (verbatim or by substring trigram) inside narrative_md.
+/// Same for action_items[].description. Heuristic: lower-case both, look for
+/// any bullet's content as a substring of the narrative.
+#[test]
+fn narrative_does_not_restate_key_points_or_action_items() {
+    let notes = run_pipeline(MarkdownDialect::NotionEnhanced);
+    for sec in &notes.sections {
+        let narrative = sec.narrative_md.to_lowercase();
+        for kp in &sec.key_points {
+            let kp_low = kp.to_lowercase();
+            assert!(
+                !narrative.contains(&kp_low),
+                "narrative restates key_point verbatim:\n  kp: {kp:?}\n  narrative: {:?}",
+                sec.narrative_md
+            );
+        }
+        for ai in &sec.action_items {
+            let d_low = ai.description.to_lowercase();
+            assert!(
+                !narrative.contains(&d_low),
+                "narrative restates action_item.description:\n  desc: {:?}\n  narrative: {:?}",
+                ai.description,
+                sec.narrative_md
+            );
+        }
+    }
 }
