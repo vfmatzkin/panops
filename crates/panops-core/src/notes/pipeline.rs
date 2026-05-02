@@ -27,6 +27,7 @@ use crate::notes::prompts::{
 };
 use crate::notes::screenshot_anchoring::anchor_screenshots;
 use crate::notes::topic_segmentation::{TopicSegmentationConfig, segment_topics};
+use crate::notes::verifier;
 
 pub struct NotesGenerator<'a> {
     pub llm: &'a (dyn LlmProvider + 'a),
@@ -48,6 +49,13 @@ impl NotesGenerator<'_> {
         // Stage 1
         let raw_sections = segment_topics(&input.transcript, &TopicSegmentationConfig::default());
 
+        // Build the allowed-speaker set once for the verifier (Stage 2).
+        let allowed_speakers: HashSet<u32> = input
+            .transcript
+            .iter()
+            .filter_map(|s| s.speaker_id)
+            .collect();
+
         // Stage 2 (parallel)
         let section_drafts: Vec<SectionDraft> = raw_sections
             .par_iter()
@@ -59,7 +67,32 @@ impl NotesGenerator<'_> {
                     .collect();
                 let req = build_section_narrative_prompt(&segs, self.dialect, &language);
                 match self.llm.complete(req) {
-                    Ok(LlmResponse::Json(v)) => SectionDraft::from_json(raw.time_range_ms, segs, v),
+                    Ok(LlmResponse::Json(v)) => {
+                        let draft = SectionDraft::from_json(raw.time_range_ms, segs.clone(), v);
+                        // Verifier gate: if the LLM attributed speech to an
+                        // ID not present in the transcript, drop the draft
+                        // and fall back to a deterministic transcript dump.
+                        match verifier::verify_section_attribution(
+                            &draft.narrative_md,
+                            &draft.action_items,
+                            &allowed_speakers,
+                        ) {
+                            verifier::VerifierReport::Ok => draft,
+                            verifier::VerifierReport::DisallowedSpeakers(ids) => {
+                                tracing::warn!(
+                                    section_ms = ?raw.time_range_ms,
+                                    disallowed = ?ids,
+                                    "section narrative referenced speakers not in transcript; using fallback"
+                                );
+                                SectionDraft::fallback(
+                                    raw.time_range_ms,
+                                    segs,
+                                    "verifier: disallowed speaker reference",
+                                    self.dialect,
+                                )
+                            }
+                        }
+                    }
                     Ok(LlmResponse::Text(_)) => SectionDraft::fallback(
                         raw.time_range_ms,
                         segs,
