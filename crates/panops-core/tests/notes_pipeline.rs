@@ -256,3 +256,45 @@ fn screenshot_past_duration_is_clamped_to_last_section() {
         "timestamp should be clamped to duration_ms"
     );
 }
+
+#[test]
+fn screenshot_with_duration_zero_passes_through_unclamped() {
+    // duration_ms == 0 is malformed metadata. The clamp would collapse every
+    // screenshot to ms=0, producing a degenerate output. Per #61, we skip the
+    // clamp in that case (and emit a tracing::warn), letting the unclamped
+    // values flow through to anchor_screenshots' nearest-section fallback.
+    let segments = vec![seg(0, 60_000, 0, "hello and welcome to the meeting")];
+    // Mock keyed on duration_ms=0 to match what NotesGenerator will request.
+    let mock = make_mock(&segments, 0);
+
+    let generator = NotesGenerator {
+        llm: &mock,
+        dialect: MarkdownDialect::Basic,
+    };
+    let input = NotesInput {
+        transcript: segments,
+        screenshots: vec![Screenshot {
+            ms_since_start: 12_345,
+            path: PathBuf::from("/tmp/img.jpg"),
+            caption: None,
+        }],
+        meeting_metadata: MeetingMetadata {
+            started_at: FixedOffset::east_opt(0)
+                .unwrap()
+                .with_ymd_and_hms(2026, 5, 1, 10, 0, 0)
+                .unwrap(),
+            duration_ms: 0,
+            source_path: None,
+            language_hint: Some("en".into()),
+        },
+    };
+
+    let notes = generator.generate(input).expect("generate failed");
+    assert_eq!(notes.sections.len(), 1);
+    let shots = &notes.sections[0].screenshots;
+    assert_eq!(shots.len(), 1, "screenshot should be preserved");
+    assert_eq!(
+        shots[0].ms_since_start, 12_345,
+        "timestamp must NOT be clamped to 0 when duration_ms == 0"
+    );
+}
