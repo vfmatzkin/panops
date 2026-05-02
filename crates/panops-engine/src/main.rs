@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use panops_core::asr::AsrProvider;
+use panops_core::conformance::fakes::TranscriptFileFake;
 use panops_core::diar::Diarizer;
 use panops_core::exporter::NotesExporter;
 use panops_core::merge::merge_speaker_turns;
@@ -251,7 +252,6 @@ fn transcribe(
     // When PANOPS_FAKE_ASR=1, use the sidecar-file fake instead of downloading
     // and loading the real Whisper model. Intended for integration tests.
     if std::env::var("PANOPS_FAKE_ASR").ok().as_deref() == Some("1") {
-        use panops_core::conformance::fakes::TranscriptFileFake;
         return TranscriptFileFake
             .transcribe_full(audio, language)
             .map_err(|e| (2, e.to_string()));
