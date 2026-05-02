@@ -44,6 +44,34 @@ fn default_mode_stdout_is_pure_json_with_rust_log_set() {
 }
 
 #[test]
+fn rust_log_info_actually_emits_tracing_lines() {
+    // Positive control: prove init_tracing actually wires a subscriber.
+    // If init silently no-ops (e.g. try_init fails or filter rejects),
+    // this test fails — preventing a green CI on a logging regression.
+    let audio = fixtures_dir().join("audio").join("en_30s.wav");
+    let out = Command::new(engine_bin())
+        .arg(&audio)
+        .arg("--no-diarize")
+        .env("PANOPS_FAKE_ASR", "1")
+        .env("RUST_LOG", "info")
+        .output()
+        .expect("run engine");
+    assert!(
+        out.status.success(),
+        "engine exited with {}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr),
+    );
+    // Default subscriber format prefixes each line with the level. With_ansi
+    // is forced off in init_tracing so this is plain bytes, not escape-coded.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(" INFO "),
+        "RUST_LOG=info should produce at least one ' INFO ' line on stderr; got:\n{stderr}"
+    );
+}
+
+#[test]
 fn rust_log_off_silences_info_and_debug() {
     // RUST_LOG=off should suppress info/debug/warn on the success path.
     // (Error-level suppression and the `eprintln!` error path are not asserted

@@ -21,6 +21,10 @@ Hexagonal Rust core engine + SwiftUI macOS shell + Swift sidecars (WhisperKit + 
 
 Pre-alpha. Slice 01 (skeleton) lands the Cargo workspace and test fixtures. Subsequent slices land the headless CLI, post-pass + diarization, notes generation, IPC, the SwiftUI shell, and live capture.
 
+## Logging
+
+`panops-engine` writes structured logs to stderr via `tracing`. Default level is `info` (model downloads, "wrote notes"); set `RUST_LOG` to override — e.g. `RUST_LOG=debug` for more detail, `RUST_LOG=off` to silence. Stdout in default mode is reserved for the JSON transcript and stays clean regardless of `RUST_LOG`.
+
 ## Name
 
 From Argus Panoptes, the hundred-eyed giant in Greek myth. *Pan* (all) + *ops* (seeing). Fits the wedge: panops watches the screen, captures system audio, and stitches the recording into screenshot-anchored notes you can navigate later. The chevron inside the `o` of the wordmark is the visual cue.
