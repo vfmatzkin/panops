@@ -14,6 +14,6 @@ pub mod methods;
 
 pub use error::IpcError;
 pub use methods::{
-    Event, JobAccepted, JobDoneEvent, JobErrorEvent, MeetingSummary, NotesGenerateParams,
-    NotesGenerateResult,
+    Event, JobAccepted, JobDoneEvent, JobErrorEvent, MeetingSummary, NotesDialect,
+    NotesGenerateParams, NotesGenerateResult,
 };
