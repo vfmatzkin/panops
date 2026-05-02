@@ -13,7 +13,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::time::timeout;
 
 /// Default socket location on macOS.
-pub fn default_socket_path() -> Result<PathBuf, String> {
+pub(super) fn default_socket_path() -> Result<PathBuf, String> {
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
     if home.is_empty() {
         return Err("HOME is empty".to_string());
@@ -47,7 +47,7 @@ where
 
 /// Bind a `UnixListener` at `path` after probing for a live engine and
 /// removing any stale socket file. Sets `0600` perms on the socket.
-pub async fn bind_with_lifecycle(path: &Path) -> Result<UnixListener, BindError> {
+pub(super) async fn bind_with_lifecycle(path: &Path) -> Result<UnixListener, BindError> {
     if let Some(parent) = path.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent)
@@ -88,7 +88,7 @@ pub async fn bind_with_lifecycle(path: &Path) -> Result<UnixListener, BindError>
 }
 
 #[derive(Debug)]
-pub enum BindError {
+pub(super) enum BindError {
     EngineAlreadyRunning(PathBuf),
     Bind(String),
 }

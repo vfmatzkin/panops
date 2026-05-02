@@ -11,13 +11,13 @@ use panops_core::conformance::fakes::{
 use panops_engine::server::{EngineServices, run_serve_in_process};
 use tempfile::tempdir;
 use tokio::net::UnixStream;
-use tokio::sync::Notify;
+use tokio::sync::watch;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_method_returns_method_not_found() {
     let dir = tempdir().unwrap();
     let socket = dir.path().join("engine.sock");
-    let shutdown = Arc::new(Notify::new());
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let services = EngineServices {
         llm: Arc::new(MockLlm::default()),
@@ -27,7 +27,7 @@ async fn unknown_method_returns_method_not_found() {
     };
 
     let server_socket = socket.clone();
-    let server_shutdown = shutdown.clone();
+    let server_shutdown = shutdown_rx.clone();
     let server = tokio::spawn(async move {
         run_serve_in_process(&server_socket, services, Some(server_shutdown))
             .await
@@ -49,7 +49,7 @@ async fn unknown_method_returns_method_not_found() {
         "expected method-not-found error, got: {msg}"
     );
 
-    shutdown.notify_waiters();
+    let _ = shutdown_tx.send(true);
     let _ = server.await;
 }
 
