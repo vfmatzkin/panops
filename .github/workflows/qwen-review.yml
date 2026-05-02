@@ -1,0 +1,114 @@
+name: Qwen Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+jobs:
+  qwen-review:
+    # Forked PRs don't have access to repo secrets; skip silently.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install claude CLI + Alibaba adapter + MCPs
+        run: |
+          npm install -g \
+            @anthropic-ai/claude-code \
+            claude-adapter \
+            @upstash/context7-mcp
+
+      - name: Write adapter config (no secrets in file)
+        run: |
+          mkdir -p $HOME/.claude-adapter-alibaba
+          cat > $HOME/.claude-adapter-alibaba/config.json <<EOF
+          {
+            "baseUrl": "https://coding-intl.dashscope.aliyuncs.com/v1",
+            "apiKey": "${BAILIAN_API_KEY}",
+            "models": {
+              "opus": "qwen3.6-plus",
+              "sonnet": "qwen3.5-plus",
+              "haiku": "qwen3-max-2026-01-23"
+            },
+            "toolFormat": "native",
+            "port": 3082
+          }
+          EOF
+        env:
+          BAILIAN_API_KEY: ${{ secrets.BAILIAN_CODING_PLAN_API_KEY }}
+
+      - name: Start adapter (background)
+        run: |
+          nohup node -e "
+            const { createServer } = require('claude-adapter/dist/server');
+            const fs = require('fs');
+            const config = JSON.parse(fs.readFileSync(process.env.HOME + '/.claude-adapter-alibaba/config.json', 'utf8'));
+            createServer(config).start(3082).then(url => console.log('adapter:', url));
+          " > /tmp/adapter.log 2>&1 &
+          # Wait for adapter to bind.
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:3082/health > /dev/null 2>&1 || \
+              curl -sf http://127.0.0.1:3082/ > /dev/null 2>&1 && break
+            sleep 0.5
+          done
+          echo "Adapter status:"
+          cat /tmp/adapter.log
+
+      - name: Configure claude MCPs
+        run: |
+          mkdir -p $HOME/.claude-alibaba
+          cat > $HOME/.claude-alibaba/.mcp.json <<'EOF'
+          {
+            "mcpServers": {
+              "context7": {
+                "command": "npx",
+                "args": ["-y", "@upstash/context7-mcp"]
+              }
+            }
+          }
+          EOF
+
+      - name: Run review
+        env:
+          CLAUDE_CONFIG_DIR: ${{ github.workspace }}/../.claude-alibaba
+          ANTHROPIC_BASE_URL: http://127.0.0.1:3082
+          ANTHROPIC_API_KEY: not-checked-by-adapter
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          PROMPT="You are a code reviewer for the panops repository. Read .github/copilot-instructions.md and AGENTS.md for project conventions. Review the diff between $BASE_SHA and $HEAD_SHA in the current working directory. Focus areas (in order): correctness under failure (panic handling, SIGTERM, OnceLock terminal-state, blocking-pool leaks), hex-architecture invariants, stdout contract, telemetry creep. Output BLOCKERS / SUGGESTIONS / NOTES with file:line citations. Be terse. No praise. If nothing to flag, say 'Clean — nothing to flag.' Use context7 if you need to verify any external library API mentioned in the diff."
+          claude -p "$PROMPT" \
+            --allowedTools 'Read Glob Grep Bash(git*) mcp__context7__resolve-library-id mcp__context7__query-docs' \
+            --max-turns 8 \
+            > /tmp/qwen-review.md 2>&1 || echo "(claude exited non-zero)" >> /tmp/qwen-review.md
+
+      - name: Post review comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "## Qwen review (via Alibaba Coding Plan)"
+            echo
+            echo '<details><summary>Review</summary>'
+            echo
+            cat /tmp/qwen-review.md
+            echo
+            echo '</details>'
+          } > /tmp/qwen-comment.md
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body-file /tmp/qwen-comment.md
