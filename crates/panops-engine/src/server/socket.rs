@@ -15,7 +15,34 @@ use tokio::time::timeout;
 /// Default socket location on macOS.
 pub fn default_socket_path() -> Result<PathBuf, String> {
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-    Ok(PathBuf::from(home).join("Library/Application Support/panops/engine.sock"))
+    if home.is_empty() {
+        return Err("HOME is empty".to_string());
+    }
+    let home_path = std::path::Path::new(&home);
+    if !home_path.is_absolute() {
+        return Err(format!("HOME is not an absolute path: {home}"));
+    }
+    Ok(home_path.join("Library/Application Support/panops/engine.sock"))
+}
+
+/// Run `f` with the process umask temporarily set to `0o077`, restoring
+/// the previous umask afterwards.
+///
+/// SAFETY: `libc::umask` mutates process-global state and is racy across
+/// threads. `bind_with_lifecycle` is called once at startup before any
+/// concurrent server activity, so this is safe in our usage.
+unsafe fn with_strict_umask<F, T>(f: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    // libc::umask returns the previous umask and sets the new one.
+    // SAFETY: caller upholds the no-concurrent-thread invariant documented
+    // on this fn; libc::umask itself is FFI and must be wrapped in unsafe
+    // (Rust 2024 unsafe_op_in_unsafe_fn).
+    let prev = unsafe { libc::umask(0o077) };
+    let result = f();
+    unsafe { libc::umask(prev) };
+    result
 }
 
 /// Bind a `UnixListener` at `path` after probing for a live engine and
@@ -42,10 +69,21 @@ pub async fn bind_with_lifecycle(path: &Path) -> Result<UnixListener, BindError>
         }
     }
 
-    let listener =
-        UnixListener::bind(path).map_err(|e| BindError::Bind(format!("bind {path:?}: {e}")))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| BindError::Bind(format!("chmod {path:?}: {e}")))?;
+    // Set umask to 0o077 around the bind so the inode is created with mode
+    // 0o600 from the start, closing the window between bind() and chmod()
+    // where a local user could connect(2) to the new socket.
+    let listener = unsafe { with_strict_umask(|| UnixListener::bind(path)) }
+        .map_err(|e| BindError::Bind(format!("bind {path:?}: {e}")))?;
+
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        // Belt-and-braces — the umask above already set perms to 0o600, but
+        // if set_permissions fails something is wrong with the FS. Drop the
+        // listener and remove the socket file before returning so we don't
+        // leave a permissive inode behind.
+        drop(listener);
+        let _ = std::fs::remove_file(path);
+        return Err(BindError::Bind(format!("chmod {path:?}: {e}")));
+    }
     Ok(listener)
 }
 
@@ -67,3 +105,56 @@ impl std::fmt::Display for BindError {
 }
 
 impl std::error::Error for BindError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Save HOME, run `f`, restore HOME. Env vars are process-global so
+    /// these tests must not run in parallel with each other; we rely on
+    /// `cargo test`'s default thread scheduling and keep the critical
+    /// section short. A single combined test sidesteps cross-test races.
+    fn with_home<F: FnOnce()>(value: Option<&str>, f: F) {
+        let saved = std::env::var_os("HOME");
+        // SAFETY: env mutation is process-global. These tests must not run
+        // concurrently with other tests touching HOME; we keep the critical
+        // section short and restore on exit.
+        unsafe {
+            match value {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+        f();
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn default_socket_path_validates_home() {
+        // Empty HOME is rejected.
+        with_home(Some(""), || {
+            let err = default_socket_path().expect_err("empty HOME must be rejected");
+            assert!(err.contains("empty"), "got: {err}");
+        });
+
+        // Relative HOME is rejected.
+        with_home(Some("relative/path"), || {
+            let err = default_socket_path().expect_err("relative HOME must be rejected");
+            assert!(err.contains("absolute"), "got: {err}");
+        });
+
+        // Absolute HOME is accepted and joined.
+        with_home(Some("/tmp/fakehome"), || {
+            let p = default_socket_path().expect("absolute HOME must be accepted");
+            assert_eq!(
+                p,
+                PathBuf::from("/tmp/fakehome/Library/Application Support/panops/engine.sock")
+            );
+        });
+    }
+}
