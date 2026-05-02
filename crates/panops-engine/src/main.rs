@@ -152,11 +152,17 @@ fn run_notes(
             Some(m) => GenaiLlm::new(m).map_err(|e| (3, e.to_string()))?,
             None => GenaiLlm::auto().map_err(|e| (3, e.to_string()))?,
         },
+        "ollama" => {
+            let model = llm_model.unwrap_or_else(|| "gemma3:4b".to_string());
+            GenaiLlm::new(model).map_err(|e| (3, e.to_string()))?
+        }
         other => {
             return Err((
                 1,
                 format!(
-                    "--llm-provider {other:?} is not yet wired through; only \"auto\" is supported in slice 04. Set provider env vars (ANTHROPIC_API_KEY / OPENAI_API_KEY / OLLAMA_HOST) to control detection."
+                    "--llm-provider {other:?} not supported. Use \"auto\" (detects from \
+                     ANTHROPIC_API_KEY / OPENAI_API_KEY / OLLAMA_HOST) or \"ollama\" \
+                     (defaults to model gemma3:4b on http://localhost:11434)."
                 ),
             ));
         }
