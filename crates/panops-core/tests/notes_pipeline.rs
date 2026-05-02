@@ -135,8 +135,14 @@ fn frontmatter_llm_failure_falls_back_to_untitled() {
         },
     };
 
-    let notes = generator.generate(input).expect("generate should not abort on frontmatter error");
+    let notes = generator
+        .generate(input)
+        .expect("generate should not abort on frontmatter error");
     assert_eq!(notes.frontmatter.title, "Untitled meeting");
     assert!(notes.frontmatter.tags.is_empty());
-    assert_eq!(notes.sections.len(), 1, "section content should still be present");
+    assert_eq!(
+        notes.sections.len(),
+        1,
+        "section content should still be present"
+    );
 }
