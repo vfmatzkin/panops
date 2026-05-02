@@ -109,16 +109,31 @@ impl NotesGenerator<'_> {
             })
             .collect();
 
-        // Stage 3 — clamp out-of-range timestamps, then anchor
+        // Stage 3 — clamp out-of-range timestamps, then anchor.
+        // duration_ms == 0 is a malformed-input edge case (e.g. all-zero-duration
+        // segments with a non-empty transcript). In that state every clamp
+        // collapses to 0, producing degenerate output. Skip the clamp + warn
+        // rather than silently zero everything; downstream anchor still runs
+        // against unclamped values, which the fallback midpoint logic handles.
         let duration_ms = input.meeting_metadata.duration_ms;
-        let clamped_screenshots: Vec<Screenshot> = input
-            .screenshots
-            .iter()
-            .map(|s| Screenshot {
-                ms_since_start: s.ms_since_start.min(duration_ms),
-                ..s.clone()
-            })
-            .collect();
+        let clamped_screenshots: Vec<Screenshot> = if duration_ms == 0 {
+            if !input.screenshots.is_empty() {
+                tracing::warn!(
+                    n = input.screenshots.len(),
+                    "duration_ms == 0; skipping screenshot clamp (malformed metadata)"
+                );
+            }
+            input.screenshots.clone()
+        } else {
+            input
+                .screenshots
+                .iter()
+                .map(|s| Screenshot {
+                    ms_since_start: s.ms_since_start.min(duration_ms),
+                    ..s.clone()
+                })
+                .collect()
+        };
         let per_section_screenshots = anchor_screenshots(&raw_sections, &clamped_screenshots);
 
         // Stage 4 (single LLM call)
