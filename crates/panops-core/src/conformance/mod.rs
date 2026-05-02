@@ -5,5 +5,6 @@
 
 pub mod asr;
 pub mod diar;
+pub mod exporter;
 pub mod fakes;
 pub mod llm;

@@ -1,12 +1,18 @@
 use std::fs;
 
 use chrono::{FixedOffset, TimeZone, Utc};
+use panops_core::conformance::exporter::run_suite;
 use panops_core::exporter::NotesExporter;
 use panops_core::notes::dialect::MarkdownDialect;
 use panops_core::notes::ir::{
     ActionItem, NotesFrontmatter, NotesSection, Screenshot, StructuredNotes,
 };
 use panops_portable::markdown_exporter::MarkdownExporter;
+
+#[test]
+fn markdown_exporter_passes_conformance() {
+    run_suite(&MarkdownExporter);
+}
 
 fn sample(dialect: MarkdownDialect) -> StructuredNotes {
     StructuredNotes {
