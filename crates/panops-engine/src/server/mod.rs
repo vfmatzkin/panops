@@ -196,13 +196,32 @@ fn build_llm(handle: tokio::runtime::Handle) -> Arc<dyn LlmProvider + Send + Syn
 /// of an indefinite "warming up" hang.
 fn spawn_heavy_init(heavy_lock: Arc<OnceLock<Result<HeavyAdapters, String>>>) {
     tokio::task::spawn_blocking(move || {
-        let result = init_heavy_adapters();
+        // Catch panics so the OnceLock always reaches a terminal state.
+        // Without this, a panic in a model-loader (e.g. unwrap inside
+        // WhisperRsAsr::new) would leave the slot None forever, and
+        // notes.generate would loop returning ProviderUnavailable
+        // ("warming up; retry shortly") indefinitely.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(init_heavy_adapters))
+            .unwrap_or_else(|payload| {
+                let msg = panic_message(&payload);
+                Err(format!("heavy adapter init panicked: {msg}"))
+            });
         match &result {
             Ok(_) => tracing::info!("heavy adapters ready"),
             Err(msg) => tracing::error!(error = %msg, "heavy adapter init failed"),
         }
         let _ = heavy_lock.set(result);
     });
+}
+
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else {
+        "unknown panic payload".to_string()
+    }
 }
 
 /// Construct the real heavy adapter trio. Mirrors `panops-engine`'s
@@ -434,4 +453,32 @@ fn install_signal_handler(shutdown: watch::Sender<bool>) -> std::io::Result<()> 
         let _ = shutdown.send(true);
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod panic_message_tests {
+    use super::panic_message;
+    use std::any::Any;
+
+    fn payload<T: Any + Send>(v: T) -> Box<dyn Any + Send> {
+        Box::new(v)
+    }
+
+    #[test]
+    fn extracts_string_payload() {
+        let p = payload("boom".to_string());
+        assert_eq!(panic_message(&p), "boom");
+    }
+
+    #[test]
+    fn extracts_static_str_payload() {
+        let p = payload("static boom");
+        assert_eq!(panic_message(&p), "static boom");
+    }
+
+    #[test]
+    fn falls_back_for_unknown_payload() {
+        let p = payload(42_u64);
+        assert_eq!(panic_message(&p), "unknown panic payload");
+    }
 }
