@@ -203,7 +203,7 @@ fn format_mmss(ms: u64) -> String {
 
 fn yaml_scalar(s: &str) -> String {
     let needs_quoting = s.is_empty()
-        || s.contains(['\n', '\r', '"', '\\', '#'])
+        || s.contains(['\n', '\r', '"', '\\', '#', '\''])
         || s.contains(": ")
         || s.starts_with([
             ':', '-', '!', '|', '>', '[', ']', '{', '}', '*', '&', '?', '@', '`',
@@ -217,5 +217,52 @@ fn yaml_scalar(s: &str) -> String {
         format!("\"{escaped}\"")
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::yaml_scalar;
+
+    #[test]
+    fn plain_string_is_unquoted() {
+        assert_eq!(yaml_scalar("hello"), "hello");
+    }
+
+    #[test]
+    fn empty_string_is_double_quoted() {
+        assert_eq!(yaml_scalar(""), "\"\"");
+    }
+
+    #[test]
+    fn single_quote_triggers_double_quoting() {
+        assert_eq!(yaml_scalar("it's-great"), "\"it's-great\"");
+        assert_eq!(yaml_scalar("O'Reilly"), "\"O'Reilly\"");
+    }
+
+    #[test]
+    fn double_quote_is_escaped_inside_double_quotes() {
+        assert_eq!(yaml_scalar("say \"hi\""), "\"say \\\"hi\\\"\"");
+    }
+
+    #[test]
+    fn newline_is_escaped_inside_double_quotes() {
+        assert_eq!(yaml_scalar("line1\nline2"), "\"line1\\nline2\"");
+    }
+
+    #[test]
+    fn hash_triggers_double_quoting() {
+        assert_eq!(yaml_scalar("foo#bar"), "\"foo#bar\"");
+    }
+
+    #[test]
+    fn colon_space_triggers_double_quoting() {
+        assert_eq!(yaml_scalar("key: value"), "\"key: value\"");
+    }
+
+    #[test]
+    fn leading_special_char_triggers_double_quoting() {
+        assert_eq!(yaml_scalar(":starts-with-colon"), "\":starts-with-colon\"");
+        assert_eq!(yaml_scalar("-starts-with-dash"), "\"-starts-with-dash\"");
     }
 }
