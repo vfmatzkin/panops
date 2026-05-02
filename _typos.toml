@@ -1,2 +1,10 @@
 [default.extend-words]
 ANE = "ANE"     # Apple Neural Engine
+
+[files]
+extend-exclude = [
+    "docs/superpowers/reviews/",
+    "docs/superpowers/conversations/",
+    "docs/superpowers/sessions/",
+    "docs/superpowers/plans/",
+]
