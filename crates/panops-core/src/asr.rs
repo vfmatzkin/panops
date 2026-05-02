@@ -18,7 +18,7 @@ pub enum AsrError {
     Io(#[from] std::io::Error),
 }
 
-pub trait AsrProvider {
+pub trait AsrProvider: Send + Sync {
     /// Transcribe a complete audio file. Blocking, file-based.
     /// `language_hint` is `None` for auto-detect, `Some("en")` to force.
     fn transcribe_full(

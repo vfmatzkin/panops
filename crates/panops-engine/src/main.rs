@@ -6,7 +6,6 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-mod server;
 use panops_core::asr::AsrProvider;
 use panops_core::conformance::fakes::TranscriptFileFake;
 use panops_core::diar::Diarizer;
@@ -119,7 +118,7 @@ fn main() -> ExitCode {
             model,
             language,
         ),
-        Some(Cmd::Serve { socket }) => server::run_serve(socket),
+        Some(Cmd::Serve { socket }) => panops_engine::server::run_serve(socket),
     };
     match res {
         Ok(()) => ExitCode::SUCCESS,

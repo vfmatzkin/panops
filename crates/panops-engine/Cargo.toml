@@ -8,6 +8,9 @@ rust-version.workspace = true
 publish = false
 build = "build.rs"
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "panops-engine"
 path = "src/main.rs"

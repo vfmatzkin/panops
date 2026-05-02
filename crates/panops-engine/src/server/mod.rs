@@ -7,7 +7,22 @@ mod socket;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use panops_core::asr::AsrProvider;
+use panops_core::diar::Diarizer;
+use panops_core::exporter::NotesExporter;
+use panops_core::llm::LlmProvider;
 use tokio::sync::Notify;
+
+/// Wiring point for slice-05 server tests AND the production CLI `serve`
+/// path. Tests construct an `EngineServices` with fakes (`MockLlm`,
+/// `TranscriptFileFake`, `KnownTurnsFake`, `FakeNotesExporter`); the CLI
+/// wires real adapters.
+pub struct EngineServices {
+    pub llm: Arc<dyn LlmProvider + Send + Sync>,
+    pub asr: Arc<dyn AsrProvider + Send + Sync>,
+    pub diar: Arc<dyn Diarizer + Send + Sync>,
+    pub exporter: Arc<dyn NotesExporter + Send + Sync>,
+}
 
 pub fn run_serve(socket: Option<PathBuf>) -> Result<(), (u8, String)> {
     let path = match socket {
