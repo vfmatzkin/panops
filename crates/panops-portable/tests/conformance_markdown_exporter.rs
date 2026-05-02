@@ -104,6 +104,29 @@ fn screenshots_are_copied_into_dest_screenshots_dir_and_referenced_relatively() 
     assert!(body.contains("](screenshots/section01_00030000.jpg)"));
 }
 
+#[test]
+fn empty_speakers_and_tags_emit_flow_style_empty_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = MarkdownExporter;
+    let mut notes = sample(MarkdownDialect::Basic);
+    notes.frontmatter.speakers.clear();
+    notes.frontmatter.tags.clear();
+    let art = exporter.export(&notes, dir.path()).unwrap();
+    let body = fs::read_to_string(&art.primary_file).unwrap();
+    assert!(
+        body.contains("speakers: []\n"),
+        "expected 'speakers: []' but got:\n{body}"
+    );
+    assert!(
+        body.contains("tags: []\n"),
+        "expected 'tags: []' but got:\n{body}"
+    );
+    assert!(
+        !body.contains("speakers:\ntags:"),
+        "bare 'speakers:' key must not appear when list is empty"
+    );
+}
+
 /// Producer for the slice 04 golden fixtures. Gated to avoid clobbering the
 /// committed goldens on every test run; opt-in via PANOPS_REGEN_NOTES_GOLDENS=1.
 #[test]

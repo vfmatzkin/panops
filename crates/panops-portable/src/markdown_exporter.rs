@@ -57,13 +57,21 @@ fn render_frontmatter(notes: &StructuredNotes) -> String {
     s.push_str(&format!("started_at: {}\n", fm.started_at.to_rfc3339()));
     s.push_str(&format!("duration_ms: {}\n", fm.duration_ms));
     s.push_str(&format!("language: {}\n", yaml_scalar(&notes.language)));
-    s.push_str("speakers:\n");
-    for sp in &fm.speakers {
-        s.push_str(&format!("  - {}\n", yaml_scalar(sp)));
+    if fm.speakers.is_empty() {
+        s.push_str("speakers: []\n");
+    } else {
+        s.push_str("speakers:\n");
+        for sp in &fm.speakers {
+            s.push_str(&format!("  - {}\n", yaml_scalar(sp)));
+        }
     }
-    s.push_str("tags:\n");
-    for tag in &fm.tags {
-        s.push_str(&format!("  - {}\n", yaml_scalar(tag)));
+    if fm.tags.is_empty() {
+        s.push_str("tags: []\n");
+    } else {
+        s.push_str("tags:\n");
+        for tag in &fm.tags {
+            s.push_str(&format!("  - {}\n", yaml_scalar(tag)));
+        }
     }
     s.push_str(&format!("template: {}\n", yaml_scalar(&fm.template)));
     s.push_str(&format!(
