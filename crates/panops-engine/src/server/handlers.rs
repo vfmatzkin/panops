@@ -10,13 +10,21 @@
 //! `ipc_error_to_obj`, matching the slice spec's "Error mapping at the
 //! RPC boundary" section.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use jsonrpsee::PendingSubscriptionSink;
 use jsonrpsee::core::SubscriptionResult;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::ErrorObjectOwned;
-use panops_protocol::{Event, IpcError, JobAccepted, MeetingSummary, NotesGenerateParams};
+use panops_core::merge::merge_speaker_turns;
+use panops_core::notes::dialect::MarkdownDialect;
+use panops_core::notes::input::{MeetingMetadata, NotesInput};
+use panops_core::notes::pipeline::NotesGenerator;
+use panops_protocol::{
+    Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, MeetingSummary, NotesDialect,
+    NotesGenerateParams, NotesGenerateResult,
+};
 use tokio::sync::broadcast;
 
 #[rpc(server, namespace = "ipc", namespace_separator = ".")]
@@ -39,11 +47,6 @@ pub trait Ipc {
 }
 
 pub struct IpcImpl {
-    /// Reserved for Wave 5K — the `notes.generate` handler will reach
-    /// into `services` for ASR / diar / LLM / exporter. The slice 05
-    /// stubs don't need it yet but keeping the field here means Wave 5K
-    /// is a one-handler edit instead of a struct re-shape.
-    #[allow(dead_code)]
     pub services: Arc<crate::server::EngineServices>,
     pub events_tx: broadcast::Sender<Event>,
 }
@@ -52,12 +55,39 @@ pub struct IpcImpl {
 impl IpcServer for IpcImpl {
     async fn notes_generate(
         &self,
-        _params: NotesGenerateParams,
+        params: NotesGenerateParams,
     ) -> Result<JobAccepted, ErrorObjectOwned> {
-        // Wave 5K replaces this stub with the real pipeline call.
-        Err(ipc_error_to_obj(IpcError::Internal {
-            message: "notes.generate not yet wired (slice 05 Wave 5K)".into(),
-        }))
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let services = self.services.clone();
+        let events_tx = self.events_tx.clone();
+        let job_id_owned = job_id.clone();
+
+        // Move the pipeline off any tokio worker thread: rayon (used by
+        // `NotesGenerator` for the per-section fan-out) and the blocking
+        // ASR/diar adapters mustn't share a runtime worker with the RPC
+        // accept loop. `spawn_blocking` drops them on the dedicated
+        // blocking pool. The `notes.generate` RPC returns immediately;
+        // the actual result lands on `events.subscribe` as `JobDone`
+        // or `JobError`.
+        tokio::task::spawn_blocking(move || {
+            let outcome = run_notes_pipeline(&services, &params);
+            match outcome {
+                Ok(result) => {
+                    let _ = events_tx.send(Event::JobDone(JobDoneEvent {
+                        job_id: job_id_owned,
+                        result,
+                    }));
+                }
+                Err(error) => {
+                    let _ = events_tx.send(Event::JobError(JobErrorEvent {
+                        job_id: job_id_owned,
+                        error,
+                    }));
+                }
+            }
+        });
+
+        Ok(JobAccepted { job_id })
     }
 
     async fn meeting_list(&self) -> Result<Vec<MeetingSummary>, ErrorObjectOwned> {
@@ -103,9 +133,98 @@ impl IpcServer for IpcImpl {
     }
 }
 
+/// Synchronous core of `notes.generate`. Runs on the blocking pool and
+/// mirrors `panops-engine`'s CLI `run_notes` flow: ASR -> optional
+/// diarization merge -> `NotesGenerator` -> `MarkdownExporter`. Domain
+/// errors map to `IpcError` via the `domain-conversions` feature on
+/// `panops-protocol`; the exporter is mapped manually because no
+/// `From<ExportError>` impl exists yet.
+fn run_notes_pipeline(
+    services: &crate::server::EngineServices,
+    params: &NotesGenerateParams,
+) -> Result<NotesGenerateResult, IpcError> {
+    let audio_path = PathBuf::from(&params.audio);
+
+    let mut transcript = services
+        .asr
+        .transcribe_full(&audio_path, params.language.as_deref())
+        .map_err(IpcError::from)?;
+
+    let no_diarize = params.no_diarize.unwrap_or(false);
+    if !no_diarize {
+        let turns = services.diar.diarize(&audio_path).map_err(IpcError::from)?;
+        transcript.segments = merge_speaker_turns(transcript.segments, &turns);
+        transcript.diarized = true;
+    }
+
+    let dialect = match params.dialect {
+        Some(NotesDialect::Basic) => MarkdownDialect::Basic,
+        Some(NotesDialect::NotionEnhanced) | None => MarkdownDialect::NotionEnhanced,
+    };
+
+    let started_at = chrono::Local::now().fixed_offset();
+    let input = NotesInput {
+        transcript: transcript.segments,
+        screenshots: Vec::new(),
+        meeting_metadata: MeetingMetadata {
+            started_at,
+            duration_ms: transcript.audio_duration_ms,
+            source_path: Some(audio_path.clone()),
+            language_hint: params.language.clone(),
+        },
+    };
+
+    let generator = NotesGenerator {
+        llm: services.llm.as_ref(),
+        dialect,
+    };
+    let notes = generator.generate(input).map_err(IpcError::from)?;
+
+    // Output dir convention matches CLI `run_notes`: `<audio_stem>-notes`
+    // alongside the audio file. Falls back to `./notes` if the parent
+    // can't be resolved (shouldn't happen for valid inputs but keeps
+    // unwrap-free).
+    let stem = audio_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "notes".to_string());
+    let out_dir = audio_path
+        .parent()
+        .map(|p| p.join(format!("{stem}-notes")))
+        .unwrap_or_else(|| PathBuf::from("./notes"));
+    if !out_dir.exists() {
+        std::fs::create_dir_all(&out_dir).map_err(|e| IpcError::Internal {
+            message: format!("create out dir {}: {e}", out_dir.display()),
+        })?;
+    }
+
+    let artifact = services
+        .exporter
+        .export(&notes, &out_dir)
+        .map_err(|e| IpcError::Internal {
+            message: e.to_string(),
+        })?;
+
+    Ok(NotesGenerateResult {
+        primary_file: artifact.primary_file.display().to_string(),
+        assets: artifact
+            .assets
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect(),
+    })
+}
+
 /// Map `IpcError` to a JSON-RPC server error (-32000) carrying the
 /// typed kind in `data` and the human-readable message at top level.
 /// Mirrors the spec's "Error mapping at the RPC boundary" section.
+///
+/// Currently unused at the wire level — `notes.generate` reports
+/// errors via `JobError` events, and `meeting.list` is stubbed to
+/// `Ok(vec![])`. Kept because synchronous methods added in slice 06+
+/// (e.g. `meeting.get`) will need it. Removing now means re-deriving
+/// the (-32000, kind, data) shape later from the spec.
+#[allow(dead_code)]
 pub fn ipc_error_to_obj(e: IpcError) -> ErrorObjectOwned {
     let data = serde_json::to_value(&e).expect("IpcError serialise");
     ErrorObjectOwned::owned(-32000, e.to_string(), Some(data))

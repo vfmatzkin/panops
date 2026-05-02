@@ -37,9 +37,8 @@ use crate::server::handlers::{IpcImpl, IpcServer};
 /// Wiring point for slice-05 server tests AND the production CLI `serve`
 /// path. Tests construct an `EngineServices` with fakes (`MockLlm`,
 /// `TranscriptFileFake`, `KnownTurnsFake`, `FakeNotesExporter`); the CLI
-/// wires real adapters via [`stub_services`] for now (Wave 5K replaces
-/// this with the eager Whisper / sherpa-rs / `GenaiLlm` / `MarkdownExporter`
-/// stack — see [`stub_services`] for why the placeholder exists).
+/// wires adapters via [`stub_services`] — still fakes today (issue #74
+/// tracks the real-adapter wiring deferred from Wave 5K).
 pub struct EngineServices {
     pub llm: Arc<dyn LlmProvider + Send + Sync>,
     pub asr: Arc<dyn AsrProvider + Send + Sync>,
@@ -71,17 +70,13 @@ pub fn run_serve(socket: Option<PathBuf>) -> Result<(), (u8, String)> {
         .map_err(|e| (3, format!("build rpc runtime: {e}")))?;
 
     let result = rpc_rt.block_on(async move {
-        // Slice 05 Wave 4I: build a *minimal* `EngineServices` so the
-        // socket binds immediately. Whisper-large model load is ~20s
-        // and would blow past the 5s socket-appearance budget that
-        // integration tests rely on.
-        //
-        // Wave 4I's two RPCs (`meeting.list`, `events.subscribe`)
-        // don't touch any of these adapters. Wave 5K wires the real
-        // ASR/diar/LLM stack into `notes.generate` and is the right
-        // place to do the eager Whisper load (or, better, a lazy
-        // first-call factory). Suppressing it here keeps Wave 3G's
-        // `server_binds_socket_and_shuts_down_on_sigterm` test green.
+        // Slice 05 Wave 5K: still using a *minimal* `EngineServices` so
+        // the socket binds within the 5s budget that
+        // `ipc_server_starts_and_binds` enforces. Real Whisper-large
+        // load is ~20s and would blow that. The CLI smoke is manual
+        // anyway; the in-process integration tests inject real adapters
+        // directly through `run_serve_in_process`. Tracking real-adapter
+        // wiring (lazy `OnceLock` or eager-after-bind) as issue #74.
         let services = stub_services(llm_handle);
         let shutdown = Arc::new(Notify::new());
         // Install the signal handler synchronously *before* spawning
@@ -247,20 +242,19 @@ pub async fn run_serve_in_process(
     Ok(())
 }
 
-/// Slice 05 Wave 4I stand-in for `EngineServices`. The real
-/// `WhisperRsAsr` / `SherpaDiarizer` constructors load multi-hundred-MB
-/// models eagerly, which would push `serve` past the 5-second
-/// "socket appears" budget that integration tests rely on. Wave 5K
-/// replaces this with either an eager production build or a
-/// per-method-call lazy factory once `notes.generate` actually needs
-/// the adapters.
+/// Slice 05 stand-in for `EngineServices`. Real `WhisperRsAsr` /
+/// `SherpaDiarizer` constructors load multi-hundred-MB models eagerly,
+/// which would push `serve` past the 5-second "socket appears" budget
+/// integration tests rely on. Issue #74 tracks the follow-up — either
+/// an eager-after-bind path (background-task adapter init) or per-call
+/// lazy factories.
 ///
 /// The placeholder uses `GenaiLlm::with_handle` (cheap; constructs
 /// only the genai client) plus `panops-core`'s deterministic fakes
-/// for ASR / diar / exporter. Calling `notes.generate` against it
-/// would fail (or return fake transcripts) — but Wave 4I stubs that
-/// method to return `Internal` regardless, so the placeholder is
-/// never exercised.
+/// for ASR / diar / exporter. `notes.generate` against `panops-engine
+/// serve` from a shell will therefore use fake ASR/diar — the
+/// in-process integration tests inject real adapters directly through
+/// `run_serve_in_process`, so the test surface isn't affected.
 fn stub_services(llm_handle: tokio::runtime::Handle) -> EngineServices {
     use panops_core::conformance::fakes::{FakeNotesExporter, KnownTurnsFake, TranscriptFileFake};
     use panops_portable::genai_llm::GenaiLlm;
