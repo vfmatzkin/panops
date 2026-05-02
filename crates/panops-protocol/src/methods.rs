@@ -35,6 +35,11 @@ pub struct JobAccepted {
     pub job_id: String,
 }
 
+/// Params for `ipc.notes.generate`.
+///
+/// Param structs intentionally do NOT carry `#[serde(deny_unknown_fields)]`
+/// so a future engine adding a new optional knob doesn't break older
+/// clients — same forward-compat philosophy as `IpcError::Unknown`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NotesGenerateParams {
     pub audio: String,
@@ -67,7 +72,10 @@ pub struct NotesGenerateResult {
 pub struct MeetingSummary {
     pub id: String,
     pub title: String,
-    pub started_at: String, // RFC3339
+    /// RFC3339 timestamp. Kept as `String` (not `chrono::DateTime`) so this
+    /// crate stays free of date-time deps; non-Rust consumers don't need
+    /// a Rust-specific time crate to consume it.
+    pub started_at: String,
     pub duration_ms: u64,
 }
 
