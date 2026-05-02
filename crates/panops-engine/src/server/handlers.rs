@@ -162,10 +162,39 @@ impl IpcServer for IpcImpl {
 /// domain errors (`AsrError`, `DiarError`, `LlmError`, `NotesError`,
 /// `ExportError`) map to `IpcError` via the `domain-conversions`
 /// feature on `panops-protocol`.
-fn run_notes_pipeline(
+///
+/// Readiness gate (eager-after-bind, closes #74): heavy adapters live
+/// in `services.heavy` (see `EngineServices::pending`). Until the
+/// background init task fills that lock, this function returns
+/// `IpcError::ProviderUnavailable` so clients get an explicit "warming
+/// up" signal instead of a 20-second silent stall. Tests build via
+/// `EngineServices::ready` which pre-fills the lock, so the gate is a
+/// no-op for them.
+pub(super) fn run_notes_pipeline(
     services: &crate::server::EngineServices,
     params: &NotesGenerateParams,
 ) -> Result<NotesGenerateResult, IpcError> {
+    // Warmup gate first. The CLI `serve` path uses
+    // `EngineServices::pending(llm)` and fills `heavy` from a
+    // `spawn_blocking` task that runs concurrent with the accept
+    // loop — until it sets the lock, return `ProviderUnavailable` so
+    // the client can retry. Test paths use `EngineServices::ready`
+    // which pre-fills with `Ok(...)`, skipping the wait entirely.
+    let heavy = match services.heavy.get() {
+        Some(Ok(h)) => h,
+        Some(Err(msg)) => {
+            tracing::error!(error = %msg, "heavy adapter init reported failure");
+            return Err(IpcError::Internal {
+                message: format!("adapter init failed: {msg}"),
+            });
+        }
+        None => {
+            return Err(IpcError::ProviderUnavailable {
+                message: "engine warming up; retry shortly".into(),
+            });
+        }
+    };
+
     // Reject empty audio strings outright — `PathBuf::from("")` is
     // technically valid but canonicalize-on-empty depends on platform
     // and gives unhelpful errors. Empty/blank input is a validation
@@ -204,14 +233,14 @@ fn run_notes_pipeline(
         }
     })?;
 
-    let mut transcript = services
+    let mut transcript = heavy
         .asr
         .transcribe_full(&audio_path, params.language.as_deref())
         .map_err(IpcError::from)?;
 
     let no_diarize = params.no_diarize.unwrap_or(false);
     if !no_diarize {
-        let turns = services.diar.diarize(&audio_path).map_err(IpcError::from)?;
+        let turns = heavy.diar.diarize(&audio_path).map_err(IpcError::from)?;
         transcript.segments = merge_speaker_turns(transcript.segments, &turns);
         transcript.diarized = true;
     }
@@ -238,6 +267,7 @@ fn run_notes_pipeline(
         dialect,
     };
     let notes = generator.generate(input).map_err(IpcError::from)?;
+    let exporter = heavy.exporter.clone();
 
     // Output dir convention matches CLI `run_notes`: `<audio_stem>-notes`
     // alongside the audio file. Falls back to `./notes` if the parent
@@ -267,7 +297,7 @@ fn run_notes_pipeline(
         })?;
     }
 
-    let artifact = services.exporter.export(&notes, &out_dir).map_err(|e| {
+    let artifact = exporter.export(&notes, &out_dir).map_err(|e| {
         // Domain-to-wire mapping lives in `panops-protocol` (gated by
         // `domain-conversions`); we still log the full error here so
         // the operator sees template / FS detail that the wire-side
@@ -299,4 +329,71 @@ fn run_notes_pipeline(
 pub(super) fn ipc_error_to_obj(e: IpcError) -> ErrorObjectOwned {
     let data = serde_json::to_value(&e).expect("IpcError serialise");
     ErrorObjectOwned::owned(-32000, e.to_string(), Some(data))
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    //! Tests for the warmup gate added by #74 (eager-after-bind).
+    //!
+    //! These exercise `run_notes_pipeline` directly because the gate
+    //! is a synchronous early-return — no need to spin up the full
+    //! jsonrpsee server. Integration tests use `EngineServices::ready`
+    //! which pre-fills the `OnceLock`, so they don't see this path.
+
+    use super::*;
+    use panops_core::conformance::fakes::MockLlm;
+    use panops_core::llm::LlmProvider;
+
+    fn dummy_params() -> NotesGenerateParams {
+        NotesGenerateParams {
+            audio: "/tmp/whatever.wav".into(),
+            dialect: None,
+            llm_provider: None,
+            llm_model: None,
+            no_diarize: None,
+            language: None,
+        }
+    }
+
+    #[test]
+    fn pending_services_yield_provider_unavailable_during_warmup() {
+        let llm: Arc<dyn LlmProvider + Send + Sync> = Arc::new(MockLlm::default());
+        let (services, _heavy_lock) = crate::server::EngineServices::pending(llm);
+        let err = run_notes_pipeline(&services, &dummy_params()).expect_err("warmup must error");
+        match err {
+            IpcError::ProviderUnavailable { message } => {
+                assert!(
+                    message.contains("warming up"),
+                    "expected warming-up message, got: {message}"
+                );
+            }
+            other => panic!("expected ProviderUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pending_services_yield_internal_when_init_failed() {
+        let llm: Arc<dyn LlmProvider + Send + Sync> = Arc::new(MockLlm::default());
+        let (services, heavy_lock) = crate::server::EngineServices::pending(llm);
+        // Simulate init failure (e.g., model download blew up).
+        heavy_lock
+            .set(Err("simulated whisper init failure".to_string()))
+            .map_err(|_| ())
+            .expect("set OnceLock");
+        let err =
+            run_notes_pipeline(&services, &dummy_params()).expect_err("init failure must surface");
+        match err {
+            IpcError::Internal { message } => {
+                assert!(
+                    message.contains("adapter init failed"),
+                    "expected init-failed prefix, got: {message}"
+                );
+                assert!(
+                    message.contains("simulated whisper init failure"),
+                    "expected wrapped error, got: {message}"
+                );
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
 }

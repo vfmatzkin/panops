@@ -190,12 +190,12 @@ async fn notes_generate_round_trip_emits_job_done() {
     let audio_path = audio_dir.path().join("multi_speaker_60s.wav");
     std::fs::write(&audio_path, b"placeholder").unwrap();
 
-    let services = EngineServices {
-        llm: Arc::new(build_mock_llm(MarkdownDialect::Basic)),
-        asr: Arc::new(DeterministicAsr),
-        diar: Arc::new(DeterministicDiar),
-        exporter: Arc::new(MarkdownExporter),
-    };
+    let services = EngineServices::ready(
+        Arc::new(build_mock_llm(MarkdownDialect::Basic)),
+        Arc::new(DeterministicAsr),
+        Arc::new(DeterministicDiar),
+        Arc::new(MarkdownExporter),
+    );
 
     let server_socket = socket.clone();
     let server_shutdown = shutdown_rx.clone();
