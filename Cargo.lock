@@ -1668,6 +1668,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jsonrpsee",
+ "libc",
  "panops-core",
  "panops-portable",
  "panops-protocol",
