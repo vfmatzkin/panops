@@ -58,17 +58,18 @@ If any of these is wrong, slice 06 will pay for it loudly. They're picked here s
 
 ```
 EngineServices {
-    llm_factory: Arc<dyn Fn(...) -> Result<Arc<dyn LlmProvider>, IpcError> + Send + Sync>,
-    asr_factory: Arc<dyn Fn(...) -> Result<Box<dyn AsrProvider>, IpcError> + Send + Sync>,
-    diar_factory: Arc<dyn Fn(...) -> Result<Box<dyn Diarizer>, IpcError> + Send + Sync>,
+    llm: Arc<dyn LlmProvider + Send + Sync>,
+    asr: Arc<dyn AsrProvider + Send + Sync>,
+    diar: Arc<dyn Diarizer + Send + Sync>,
     exporter: Arc<dyn NotesExporter + Send + Sync>,
-    llm_handle: tokio::runtime::Handle,   // points at the LLM HTTP runtime
 }
 ```
 
-The factory pattern lets tests substitute real adapters with fakes (e.g., `MockLlm`, `TranscriptFileFake`) without env vars. CLI `serve` populates factories with `WhisperRsAsr`, `SherpaDiarizer`, `GenaiLlm::with_handle`, `MarkdownExporter`.
+> **Divergence from the original brainstorm.** The brainstorm sketched factory closures (`llm_factory: Arc<dyn Fn(...) -> Result<Arc<dyn LlmProvider>, IpcError>>`, etc.) so each RPC could materialise per-call adapters. We shipped direct trait-object `Arc`s instead because tests construct adapters once at startup and the production `serve` path does the same; the factory indirection wasn't pulling its weight. The runtime handle that the factories were threading is held on `GenaiLlm` itself via `with_handle(model, handle)`, so the LLM still binds to Runtime B without the wrapper. Factories may return in a future slice if per-call adapter selection (e.g. user picking a different LLM provider per job) is needed.
+>
+> Wiring rule preserved from the brainstorm: tests substitute fakes (`MockLlm`, `TranscriptFileFake`, `KnownTurnsFake`, `FakeNotesExporter`) without env vars; the `serve` CLI is responsible for constructing real adapters (`WhisperRsAsr`, `SherpaDiarizer`, `GenaiLlm::with_handle(...)`, `MarkdownExporter`). Today the CLI uses placeholder fakes — see issue #74.
 
-Default mode and `notes` continue to construct adapters directly (no factories — they're one-shot processes; the indirection is only paying its rent in `serve`).
+Default mode and `notes` continue to construct adapters directly. `EngineServices` only exists in `serve`.
 
 ### Runtime topology
 
@@ -180,6 +181,9 @@ Variant mapping (engine-side):
 | `NotesError::Llm(e)` | recurse into `LlmError` mapping above |
 | `NotesError::SchemaMismatch { stage, detail }` | `Internal { message: format!("schema mismatch in stage {stage}: {detail}") }` |
 | `NotesError::InvalidInput(m)` | `InvalidInput { message: m }` |
+| `ExportError::InvalidDest(_)` | `InvalidInput { message: "invalid export destination".into() }` (path scrubbed) |
+| `ExportError::Io(_)` | `Internal { message: "export failed".into() }` (full detail logged via `tracing::error!`) |
+| `ExportError::Render(_)` | `Internal { message: "export failed".into() }` (full detail logged via `tracing::error!`) |
 
 ### Transport: jsonrpsee + UDS
 

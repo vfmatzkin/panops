@@ -158,10 +158,10 @@ impl IpcServer for IpcImpl {
 
 /// Synchronous core of `notes.generate`. Runs on the blocking pool and
 /// mirrors `panops-engine`'s CLI `run_notes` flow: ASR -> optional
-/// diarization merge -> `NotesGenerator` -> `MarkdownExporter`. Domain
-/// errors map to `IpcError` via the `domain-conversions` feature on
-/// `panops-protocol`; the exporter is mapped manually because no
-/// `From<ExportError>` impl exists yet.
+/// diarization merge -> `NotesGenerator` -> `MarkdownExporter`. All
+/// domain errors (`AsrError`, `DiarError`, `LlmError`, `NotesError`,
+/// `ExportError`) map to `IpcError` via the `domain-conversions`
+/// feature on `panops-protocol`.
 fn run_notes_pipeline(
     services: &crate::server::EngineServices,
     params: &NotesGenerateParams,
@@ -266,12 +266,12 @@ fn run_notes_pipeline(
     }
 
     let artifact = services.exporter.export(&notes, &out_dir).map_err(|e| {
-        // Same reasoning as above — exporter errors can mention
-        // template / file paths. Keep wire opaque, log the detail.
+        // Domain-to-wire mapping lives in `panops-protocol` (gated by
+        // `domain-conversions`); we still log the full error here so
+        // the operator sees template / FS detail that the wire-side
+        // message intentionally hides.
         tracing::error!(error = %e, "notes.generate exporter failed");
-        IpcError::Internal {
-            message: "export failed".into(),
-        }
+        IpcError::from(e)
     })?;
 
     Ok(NotesGenerateResult {

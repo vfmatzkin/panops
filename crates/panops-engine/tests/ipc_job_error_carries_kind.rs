@@ -7,7 +7,8 @@
 //! `panops-protocol`'s `domain-conversions` feature maps that to
 //! `IpcError::InputNotFound`.
 
-use std::path::Path;
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,8 +20,9 @@ use panops_core::conformance::fakes::{
 use panops_engine::server::{EngineServices, run_serve_in_process};
 use panops_protocol::{Event, IpcError, JobAccepted};
 use tempfile::tempdir;
-use tokio::net::UnixStream;
 use tokio::sync::watch;
+
+use common::{uds_ws_client, wait_for_socket};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn notes_generate_emits_job_error_with_input_not_found_kind() {
@@ -91,23 +93,4 @@ async fn notes_generate_emits_job_error_with_input_not_found_kind() {
 
     let _ = shutdown_tx.send(true);
     let _ = server.await;
-}
-
-async fn wait_for_socket(path: &Path) {
-    let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(5) {
-        if path.exists() && UnixStream::connect(path).await.is_ok() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("socket never became connectable: {path:?}");
-}
-
-async fn uds_ws_client(path: &Path) -> jsonrpsee::ws_client::WsClient {
-    let stream = UnixStream::connect(path).await.expect("connect uds");
-    jsonrpsee::ws_client::WsClientBuilder::default()
-        .build_with_stream("ws://localhost", stream)
-        .await
-        .expect("build ws client over uds")
 }

@@ -1,7 +1,8 @@
 //! Slice 05 — calling an unknown method returns JSON-RPC error code -32601.
 
+mod common;
+
 use std::sync::Arc;
-use std::time::Duration;
 
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::rpc_params;
@@ -10,8 +11,9 @@ use panops_core::conformance::fakes::{
 };
 use panops_engine::server::{EngineServices, run_serve_in_process};
 use tempfile::tempdir;
-use tokio::net::UnixStream;
 use tokio::sync::watch;
+
+use common::{uds_ws_client, wait_for_socket};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_method_returns_method_not_found() {
@@ -51,23 +53,4 @@ async fn unknown_method_returns_method_not_found() {
 
     let _ = shutdown_tx.send(true);
     let _ = server.await;
-}
-
-async fn wait_for_socket(path: &std::path::Path) {
-    let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(5) {
-        if path.exists() && UnixStream::connect(path).await.is_ok() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("socket never became connectable: {path:?}");
-}
-
-async fn uds_ws_client(path: &std::path::Path) -> jsonrpsee::ws_client::WsClient {
-    let stream = UnixStream::connect(path).await.expect("connect uds");
-    jsonrpsee::ws_client::WsClientBuilder::default()
-        .build_with_stream("ws://localhost", stream)
-        .await
-        .expect("build ws client over uds")
 }
