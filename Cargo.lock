@@ -1463,6 +1463,7 @@ dependencies = [
  "panops-core",
  "panops-portable",
  "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]
