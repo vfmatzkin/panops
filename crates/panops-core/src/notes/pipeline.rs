@@ -133,7 +133,16 @@ impl NotesGenerator<'_> {
             build_frontmatter_prompt(&summaries, &language, input.meeting_metadata.duration_ms);
         let (title, tags) = match self.llm.complete(fm_req) {
             Ok(LlmResponse::Json(v)) => extract_frontmatter(v),
-            Ok(LlmResponse::Text(_)) | Err(_) => ("Untitled meeting".to_string(), Vec::new()),
+            Ok(LlmResponse::Text(_)) => {
+                tracing::warn!(
+                    "frontmatter LLM call returned text instead of JSON; using defaults"
+                );
+                ("Untitled meeting".to_string(), Vec::new())
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "frontmatter LLM call failed; using defaults");
+                ("Untitled meeting".to_string(), Vec::new())
+            }
         };
 
         let speakers = collect_speakers(&input.transcript);
