@@ -69,7 +69,9 @@ impl IpcServer for IpcImpl {
         // blocking pool. The `notes.generate` RPC returns immediately;
         // the actual result lands on `events.subscribe` as `JobDone`
         // or `JobError`.
-        tokio::task::spawn_blocking(move || {
+        let job_id_for_panic = job_id.clone();
+        let events_tx_for_panic = events_tx.clone();
+        let join_handle = tokio::task::spawn_blocking(move || {
             let outcome = run_notes_pipeline(&services, &params);
             match outcome {
                 Ok(result) => {
@@ -84,6 +86,27 @@ impl IpcServer for IpcImpl {
                         error,
                     }));
                 }
+            }
+        });
+
+        // Awaiter for the blocking task. Without this, a panic inside
+        // the closure (MockLlm fingerprint mismatch, rayon panic, OOM)
+        // is silently swallowed when the JoinHandle drops, leaving
+        // subscribers waiting forever. We turn a JoinError into a
+        // synthetic `JobError` event with an opaque `Internal` message
+        // so the wire never leaks panic payloads or filesystem paths.
+        tokio::spawn(async move {
+            if let Err(join_err) = join_handle.await {
+                let msg = if join_err.is_panic() {
+                    "pipeline panicked".to_string()
+                } else {
+                    format!("pipeline cancelled: {join_err}")
+                };
+                tracing::error!(error = %join_err, "notes.generate pipeline did not complete");
+                let _ = events_tx_for_panic.send(Event::JobError(JobErrorEvent {
+                    job_id: job_id_for_panic,
+                    error: IpcError::Internal { message: msg },
+                }));
             }
         });
 
@@ -143,7 +166,41 @@ fn run_notes_pipeline(
     services: &crate::server::EngineServices,
     params: &NotesGenerateParams,
 ) -> Result<NotesGenerateResult, IpcError> {
-    let audio_path = PathBuf::from(&params.audio);
+    // Reject empty audio strings outright — `PathBuf::from("")` is
+    // technically valid but canonicalize-on-empty depends on platform
+    // and gives unhelpful errors.
+    if params.audio.trim().is_empty() {
+        return Err(IpcError::InputNotFound {
+            path: params.audio.clone(),
+        });
+    }
+
+    // Canonicalize BEFORE any pipeline work. This both:
+    //   1. Closes the `audio="../../etc/passwd"` traversal vector — the
+    //      computed `out_dir = parent.join("<stem>-notes")` is now
+    //      anchored to the canonical (absolute, symlink-resolved)
+    //      directory of the audio file, so `..` in the input cannot
+    //      walk above the real parent.
+    //   2. Surfaces missing-input synchronously, before the ASR adapter
+    //      observes the path. The wire-level error stays
+    //      `InputNotFound` (the same kind the ASR-not-found path emits)
+    //      and reflects the user-supplied string, not the canonical FS
+    //      layout.
+    // We deliberately don't add an allowlist (e.g. "must live under
+    // ~/Library/Application Support/panops") because the slice-04
+    // fixtures live under `tests/fixtures/audio/` and the slice-05
+    // threat model only requires closing traversal.
+    let raw_audio_path = PathBuf::from(&params.audio);
+    let audio_path = std::fs::canonicalize(&raw_audio_path).map_err(|e| {
+        tracing::error!(
+            error = %e,
+            path = ?raw_audio_path,
+            "notes.generate canonicalize failed"
+        );
+        IpcError::InputNotFound {
+            path: params.audio.clone(),
+        }
+    })?;
 
     let mut transcript = services
         .asr
@@ -193,17 +250,29 @@ fn run_notes_pipeline(
         .map(|p| p.join(format!("{stem}-notes")))
         .unwrap_or_else(|| PathBuf::from("./notes"));
     if !out_dir.exists() {
-        std::fs::create_dir_all(&out_dir).map_err(|e| IpcError::Internal {
-            message: format!("create out dir {}: {e}", out_dir.display()),
+        std::fs::create_dir_all(&out_dir).map_err(|e| {
+            // Wire-side message stays opaque: the full path + os error
+            // would let a probing client map the local FS layout. The
+            // operator gets the detail via tracing.
+            tracing::error!(
+                error = %e,
+                path = ?out_dir,
+                "notes.generate failed to create output directory"
+            );
+            IpcError::Internal {
+                message: "failed to prepare output directory".into(),
+            }
         })?;
     }
 
-    let artifact = services
-        .exporter
-        .export(&notes, &out_dir)
-        .map_err(|e| IpcError::Internal {
-            message: e.to_string(),
-        })?;
+    let artifact = services.exporter.export(&notes, &out_dir).map_err(|e| {
+        // Same reasoning as above — exporter errors can mention
+        // template / file paths. Keep wire opaque, log the detail.
+        tracing::error!(error = %e, "notes.generate exporter failed");
+        IpcError::Internal {
+            message: "export failed".into(),
+        }
+    })?;
 
     Ok(NotesGenerateResult {
         primary_file: artifact.primary_file.display().to_string(),
