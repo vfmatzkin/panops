@@ -21,7 +21,7 @@ use crate::llm::{LlmProvider, LlmResponse};
 use crate::notes::dialect::MarkdownDialect;
 use crate::notes::error::NotesError;
 use crate::notes::input::NotesInput;
-use crate::notes::ir::{ActionItem, NotesFrontmatter, NotesSection, StructuredNotes};
+use crate::notes::ir::{ActionItem, NotesFrontmatter, NotesSection, Screenshot, StructuredNotes};
 use crate::notes::prompts::{
     SectionSummary, build_frontmatter_prompt, build_section_narrative_prompt,
 };
@@ -76,8 +76,17 @@ impl NotesGenerator<'_> {
             })
             .collect();
 
-        // Stage 3
-        let per_section_screenshots = anchor_screenshots(&raw_sections, &input.screenshots);
+        // Stage 3 — clamp out-of-range timestamps, then anchor
+        let duration_ms = input.meeting_metadata.duration_ms;
+        let clamped_screenshots: Vec<Screenshot> = input
+            .screenshots
+            .iter()
+            .map(|s| Screenshot {
+                ms_since_start: s.ms_since_start.min(duration_ms),
+                ..s.clone()
+            })
+            .collect();
+        let per_section_screenshots = anchor_screenshots(&raw_sections, &clamped_screenshots);
 
         // Stage 4 (single LLM call)
         let summaries: Vec<SectionSummary> = section_drafts
