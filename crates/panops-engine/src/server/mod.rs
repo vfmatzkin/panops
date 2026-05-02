@@ -30,7 +30,7 @@ use panops_core::asr::AsrProvider;
 use panops_core::diar::Diarizer;
 use panops_core::exporter::NotesExporter;
 use panops_core::llm::LlmProvider;
-use tokio::sync::Notify;
+use tokio::sync::watch;
 
 use crate::server::handlers::{IpcImpl, IpcServer};
 
@@ -78,31 +78,67 @@ pub fn run_serve(socket: Option<PathBuf>) -> Result<(), (u8, String)> {
         // directly through `run_serve_in_process`. Tracking real-adapter
         // wiring (lazy `OnceLock` or eager-after-bind) as issue #74.
         let services = stub_services(llm_handle);
-        let shutdown = Arc::new(Notify::new());
-        // Install the signal handler synchronously *before* spawning
-        // the async waiter. Any SIGTERM that arrives between bind and
-        // the spawned waiter being polled for the first time is
-        // queued by `Signal::recv`; without the synchronous install
-        // the OS-level handler isn't registered yet and the signal
-        // is lost (the cause of `server_binds_socket_and_shuts_down`
-        // flakes during this wave's bring-up).
-        install_signal_handler(shutdown.clone());
-        run_serve_in_process(&path, services, Some(shutdown)).await
+        // No external shutdown: `run_serve_in_process` installs its
+        // own signal handler before bind, so the SIGTERM-between-
+        // bind-and-handler window from earlier waves is gone.
+        run_serve_in_process(&path, services, None).await
     });
     drop(llm_rt);
     result
 }
 
 /// Async test entry point. Tests inject fakes via `services` and
-/// trigger shutdown via the optional `external_shutdown` notify.
-/// When `external_shutdown` is `None` the server runs until its
-/// listener errors (effectively forever; the production path always
-/// supplies a shutdown via `run_serve`'s signal handler).
+/// trigger shutdown via the optional `external_shutdown` watch
+/// receiver. When `external_shutdown` is `None` the server installs
+/// its own SIGINT/SIGTERM handler and runs until signalled.
+///
+/// Shutdown is a `tokio::sync::watch::channel(bool)` end-to-end:
+/// `watch` stores its current value, so even a receiver subscribed
+/// after `send(true)` fires sees the shutdown. (The earlier `Notify`
+/// shape lacked stored-permit semantics, leading to a lost-wakeup
+/// race when `notify_waiters()` fired before the bridge task was
+/// first polled.)
 pub async fn run_serve_in_process(
     path: &Path,
     services: EngineServices,
-    external_shutdown: Option<Arc<Notify>>,
+    external_shutdown: Option<watch::Receiver<bool>>,
 ) -> Result<(), (u8, String)> {
+    // Internal shutdown channel. Signal handler (installed below) and
+    // optional external_shutdown both feed this single watch; the
+    // accept loop selects on its receiver.
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+
+    // Install signal handlers BEFORE bind. A SIGTERM that arrives
+    // between bind and signal-handler-install would otherwise hit
+    // tokio's default handler (process killed, no socket cleanup).
+    // Installing first means: if registration fails we propagate the
+    // error before any socket file exists, and any signal arriving
+    // post-install is queued by tokio's per-signal stream.
+    #[cfg(unix)]
+    {
+        install_signal_handler(shutdown_tx.clone())
+            .map_err(|e| (3, format!("install signal handler: {e}")))?;
+    }
+
+    if let Some(mut external_rx) = external_shutdown {
+        let tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            // If the external sender already fired before we got
+            // here, the current value is `true` and we forward
+            // immediately. Otherwise wait for the next change.
+            if *external_rx.borrow() {
+                let _ = tx.send(true);
+                return;
+            }
+            while external_rx.changed().await.is_ok() {
+                if *external_rx.borrow() {
+                    let _ = tx.send(true);
+                    break;
+                }
+            }
+        });
+    }
+
     let listener = match socket::bind_with_lifecycle(path).await {
         Ok(l) => l,
         Err(socket::BindError::EngineAlreadyRunning(p)) => {
@@ -111,23 +147,6 @@ pub async fn run_serve_in_process(
         Err(socket::BindError::Bind(m)) => return Err((3, m)),
     };
     tracing::info!(socket = ?path, "panops-engine serve listening");
-
-    // Internal shutdown is a watch channel: it stores state, so any
-    // waiter that subscribes after the signal still sees it. The
-    // external `Notify` API (per slice spec) is bridged in below; we
-    // can't rely on `Notify::notify_waiters` alone because it has no
-    // stored-permit semantics, leading to a wake-up-before-waiters
-    // race (the cause of the `server_binds_socket_and_shuts_down`
-    // flake during this wave's bring-up).
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-
-    if let Some(notify) = external_shutdown {
-        let tx = shutdown_tx.clone();
-        tokio::spawn(async move {
-            notify.notified().await;
-            let _ = tx.send(true);
-        });
-    }
 
     let (events_tx, _events_rx_keepalive) = events::channel();
     let services_arc = Arc::new(services);
@@ -282,20 +301,23 @@ fn stub_services(llm_handle: tokio::runtime::Handle) -> EngineServices {
 /// Register OS-level SIGINT/SIGTERM handlers and spawn the waiter
 /// task. Registration happens synchronously on the calling thread so
 /// any signal arriving after this returns is queued by tokio's
-/// per-signal `Signal` stream — the spawned waiter will see it on
-/// first poll.
+/// per-signal `Signal` stream; the spawned waiter sees it on first
+/// poll. Returns the registration error instead of panicking, so the
+/// caller can surface a clean exit code without leaving a socket file
+/// behind (registration is intentionally invoked BEFORE bind).
 #[cfg(unix)]
-fn install_signal_handler(shutdown: Arc<Notify>) {
+fn install_signal_handler(shutdown: watch::Sender<bool>) -> std::io::Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
 
-    let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
-    let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let mut sigterm = signal(SignalKind::terminate())?;
     tokio::spawn(async move {
         tokio::select! {
             _ = sigint.recv() => { tracing::info!("SIGINT received"); }
             _ = sigterm.recv() => { tracing::info!("SIGTERM received"); }
         }
-        tracing::info!("notifying shutdown waiters");
-        shutdown.notify_waiters();
+        tracing::info!("firing shutdown via watch channel");
+        let _ = shutdown.send(true);
     });
+    Ok(())
 }

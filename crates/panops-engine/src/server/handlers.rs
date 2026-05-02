@@ -28,7 +28,7 @@ use panops_protocol::{
 use tokio::sync::broadcast;
 
 #[rpc(server, namespace = "ipc", namespace_separator = ".")]
-pub trait Ipc {
+pub(super) trait Ipc {
     #[method(name = "notes.generate")]
     async fn notes_generate(
         &self,
@@ -46,9 +46,9 @@ pub trait Ipc {
     async fn subscribe_events(&self) -> SubscriptionResult;
 }
 
-pub struct IpcImpl {
-    pub services: Arc<crate::server::EngineServices>,
-    pub events_tx: broadcast::Sender<Event>,
+pub(super) struct IpcImpl {
+    pub(super) services: Arc<crate::server::EngineServices>,
+    pub(super) events_tx: broadcast::Sender<Event>,
 }
 
 #[async_trait::async_trait]
@@ -294,7 +294,7 @@ fn run_notes_pipeline(
 /// (e.g. `meeting.get`) will need it. Removing now means re-deriving
 /// the (-32000, kind, data) shape later from the spec.
 #[allow(dead_code)]
-pub fn ipc_error_to_obj(e: IpcError) -> ErrorObjectOwned {
+pub(super) fn ipc_error_to_obj(e: IpcError) -> ErrorObjectOwned {
     let data = serde_json::to_value(&e).expect("IpcError serialise");
     ErrorObjectOwned::owned(-32000, e.to_string(), Some(data))
 }

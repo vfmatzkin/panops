@@ -14,6 +14,6 @@ use tokio::sync::broadcast;
 /// producer, which the subscription handler swallows.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
-pub fn channel() -> (broadcast::Sender<Event>, broadcast::Receiver<Event>) {
+pub(super) fn channel() -> (broadcast::Sender<Event>, broadcast::Receiver<Event>) {
     broadcast::channel(EVENT_CHANNEL_CAPACITY)
 }

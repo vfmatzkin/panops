@@ -31,7 +31,7 @@ use panops_portable::markdown_exporter::MarkdownExporter;
 use panops_protocol::{Event, JobAccepted};
 use tempfile::tempdir;
 use tokio::net::UnixStream;
-use tokio::sync::Notify;
+use tokio::sync::watch;
 
 /// Returns the same 3 segments the slice-04 golden regen uses, so the
 /// `MockLlm` prompt fingerprint matches verbatim.
@@ -177,7 +177,7 @@ fn build_mock_llm(dialect: MarkdownDialect) -> MockLlm {
 async fn notes_generate_round_trip_emits_job_done() {
     let dir = tempdir().unwrap();
     let socket = dir.path().join("engine.sock");
-    let shutdown = Arc::new(Notify::new());
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Stage the audio path inside a tempdir so the pipeline's output
     // directory (alongside the audio) doesn't pollute repo fixtures.
@@ -195,7 +195,7 @@ async fn notes_generate_round_trip_emits_job_done() {
     };
 
     let server_socket = socket.clone();
-    let server_shutdown = shutdown.clone();
+    let server_shutdown = shutdown_rx.clone();
     let server = tokio::spawn(async move {
         run_serve_in_process(&server_socket, services, Some(server_shutdown))
             .await
@@ -242,7 +242,7 @@ async fn notes_generate_round_trip_emits_job_done() {
         "primary_file does not exist: {primary_file:?}"
     );
 
-    shutdown.notify_waiters();
+    let _ = shutdown_tx.send(true);
     let _ = server.await;
 }
 
