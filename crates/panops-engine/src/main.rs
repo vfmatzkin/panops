@@ -82,6 +82,10 @@ impl From<DialectArg> for MarkdownDialect {
 
 fn main() -> ExitCode {
     init_tracing();
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "panops-engine starting"
+    );
     let cli = Cli::parse();
     let res = match cli.cmd {
         None => run_default(cli.audio, cli.model, cli.language, cli.no_diarize),
@@ -118,10 +122,26 @@ fn main() -> ExitCode {
 
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Default `info` so model-download progress and "wrote notes" surface
+    // without requiring RUST_LOG; runs can take minutes and silent waits get
+    // filed as bugs. Third-party HTTP crates are pinned to `warn` to prevent
+    // RUST_LOG=trace from leaking API keys via hyper/reqwest/h2 request
+    // logging — genai sends Anthropic/OpenAI Authorization headers there.
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("info")
+            .add_directive("hyper=warn".parse().expect("static directive"))
+            .add_directive("reqwest=warn".parse().expect("static directive"))
+            .add_directive("h2=warn".parse().expect("static directive"))
+            .add_directive("rustls=warn".parse().expect("static directive"))
+    });
+    // try_init: in tests cargo may already have wired a subscriber; main()
+    // runs once per process so this can't double-init in production.
+    // with_ansi(false): stderr is often piped (CI capture, `2>err`); ANSI
+    // escapes break grep/awk and the cli_logging.rs assertions.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .with_ansi(false)
         .try_init();
 }
 
