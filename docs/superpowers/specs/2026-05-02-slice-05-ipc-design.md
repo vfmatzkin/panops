@@ -225,10 +225,10 @@ On `serve` start:
 3. If connect failed (file absent OR file present but nothing listening): `std::fs::remove_file(&path).ok()` (ignore error if absent).
 4. Bind: `tokio::net::UnixListener::bind(&path)?`.
 5. Set perms: `std::fs::set_permissions(&path, Permissions::from_mode(0o600))?`.
-6. Install SIGINT/SIGTERM handlers via `tokio::signal::unix` that flip a `Notify` shared with `serve_with_graceful_shutdown`.
+6. Install SIGINT/SIGTERM handlers via `tokio::signal::unix` that send `true` on a shared `tokio::sync::watch::Sender<bool>` whose corresponding `Receiver` drives the accept loop's `tokio::select!` shutdown arm. The watch channel preserves stored-permit semantics so a signal arriving before the receiver is first polled is not lost.
 
 On `serve` shutdown:
-1. `serve_with_graceful_shutdown` returns when the notify fires.
+1. The accept loop observes `*shutdown_rx.borrow() == true` and breaks, after which a bridge task drops the jsonrpsee `ServerHandle` so `serve_with_graceful_shutdown` drains in-flight RPCs.
 2. Drain accepted connections (jsonrpsee handles per-connection shutdown).
 3. Best-effort `std::fs::remove_file(&path)` — don't fail shutdown on cleanup error, just log.
 

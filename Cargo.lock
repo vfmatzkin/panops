@@ -1699,14 +1699,10 @@ dependencies = [
 name = "panops-engine"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "chrono",
  "clap",
  "futures-util",
- "http-body-util",
- "hyper",
- "hyper-util",
  "jsonrpsee",
  "libc",
  "panops-core",

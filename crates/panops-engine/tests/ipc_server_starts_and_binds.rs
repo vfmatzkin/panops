@@ -1,10 +1,14 @@
 //! Slice 05 — server starts, socket exists, binary exits cleanly on signal.
 
+mod common;
+
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
 use tokio::net::UnixStream;
+
+use common::wait_with_timeout;
 
 const BIN: &str = env!("CARGO_BIN_EXE_panops-engine");
 
@@ -50,21 +54,4 @@ fn server_binds_socket_and_shuts_down_on_sigterm() {
     let status = wait_with_timeout(&mut child, Duration::from_secs(5)).expect("wait child");
     assert!(status.success(), "engine did not exit cleanly: {status:?}");
     assert!(!socket.exists(), "socket file persisted after shutdown");
-}
-
-fn wait_with_timeout(
-    child: &mut std::process::Child,
-    dur: Duration,
-) -> std::io::Result<std::process::ExitStatus> {
-    let start = Instant::now();
-    loop {
-        if let Some(s) = child.try_wait()? {
-            return Ok(s);
-        }
-        if start.elapsed() > dur {
-            let _ = child.kill();
-            return child.wait();
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
 }

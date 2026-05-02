@@ -42,7 +42,7 @@ The subscription is server-push backed by a `tokio::sync::broadcast` channel. A 
 { "type": "job.error", "job_id": "...", "error": { "kind": "input_not_found" | "invalid_input" | "provider_unavailable" | "internal" | "cancelled", "message": "..." } }
 ```
 
-The `Event` enum is `#[serde(tag = "type")]`. Future event kinds (`asr.partial`, `asr.final`, `screenshot`, `job.progress`) extend this enum; old clients should treat unrecognised tags as unknown and skip them.
+The `Event` enum is internally tagged on `type`. Future event kinds (`asr.partial`, `asr.final`, `screenshot`, `job.progress`) extend this enum. Old clients deserialise unrecognised tags as `Event::Unknown(<original JSON>)`, preserving the subscription so one new tag does not tear down older clients. Implementations that do not use the Rust types directly should mirror this: any envelope whose `type` is not in the known set should be logged and skipped, never treated as a fatal protocol error.
 
 ## Error taxonomy
 

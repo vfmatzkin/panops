@@ -4,18 +4,50 @@
 //! (jsonrpsee `#[rpc(namespace = "ipc")]`). Param/result types are pure
 //! data — no method routing happens in this crate.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Type-tagged so the same `events` subscription multiplexes job lifecycle.
-/// Future event kinds (asr.partial, screenshot, ...) extend this enum;
-/// clients that don't recognise the new tag should treat it as unknown.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Future event kinds (`asr.partial`, `screenshot`, ...) extend this enum;
+/// clients running an older `panops-protocol` deserialise the new tag as
+/// `Event::Unknown(<original JSON>)` and keep the subscription alive.
+///
+/// The `Deserialize` impl is hand-written because serde's `#[serde(other)]`
+/// only accepts unit variants — it can't represent a tuple variant that
+/// captures the unrecognised payload. The `Serialize` derive does the
+/// usual internally-tagged shape for the typed variants and emits the raw
+/// `Value` verbatim for `Unknown`.
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     #[serde(rename = "job.done")]
     JobDone(JobDoneEvent),
     #[serde(rename = "job.error")]
     JobError(JobErrorEvent),
+    /// Forward-compat fallback: a future engine emits an event type this
+    /// build doesn't know about. The original JSON object is kept so the
+    /// caller can still inspect it (e.g. log + skip) without tearing down
+    /// the subscription.
+    #[serde(untagged)]
+    Unknown(serde_json::Value),
+}
+
+impl<'de> Deserialize<'de> for Event {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(d)?;
+        let type_str = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| serde::de::Error::missing_field("type"))?;
+        match type_str {
+            "job.done" => serde_json::from_value::<JobDoneEvent>(value)
+                .map(Event::JobDone)
+                .map_err(serde::de::Error::custom),
+            "job.error" => serde_json::from_value::<JobErrorEvent>(value)
+                .map(Event::JobError)
+                .map_err(serde::de::Error::custom),
+            _ => Ok(Event::Unknown(value)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -140,6 +172,39 @@ mod tests {
         assert!(json.contains(r#""type":"job.done""#));
         let back: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(back, e);
+    }
+
+    #[test]
+    fn event_unknown_kind_deserializes_as_unknown() {
+        // A future engine ships a new event type (`asr.partial`). An old
+        // client built against this snapshot of `panops-protocol` must
+        // deserialise it as `Event::Unknown(<original value>)` rather
+        // than failing — otherwise one new tag tears down every old
+        // client's subscription.
+        let raw = serde_json::json!({
+            "type": "asr.partial",
+            "job_id": "abc",
+            "text": "hello",
+        });
+        let parsed: Event =
+            serde_json::from_value(raw.clone()).expect("unknown tag deserialises as Unknown");
+        match parsed {
+            Event::Unknown(v) => assert_eq!(v, raw),
+            other => panic!("expected Event::Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn event_missing_type_field_is_an_error() {
+        // No `type` field at all is still a hard error — the Unknown
+        // fallback only catches *unrecognised* tags, not malformed
+        // envelopes.
+        let raw = serde_json::json!({ "job_id": "abc" });
+        let err = serde_json::from_value::<Event>(raw).unwrap_err();
+        assert!(
+            err.to_string().contains("type"),
+            "expected missing-field error, got: {err}"
+        );
     }
 
     #[test]

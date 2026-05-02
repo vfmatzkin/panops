@@ -65,10 +65,37 @@ pub(super) async fn bind_with_lifecycle(path: &Path) -> Result<UnixListener, Bin
         // sluggish.
         let probe = timeout(Duration::from_millis(250), UnixStream::connect(path)).await;
         match probe {
+            // Live listener answered — refuse to steal it.
             Ok(Ok(_)) => return Err(BindError::EngineAlreadyRunning(path.to_path_buf())),
-            Ok(Err(_)) | Err(_) => {
+
+            // `ConnectionRefused` is the canonical "socket file exists,
+            // nobody is listen()ing" — a previous engine crashed without
+            // unlinking. Safe to remove.
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
                 std::fs::remove_file(path)
                     .map_err(|e| BindError::Bind(format!("unlink stale {path:?}: {e}")))?;
+            }
+
+            // The path exists but isn't a UDS at all — `connect(2)`
+            // returns `ENOTSOCK`/`EOPNOTSUPP` (errno 38 on macOS,
+            // surfaced as `ErrorKind::Uncategorized`). This is the
+            // stale-file scenario the `ipc_stale_socket_is_cleaned`
+            // test exercises: a previous run left a regular file at
+            // the socket path. Safe to remove because nothing on the
+            // system can be using it as a socket.
+            Ok(Err(e)) if e.raw_os_error() == Some(libc::ENOTSOCK) => {
+                std::fs::remove_file(path)
+                    .map_err(|e| BindError::Bind(format!("unlink stale {path:?}: {e}")))?;
+            }
+
+            // Anything else — including `timeout` (Err(_)) and other
+            // connect errors (permission denied, EAGAIN under fd
+            // exhaustion, dangling-symlink NotFound) — could mean a
+            // live engine is paged out or the FS is in an unusual
+            // state. Refuse to steal rather than risk killing a
+            // healthy engine's socket.
+            Ok(Err(_)) | Err(_) => {
+                return Err(BindError::EngineAlreadyRunning(path.to_path_buf()));
             }
         }
     }

@@ -16,12 +16,18 @@ use tokio::runtime::{Handle, Runtime};
 static SHARED_CLI_RT: OnceLock<Arc<Runtime>> = OnceLock::new();
 
 fn shared_cli_runtime() -> Result<Handle, LlmError> {
-    let rt = SHARED_CLI_RT.get_or_init(|| {
-        Arc::new(
-            Runtime::new().expect("create shared LLM CLI runtime; should never fail at startup"),
-        )
-    });
-    Ok(rt.handle().clone())
+    if let Some(rt) = SHARED_CLI_RT.get() {
+        return Ok(rt.handle().clone());
+    }
+    // Build a candidate runtime first so we can return a typed error on
+    // failure instead of panicking inside `OnceLock::get_or_init`. The
+    // tiny race where two threads each build a runtime is fine: only one
+    // wins the `OnceLock`, the loser's runtime is dropped immediately.
+    let new_rt = Arc::new(
+        Runtime::new().map_err(|e| LlmError::Provider(format!("create CLI runtime: {e}")))?,
+    );
+    let stored = SHARED_CLI_RT.get_or_init(|| new_rt);
+    Ok(stored.handle().clone())
 }
 
 pub struct GenaiLlm {
