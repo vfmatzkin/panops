@@ -248,6 +248,14 @@ fn transcribe(
     if !audio.exists() {
         return Err((1, format!("audio file not found: {audio:?}")));
     }
+    // When PANOPS_FAKE_ASR=1, use the sidecar-file fake instead of downloading
+    // and loading the real Whisper model. Intended for integration tests.
+    if std::env::var("PANOPS_FAKE_ASR").ok().as_deref() == Some("1") {
+        use panops_core::conformance::fakes::TranscriptFileFake;
+        return TranscriptFileFake
+            .transcribe_full(audio, language)
+            .map_err(|e| (2, e.to_string()));
+    }
     let model_path = match model {
         Some(p) => p,
         None => default_model_path().map_err(|e| (3, e.to_string()))?,
