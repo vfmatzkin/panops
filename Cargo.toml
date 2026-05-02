@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/panops-core", "crates/panops-portable", "crates/panops-engine"]
+members = ["crates/panops-core", "crates/panops-portable", "crates/panops-engine", "crates/panops-protocol"]
 
 [workspace.package]
 version = "0.1.0"
