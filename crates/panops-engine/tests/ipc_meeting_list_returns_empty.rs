@@ -22,12 +22,12 @@ async fn meeting_list_returns_empty_array() {
     let socket = dir.path().join("engine.sock");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let services = EngineServices {
-        llm: Arc::new(MockLlm::default()),
-        asr: Arc::new(TranscriptFileFake),
-        diar: Arc::new(KnownTurnsFake),
-        exporter: Arc::new(FakeNotesExporter),
-    };
+    let services = EngineServices::ready(
+        Arc::new(MockLlm::default()),
+        Arc::new(TranscriptFileFake),
+        Arc::new(KnownTurnsFake),
+        Arc::new(FakeNotesExporter),
+    );
 
     let server_socket = socket.clone();
     let server_shutdown = shutdown_rx.clone();

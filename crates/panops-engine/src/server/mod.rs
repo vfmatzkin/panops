@@ -1,14 +1,21 @@
 //! IPC server entry point. Owns the tokio runtimes and binds the UDS.
 //!
-//! Wave 4I: per-connection jsonrpsee serve over `tokio::net::UnixListener`.
-//! Two control methods (`notes.generate`, `meeting.list`) and one
+//! Per-connection jsonrpsee serve over `tokio::net::UnixListener`. Two
+//! control methods (`notes.generate`, `meeting.list`) and one
 //! subscription (`events.subscribe`) are registered. `notes.generate`
-//! is a stub until Wave 5K wires the pipeline + broadcast channel.
+//! routes through `spawn_blocking` to the rayon-driven pipeline; the
+//! result emits as a `JobDone` / `JobError` event over WebSocket.
 //!
 //! Runtime topology (see slice 05 spec §"Runtime topology"): two
 //! tokio runtimes — Runtime A drives jsonrpsee accept + dispatch,
-//! Runtime B drives outbound LLM HTTP. Wave 5K's `spawn_blocking`
-//! pipeline calls reach Runtime B via the stored `Handle`.
+//! Runtime B drives outbound LLM HTTP. Heavy adapter init
+//! (`WhisperRsAsr`, `SherpaDiarizer`) takes ~20s and runs in a
+//! `spawn_blocking` task on Runtime A *concurrent with* the accept
+//! loop — see [`EngineServices::pending`] and [`init_heavy_adapters`].
+//! Until init completes, `notes.generate` returns
+//! `IpcError::ProviderUnavailable { message: "engine warming up; retry shortly" }`;
+//! `meeting.list` is unaffected (returns `[]`, no heavy adapters
+//! needed). This is the eager-after-bind shape that closes #74.
 
 mod events;
 mod handlers;
@@ -16,8 +23,8 @@ mod socket;
 
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use futures_util::FutureExt;
 use jsonrpsee::Methods;
@@ -34,17 +41,77 @@ use tokio::sync::watch;
 
 use crate::server::handlers::{IpcImpl, IpcServer};
 
-/// Wiring point for slice-05 server tests AND the production CLI `serve`
-/// path. Tests construct an `EngineServices` with fakes (`MockLlm`,
-/// `TranscriptFileFake`, `KnownTurnsFake`, `FakeNotesExporter`); the CLI
-/// wires adapters via [`temporary_stub_services_issue_74`] — still
-/// fakes today (issue #74 tracks the real-adapter wiring deferred from
-/// Wave 5K).
+/// Heavy adapter trio loaded together — bundled so the `OnceLock` swap
+/// is atomic (one set, all three present) and so `notes.generate`'s
+/// readiness check is one branch instead of three.
+pub(super) struct HeavyAdapters {
+    pub(super) asr: Arc<dyn AsrProvider + Send + Sync>,
+    pub(super) diar: Arc<dyn Diarizer + Send + Sync>,
+    pub(super) exporter: Arc<dyn NotesExporter + Send + Sync>,
+}
+
+/// Wiring point for the IPC server. Two construction paths.
+///
+/// [`EngineServices::ready`] is synchronous: all adapters present at
+/// return. Used by tests (`MockLlm` + `TranscriptFileFake` +
+/// `KnownTurnsFake` + `FakeNotesExporter`) and by any caller that
+/// already has the heavy trio constructed.
+///
+/// [`EngineServices::pending`] is for `serve`, where the heavy adapter
+/// trio (`WhisperRsAsr`, `SherpaDiarizer`, `MarkdownExporter`) loads
+/// multi-hundred-MB Whisper + diarization models and would push past
+/// the integration test's 5s "socket appears" budget. Returns the
+/// `OnceLock` handle so the background init task can fill it
+/// concurrent with the accept loop coming up.
+///
+/// `llm` is exposed directly because `GenaiLlm::with_handle` is
+/// instant (no model download); the heavy trio is hidden behind the
+/// `OnceLock` so the readiness gate is a single `services.heavy.get()`
+/// in `run_notes_pipeline`.
 pub struct EngineServices {
     pub llm: Arc<dyn LlmProvider + Send + Sync>,
-    pub asr: Arc<dyn AsrProvider + Send + Sync>,
-    pub diar: Arc<dyn Diarizer + Send + Sync>,
-    pub exporter: Arc<dyn NotesExporter + Send + Sync>,
+    pub(super) heavy: Arc<OnceLock<Result<HeavyAdapters, String>>>,
+}
+
+impl EngineServices {
+    /// Construct with all adapters present. Pre-fills the `OnceLock` so
+    /// `notes.generate` skips the warmup gate immediately. This is the
+    /// shape every integration test uses.
+    pub fn ready(
+        llm: Arc<dyn LlmProvider + Send + Sync>,
+        asr: Arc<dyn AsrProvider + Send + Sync>,
+        diar: Arc<dyn Diarizer + Send + Sync>,
+        exporter: Arc<dyn NotesExporter + Send + Sync>,
+    ) -> Self {
+        let heavy = Arc::new(OnceLock::new());
+        let _ = heavy.set(Ok(HeavyAdapters {
+            asr,
+            diar,
+            exporter,
+        }));
+        Self { llm, heavy }
+    }
+
+    /// Construct with only the (cheap) LLM adapter. Returns the
+    /// `OnceLock` handle so the caller can spawn a background init
+    /// task that resolves the heavy trio and fills the lock. Until
+    /// the lock is set, `notes.generate` returns
+    /// `IpcError::ProviderUnavailable`.
+    ///
+    /// `pub(crate)` — only `run_serve` (same crate) needs to construct
+    /// the pending shape. Integration tests use [`Self::ready`].
+    /// `HeavyAdapters` stays `pub(super)` so it can't leak out of
+    /// `server::*`.
+    pub(crate) fn pending(
+        llm: Arc<dyn LlmProvider + Send + Sync>,
+    ) -> (Self, Arc<OnceLock<Result<HeavyAdapters, String>>>) {
+        let heavy = Arc::new(OnceLock::new());
+        let services = Self {
+            llm,
+            heavy: heavy.clone(),
+        };
+        (services, heavy)
+    }
 }
 
 /// CLI entry point — owns both tokio runtimes and the signal handler.
@@ -55,7 +122,7 @@ pub fn run_serve(socket: Option<PathBuf>) -> Result<(), (u8, String)> {
     };
 
     // Runtime B: outbound LLM HTTP. Built first so its handle can be
-    // cloned into the LLM factory before Runtime A starts polling RPC.
+    // cloned into the LLM adapter before Runtime A starts polling RPC.
     let llm_rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("panops-llm-http")
@@ -63,7 +130,7 @@ pub fn run_serve(socket: Option<PathBuf>) -> Result<(), (u8, String)> {
         .map_err(|e| (3, format!("build llm runtime: {e}")))?;
     let llm_handle = llm_rt.handle().clone();
 
-    // Runtime A: jsonrpsee + UDS accept.
+    // Runtime A: jsonrpsee + UDS accept + heavy-adapter init.
     let rpc_rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("panops-rpc")
@@ -71,27 +138,104 @@ pub fn run_serve(socket: Option<PathBuf>) -> Result<(), (u8, String)> {
         .map_err(|e| (3, format!("build rpc runtime: {e}")))?;
 
     let result = rpc_rt.block_on(async move {
-        // Slice 05 Wave 5K: still using a *minimal* `EngineServices` so
-        // the socket binds within the 5s budget that
-        // `ipc_server_starts_and_binds` enforces. Real Whisper-large
-        // load is ~20s and would blow that. The CLI smoke is manual
-        // anyway; the in-process integration tests inject real adapters
-        // directly through `run_serve_in_process`. Tracking real-adapter
-        // wiring (lazy `OnceLock` or eager-after-bind) as issue #74.
-        let services = temporary_stub_services_issue_74(llm_handle);
-        // No external shutdown: `run_serve_in_process` installs its
-        // own signal handler before bind, so the SIGTERM-between-
-        // bind-and-handler window from earlier waves is gone.
+        // Build the LIGHT services first — just the LLM adapter (cheap,
+        // instant). The heavy trio (Whisper / Sherpa / MarkdownExporter)
+        // is filled by a `spawn_blocking` task that runs concurrent
+        // with the accept loop, so the socket binds within the 5s
+        // budget and `notes.generate` is gated with
+        // `ProviderUnavailable` until the trio is ready.
+        let llm = build_llm(llm_handle);
+        let (services, heavy_lock) = EngineServices::pending(llm);
+        spawn_heavy_init(heavy_lock);
         run_serve_in_process(&path, services, None).await
     });
     drop(llm_rt);
-    result
+
+    // Force exit. The heavy-init `spawn_blocking` task may still be
+    // running (Whisper/Sherpa model-load syscalls aren't cancellable);
+    // tokio's blocking pool can't interrupt them, so without
+    // `process::exit` the process stays alive past shutdown until the
+    // load finishes. SIGTERM-to-exit must stay under the integration
+    // test's 5s budget. Buffered tracing lines may be lost; that's
+    // acceptable on shutdown.
+    let exit_code = match result {
+        Ok(()) => 0u8,
+        Err((code, msg)) => {
+            eprintln!("error: {msg}");
+            code
+        }
+    };
+    std::process::exit(i32::from(exit_code));
 }
 
-/// Async test entry point. Tests inject fakes via `services` and
-/// trigger shutdown via the optional `external_shutdown` watch
-/// receiver. When `external_shutdown` is `None` the server installs
-/// its own SIGINT/SIGTERM handler and runs until signalled.
+/// LLM adapter for `serve` mode. Picks a model based on environment
+/// (mirrors `GenaiLlm::auto`'s precedence) and wires it to Runtime B
+/// via `with_handle`. We don't delegate to `GenaiLlm::auto` directly
+/// because `auto` uses the lazy shared CLI runtime — `serve` mode
+/// must route outbound HTTP through Runtime B, not the CLI runtime.
+/// Provider precedence stays in sync with `auto`; both should collapse
+/// when `panops-portable::genai_llm` grows a `auto_with_handle` helper.
+fn build_llm(handle: tokio::runtime::Handle) -> Arc<dyn LlmProvider + Send + Sync> {
+    use panops_portable::genai_llm::GenaiLlm;
+    let model = if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+        "claude-haiku-4-5-20251001"
+    } else if std::env::var("OPENAI_API_KEY").is_ok() {
+        "gpt-4o-mini"
+    } else {
+        "gemma3:4b"
+    };
+    Arc::new(GenaiLlm::with_handle(model, handle))
+}
+
+/// Spawn the heavy-adapter init task. Runs on tokio's blocking pool
+/// because `WhisperRsAsr::new` and `SherpaDiarizer::new` perform sync
+/// I/O + model load + graph compile — sync work that mustn't land on
+/// the RPC accept thread. On success the `OnceLock` holds
+/// `Ok(HeavyAdapters)`; on failure it holds `Err(message)` so
+/// `notes.generate` surfaces an explicit `IpcError::Internal` instead
+/// of an indefinite "warming up" hang.
+fn spawn_heavy_init(heavy_lock: Arc<OnceLock<Result<HeavyAdapters, String>>>) {
+    tokio::task::spawn_blocking(move || {
+        let result = init_heavy_adapters();
+        match &result {
+            Ok(_) => tracing::info!("heavy adapters ready"),
+            Err(msg) => tracing::error!(error = %msg, "heavy adapter init failed"),
+        }
+        let _ = heavy_lock.set(result);
+    });
+}
+
+/// Construct the real heavy adapter trio. Mirrors `panops-engine`'s
+/// CLI default-mode + notes-mode wiring (`WhisperRsAsr`,
+/// `SherpaDiarizer`, `MarkdownExporter`). String error type so the
+/// failure can survive being stored in the `OnceLock` and surface as
+/// `IpcError::Internal` to the wire — the operator still sees the
+/// full detail via `tracing::error!` in [`spawn_heavy_init`].
+fn init_heavy_adapters() -> Result<HeavyAdapters, String> {
+    use panops_portable::markdown_exporter::MarkdownExporter;
+    use panops_portable::model::{
+        DEFAULT_MODEL_NAME, default_model_path, ensure_diar_models, ensure_model,
+    };
+    use panops_portable::{SherpaDiarizer, WhisperRsAsr};
+
+    let model_path = default_model_path().map_err(|e| e.to_string())?;
+    let model_path = ensure_model(DEFAULT_MODEL_NAME, &model_path).map_err(|e| e.to_string())?;
+    let asr = WhisperRsAsr::new(model_path).map_err(|e| e.to_string())?;
+    let (seg, emb) = ensure_diar_models().map_err(|e| e.to_string())?;
+    let diar = SherpaDiarizer::new(seg, emb).map_err(|e| e.to_string())?;
+
+    Ok(HeavyAdapters {
+        asr: Arc::new(asr),
+        diar: Arc::new(diar),
+        exporter: Arc::new(MarkdownExporter),
+    })
+}
+
+/// Async test entry point. Tests inject fakes via `services` (built
+/// with [`EngineServices::ready`]) and trigger shutdown via the
+/// optional `external_shutdown` watch receiver. When `external_shutdown`
+/// is `None` the server installs its own SIGINT/SIGTERM handler and
+/// runs until signalled.
 ///
 /// Shutdown is a `tokio::sync::watch::channel(bool)` end-to-end:
 /// `watch` stores its current value, so even a receiver subscribed
@@ -183,7 +327,7 @@ pub async fn run_serve_in_process(
     // the per-request handler responds with HTTP 429 (`too_many_requests`)
     // rather than stalling — keeps a runaway client from exhausting the
     // accept loop. Revisit alongside the DoS bound on `notes.generate`
-    // (file as `severity:high area:ipc` debt).
+    // (filed as issue #85, severity:high).
     let conn_guard = Arc::new(ConnectionGuard::new(100));
 
     let cleanup_path = path.to_path_buf();
@@ -266,50 +410,6 @@ pub async fn run_serve_in_process(
     tracing::info!("removing socket file and exiting run_serve_in_process");
     let _ = std::fs::remove_file(&cleanup_path);
     Ok(())
-}
-
-/// DO NOT SHIP THIS TO USERS. Slice 05 stand-in for `EngineServices`
-/// — `notes.generate` against this build runs on FAKE ASR / diar /
-/// exporter adapters that emit canned data, so users hitting `serve`
-/// would get garbage notes silently.
-///
-/// Why this exists: real `WhisperRsAsr` / `SherpaDiarizer` constructors
-/// load multi-hundred-MB models eagerly, which would push `serve` past
-/// the 5-second "socket appears" budget the integration tests rely on.
-/// Issue #74 tracks the proper follow-up — eager-after-bind path
-/// (background-task adapter init) or per-call lazy factories.
-///
-/// The function name is deliberately verbose so that `git grep` for it
-/// surfaces this scaffold immediately, and so accidentally calling it
-/// from a non-stub code path would scream in review. Slice 06 must
-/// delete this function as part of wiring real sidecars.
-///
-/// LLM wiring deviates from `GenaiLlm::auto` on purpose: `auto` returns
-/// a `Result` and uses the lazy shared CLI runtime, while server mode
-/// must (a) bind outbound HTTP to Runtime B via `with_handle`, and
-/// (b) pick a non-failing default so `serve` always boots even with
-/// no provider configured (the fake ASR/diar pipeline never reaches
-/// the LLM in slice 05's smoke). Provider precedence still mirrors
-/// `auto` — keep them in sync until #74 collapses both paths.
-fn temporary_stub_services_issue_74(llm_handle: tokio::runtime::Handle) -> EngineServices {
-    use panops_core::conformance::fakes::{FakeNotesExporter, KnownTurnsFake, TranscriptFileFake};
-    use panops_portable::genai_llm::GenaiLlm;
-
-    let model = if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-        "claude-haiku-4-5-20251001"
-    } else if std::env::var("OPENAI_API_KEY").is_ok() {
-        "gpt-4o-mini"
-    } else {
-        "gemma3:4b"
-    };
-    let llm = GenaiLlm::with_handle(model, llm_handle);
-
-    EngineServices {
-        llm: Arc::new(llm),
-        asr: Arc::new(TranscriptFileFake),
-        diar: Arc::new(KnownTurnsFake),
-        exporter: Arc::new(FakeNotesExporter),
-    }
 }
 
 /// Register OS-level SIGINT/SIGTERM handlers and spawn the waiter
