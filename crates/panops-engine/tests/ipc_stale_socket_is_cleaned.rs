@@ -1,10 +1,14 @@
 //! Slice 05 — pre-existing stale socket file is unlinked, server binds.
 
+mod common;
+
 use std::os::unix::fs::FileTypeExt;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use tempfile::tempdir;
+
+use common::wait_with_timeout;
 
 const BIN: &str = env!("CARGO_BIN_EXE_panops-engine");
 
@@ -39,7 +43,7 @@ fn stale_socket_is_unlinked_and_rebound() {
     unsafe {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
-    let _ = child.wait();
+    let _ = wait_with_timeout(&mut child, Duration::from_secs(5));
 
     assert!(
         bound,

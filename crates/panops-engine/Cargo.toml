@@ -25,16 +25,17 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
-jsonrpsee = { version = "0.26", features = ["server", "macros", "ws-client"] }
-hyper = { version = "1", features = ["server", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-http-body-util = "0.1"
+# `ws-client` is test-only; see [dev-dependencies] for the additive feature.
+jsonrpsee = { version = "0.26", features = ["server", "macros"] }
 futures-util = "0.3"
 async-trait = "0.1"
-anyhow = "1"
 tower = { version = "0.5", features = ["util"] }
 uuid = { version = "1", features = ["v4"] }
 libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# Cargo merges features additively across `dependencies` + `dev-dependencies`,
+# so this enables `ws-client` for `cargo test` without leaking it into the
+# production binary.
+jsonrpsee = { version = "0.26", features = ["ws-client"] }

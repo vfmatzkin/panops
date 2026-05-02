@@ -6,11 +6,36 @@
 //! file standalone and warning about unused helpers when a given test
 //! only uses one of them. Each test that needs these adds
 //! `mod common;` and imports from the resulting module.
+//!
+//! `#[allow(dead_code)]` is on the module rather than each fn because
+//! a given test binary only pulls in a subset of these helpers, and
+//! the rest land as `unused` per integration-test compilation.
+
+#![allow(dead_code)]
 
 use std::path::Path;
-use std::time::Duration;
+use std::process::{Child, ExitStatus};
+use std::time::{Duration, Instant};
 
 use tokio::net::UnixStream;
+
+/// Poll `child.try_wait()` until it exits or `dur` elapses, then SIGKILL
+/// and reap. Used by tests that send SIGTERM to the engine and need a
+/// hard upper bound — without this they hang the whole test binary if
+/// shutdown ever regresses.
+pub fn wait_with_timeout(child: &mut Child, dur: Duration) -> std::io::Result<ExitStatus> {
+    let start = Instant::now();
+    loop {
+        if let Some(s) = child.try_wait()? {
+            return Ok(s);
+        }
+        if start.elapsed() > dur {
+            let _ = child.kill();
+            return child.wait();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
 
 /// Block until the engine's UDS at `path` is connectable, or panic
 /// after 5 s. Existence alone isn't enough: the file appears slightly

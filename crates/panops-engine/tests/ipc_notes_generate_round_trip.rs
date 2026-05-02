@@ -239,6 +239,7 @@ async fn notes_generate_round_trip_emits_job_done() {
     let primary_file = match event {
         Event::JobDone(d) => PathBuf::from(d.result.primary_file),
         Event::JobError(e) => panic!("expected JobDone, got JobError: {:?}", e.error),
+        Event::Unknown(v) => panic!("expected JobDone, got Unknown: {v}"),
     };
     assert!(
         primary_file.exists(),

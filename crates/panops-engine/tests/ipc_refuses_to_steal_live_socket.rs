@@ -1,9 +1,13 @@
 //! Slice 05 — a second `serve` on a live socket exits non-zero.
 
+mod common;
+
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use tempfile::tempdir;
+
+use common::wait_with_timeout;
 
 const BIN: &str = env!("CARGO_BIN_EXE_panops-engine");
 
@@ -46,5 +50,5 @@ fn second_serve_refuses_when_engine_already_running() {
     unsafe {
         libc::kill(first.id() as i32, libc::SIGTERM);
     }
-    let _ = first.wait();
+    let _ = wait_with_timeout(&mut first, Duration::from_secs(5));
 }

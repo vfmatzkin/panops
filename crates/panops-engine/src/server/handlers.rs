@@ -168,10 +168,12 @@ fn run_notes_pipeline(
 ) -> Result<NotesGenerateResult, IpcError> {
     // Reject empty audio strings outright — `PathBuf::from("")` is
     // technically valid but canonicalize-on-empty depends on platform
-    // and gives unhelpful errors.
+    // and gives unhelpful errors. Empty/blank input is a validation
+    // failure, not a missing-file failure, so map it to `InvalidInput`
+    // (the absent path field on `InputNotFound` would be useless here).
     if params.audio.trim().is_empty() {
-        return Err(IpcError::InputNotFound {
-            path: params.audio.clone(),
+        return Err(IpcError::InvalidInput {
+            message: "audio path is empty".into(),
         });
     }
 
