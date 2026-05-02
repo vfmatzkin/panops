@@ -15,11 +15,20 @@ path = "src/main.rs"
 [dependencies]
 panops-core = { path = "../panops-core" }
 panops-portable = { path = "../panops-portable" }
+panops-protocol = { path = "../panops-protocol", features = ["domain-conversions"] }
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
+jsonrpsee = { version = "0.26", features = ["server", "macros", "ws-client"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+futures-util = "0.3"
+async-trait = "0.1"
+anyhow = "1"
 
 [dev-dependencies]
 tempfile = "3"

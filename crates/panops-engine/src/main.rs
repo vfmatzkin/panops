@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
+
+mod server;
 use panops_core::asr::AsrProvider;
 use panops_core::conformance::fakes::TranscriptFileFake;
 use panops_core::diar::Diarizer;
@@ -63,6 +65,13 @@ enum Cmd {
         #[arg(long)]
         language: Option<String>,
     },
+    /// Run the IPC server (JSON-RPC + WebSocket over a Unix domain socket).
+    Serve {
+        /// Override the socket path. Defaults to
+        /// `~/Library/Application Support/panops/engine.sock`.
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -110,6 +119,7 @@ fn main() -> ExitCode {
             model,
             language,
         ),
+        Some(Cmd::Serve { socket }) => server::run_serve(socket),
     };
     match res {
         Ok(()) => ExitCode::SUCCESS,
