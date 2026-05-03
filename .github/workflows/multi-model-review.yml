@@ -162,18 +162,12 @@ jobs:
             echo "_(review output is empty — see workflow run logs)_" > /tmp/review.md
           fi
 
-      - name: Self-test redaction patterns
-        # Run before posting so a regex regression fails the job loudly
-        # instead of leaking a real secret into a PR comment.
-        run: bash .github/workflows/scripts/test-redact-review.sh
-
-      - name: Redact secrets in review output
-        # Belt-and-braces. GitHub Actions masks secrets in workflow LOGS
-        # but not in files we write or comments we post.
+      - name: Sanitize review output
         env:
           BAILIAN: ${{ secrets.BAILIAN_CODING_PLAN_API_KEY }}
           BRAVE: ${{ secrets.BRAVE_API_KEY }}
         run: |
+          bash .github/workflows/scripts/test-redact-review.sh
           python3 .github/workflows/scripts/redact-review.py \
             /tmp/review.md BAILIAN BRAVE
 
@@ -205,4 +199,11 @@ jobs:
           else
             gh pr comment "${PR}" --body-file /tmp/comment.md
             echo "posted new comment"
+          fi
+
+      - name: Fail on blocking findings
+        run: |
+          if grep -qF '#### 🛑 Blockers' /tmp/review.md; then
+            echo "::error::Review found blockers — marking job as failed"
+            exit 1
           fi
