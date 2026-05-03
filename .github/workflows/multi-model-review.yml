@@ -37,10 +37,13 @@ jobs:
           node-version: "22"
 
       - name: Install claude CLI + brave-search MCP
+        # @brave/brave-search-mcp-server is Brave's official package
+        # (the @modelcontextprotocol/server-brave-search namespace was
+        # deprecated; Brave forked + maintains theirs).
         run: |
           npm install -g \
             @anthropic-ai/claude-code \
-            @modelcontextprotocol/server-brave-search
+            @brave/brave-search-mcp-server
 
       - name: Write MCP config (brave-search only)
         env:
@@ -52,7 +55,7 @@ jobs:
             "mcpServers": {
               "brave-search": {
                 "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+                "args": ["-y", "@brave/brave-search-mcp-server"],
                 "env": { "BRAVE_API_KEY": "${BRAVE_API_KEY}" }
               }
             }
