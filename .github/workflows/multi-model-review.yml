@@ -20,10 +20,8 @@ jobs:
         include:
           - model: qwen3.6-plus
             label: "Qwen 3.6 Plus"
-            vendor: Alibaba
           - model: glm-5
             label: "GLM-5"
-            vendor: Zhipu
     steps:
       - name: Checkout PR head
         uses: actions/checkout@v4
@@ -198,13 +196,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           {
-            echo "## ${{ matrix.label }} review · via Alibaba Coding Plan (${{ matrix.vendor }})"
-            echo
-            echo '<details><summary>Review</summary>'
+            echo "### ${{ matrix.label }}"
             echo
             cat /tmp/review.md
-            echo
-            echo '</details>'
           } > /tmp/comment.md
           gh pr comment ${{ github.event.pull_request.number }} \
             --body-file /tmp/comment.md
