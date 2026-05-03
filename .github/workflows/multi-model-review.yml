@@ -48,24 +48,38 @@ jobs:
       - name: Write MCP config (brave-search only)
         env:
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          MCP_DIR: /home/runner/.claude-review-${{ matrix.model }}
         run: |
-          mkdir -p $HOME/.claude-review-${{ matrix.model }}
-          cat > $HOME/.claude-review-${{ matrix.model }}/.mcp.json <<EOF
-          {
-            "mcpServers": {
+          # jq construction is JSON-safe regardless of what characters
+          # the BRAVE_API_KEY contains (qwen review of this workflow
+          # caught the heredoc-interpolation hazard).
+          mkdir -p "$MCP_DIR"
+          jq -n --arg k "$BRAVE_API_KEY" '{
+            mcpServers: {
               "brave-search": {
-                "command": "npx",
-                "args": ["-y", "@brave/brave-search-mcp-server"],
-                "env": { "BRAVE_API_KEY": "${BRAVE_API_KEY}" }
+                command: "npx",
+                args: ["-y", "@brave/brave-search-mcp-server"],
+                env: { BRAVE_API_KEY: $k }
               }
             }
-          }
-          EOF
+          }' > "$MCP_DIR/.mcp.json"
+
+      - name: Fetch PR description
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr view ${{ github.event.pull_request.number }} \
+            --json title,body \
+            --jq '"# " + .title + "\n\n" + (.body // "(no description)")' \
+            > /tmp/pr-meta.md
 
       - name: Run review (${{ matrix.label }})
         env:
           ANTHROPIC_BASE_URL: https://coding-intl.dashscope.aliyuncs.com/apps/anthropic
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.BAILIAN_CODING_PLAN_API_KEY }}
+          # ANTHROPIC_API_KEY="" is intentional: the claude CLI tries
+          # ANTHROPIC_API_KEY first; we want it to fall through to
+          # ANTHROPIC_AUTH_TOKEN against the DashScope endpoint.
           ANTHROPIC_API_KEY: ""
           ANTHROPIC_MODEL: ${{ matrix.model }}
           ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ matrix.model }}
@@ -75,27 +89,46 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          test -n "$ANTHROPIC_AUTH_TOKEN" \
+            || { echo "ANTHROPIC_AUTH_TOKEN is empty — set BAILIAN_CODING_PLAN_API_KEY secret"; exit 1; }
+          PR_META=$(cat /tmp/pr-meta.md)
           PROMPT="You are a code reviewer for the panops repository.
 
           Read .github/copilot-instructions.md and AGENTS.md first — those define project conventions, hex-arch invariants, and severity calibration. Use them as the rubric for this review.
 
-          Review the diff between commits ${BASE_SHA} and ${HEAD_SHA} (currently checked out at HEAD). Focus areas in priority order:
+          # PR description (what the author intends)
+
+          ${PR_META}
+
+          # What to review
+
+          Review the diff between commits ${BASE_SHA} and ${HEAD_SHA} (currently checked out at HEAD). Cross-check: does the diff match what the description says? Flag mismatches.
+
+          Focus areas in priority order:
           1. Correctness under failure (panic handling in spawn_blocking, SIGTERM mid-init, OnceLock terminal-state, blocking-pool leaks)
           2. Hex-architecture invariants (panops-core stays platform-free; no serde on domain errors)
           3. Stdout contract (only one println in panops-engine main; everything else through tracing)
           4. Telemetry creep (no env vars for user config; no phone-home)
+          5. Intent / description mismatch
 
           For any external library API mentioned in the diff (jsonrpsee, tokio, sherpa-rs, whisper-rs), verify via the brave-search MCP — DO NOT use the WebSearch tool (disabled). Use mcp__brave-search__brave_web_search instead.
 
           Output BLOCKERS / SUGGESTIONS / NOTES with file:line citations. Be terse, no praise. If nothing to flag, say: 'Clean — nothing to flag.'"
 
+          # Capture exit code separately so partial output (e.g. on
+          # max-turns hit) still posts as the review body.
+          set +e
           claude --bare -p "$PROMPT" \
             --allowedTools 'Read Glob Grep Bash(git*) mcp__brave-search__brave_web_search' \
             --disallowedTools 'WebSearch WebFetch' \
-            --max-turns 10 \
+            --max-turns 15 \
             < /dev/null \
-            > /tmp/review.md 2>&1 \
-            || echo "(claude exited non-zero)" >> /tmp/review.md
+            > /tmp/review.md 2>&1
+          CLAUDE_EXIT=$?
+          set -e
+          if [ "$CLAUDE_EXIT" -ne 0 ]; then
+            printf '\n\n_(claude exited %d — output above is partial)_\n' "$CLAUDE_EXIT" >> /tmp/review.md
+          fi
 
       - name: Post review comment (${{ matrix.label }})
         env:
