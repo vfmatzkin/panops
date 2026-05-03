@@ -148,7 +148,7 @@ jobs:
           claude --bare -p "$PROMPT" \
             --allowedTools 'Read Glob Grep Bash(git diff *) Bash(git log *) Bash(git show *) Bash(git cat-file *) mcp__brave-search__brave_web_search' \
             --disallowedTools 'WebSearch WebFetch' \
-            --max-turns 15 \
+            --max-turns 50 \
             < /dev/null \
             > /tmp/review.md 2>&1
           CLAUDE_EXIT=$?
@@ -176,30 +176,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          # HTML marker so we can find this model's prior comment and
-          # edit it in place — keeps the PR thread tidy across pushes.
-          MARKER: "<!-- multi-model-review:${{ matrix.model }} -->"
         run: |
           {
-            echo "${MARKER}"
             echo "### ${{ matrix.label }}"
             echo
             cat /tmp/review.md
           } > /tmp/comment.md
-
-          EXISTING=$(gh api "repos/${REPO}/issues/${PR}/comments" \
-            --paginate \
-            --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" \
-            | head -1)
-
-          if [ -n "$EXISTING" ]; then
-            gh api -X PATCH "repos/${REPO}/issues/comments/${EXISTING}" \
-              --field body=@/tmp/comment.md
-            echo "edited existing comment ${EXISTING}"
-          else
-            gh pr comment "${PR}" --body-file /tmp/comment.md
-            echo "posted new comment"
-          fi
+          gh pr comment "${PR}" --body-file /tmp/comment.md
 
       - name: Fail on blocking findings
         run: |
