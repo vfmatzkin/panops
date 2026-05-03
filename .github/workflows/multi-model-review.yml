@@ -4,6 +4,13 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
 
+# Cancel an in-flight review for the same PR+model when a new push lands.
+# Without this, force-pushes and rapid follow-ups stack reviewer jobs that
+# burn API credits and post stale comments.
+concurrency:
+  group: multi-model-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
     # Forked PRs don't have access to repo secrets; skip silently.
@@ -24,13 +31,13 @@ jobs:
             label: "GLM-5"
     steps:
       - name: Checkout PR head
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
 
@@ -93,7 +100,7 @@ jobs:
           REPO_URL="https://github.com/${{ github.repository }}"
           PROMPT="You are a code reviewer for the panops repository.
 
-          Read .github/copilot-instructions.md and AGENTS.md first — those define project conventions, hex-arch invariants, and severity calibration. Use them as the rubric for this review.
+          Start by reading AGENTS.md (always present) and any .github/*-instructions.md file the repo has at HEAD — those define project conventions, hex-arch invariants, and severity calibration. Use them as the rubric for this review.
 
           # PR description (what the author intends)
 
@@ -217,11 +224,29 @@ jobs:
       - name: Post review comment (${{ matrix.label }})
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          # HTML marker so we can find this model's prior comment and
+          # edit it in place — keeps the PR thread tidy across pushes.
+          MARKER: "<!-- multi-model-review:${{ matrix.model }} -->"
         run: |
           {
+            echo "${MARKER}"
             echo "### ${{ matrix.label }}"
             echo
             cat /tmp/review.md
           } > /tmp/comment.md
-          gh pr comment ${{ github.event.pull_request.number }} \
-            --body-file /tmp/comment.md
+
+          EXISTING=$(gh api "repos/${REPO}/issues/${PR}/comments" \
+            --paginate \
+            --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" \
+            | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            gh api -X PATCH "repos/${REPO}/issues/comments/${EXISTING}" \
+              --field body=@/tmp/comment.md
+            echo "edited existing comment ${EXISTING}"
+          else
+            gh pr comment "${PR}" --body-file /tmp/comment.md
+            echo "posted new comment"
+          fi
