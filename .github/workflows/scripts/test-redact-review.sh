@@ -32,8 +32,11 @@ S_GENERIC_KV='abcdef0123456789abcdef0123456789'
 S_PASSWORD='hunter2VeryLongPassword123'
 S_PEM_BODY="MIIEowIBAAKCAQEAfakeprivatekeycontent${RANDOM}"
 
-export FAKE_BAILIAN="$S_BAILIAN"
-export FAKE_BRAVE="$S_BRAVE"
+# Use the same env-var names the production workflow passes (BAILIAN,
+# BRAVE) so a strict-only-mode change in redact-review.py would still
+# be exercised by this test.
+export BAILIAN="$S_BAILIAN"
+export BRAVE="$S_BRAVE"
 
 cat > "$FIXTURE" <<EOF
 The BAILIAN value $S_BAILIAN must vanish.
@@ -56,7 +59,7 @@ This sentence has no secret and must remain readable end-to-end.
 File path crates/panops-core/src/lib.rs:42 must remain.
 EOF
 
-python3 "$SCRIPT" "$FIXTURE" FAKE_BAILIAN FAKE_BRAVE >/dev/null
+python3 "$SCRIPT" "$FIXTURE" BAILIAN BRAVE >/dev/null
 
 # Distinctive substring of each planted secret. If any survives the
 # redaction pass, the assertion fails.

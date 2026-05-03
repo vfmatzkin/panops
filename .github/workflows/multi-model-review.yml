@@ -40,7 +40,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        # actions/setup-node only ships @v4 as of writing — there's no v5/v6
+        # despite actions/checkout being on v6.
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
 
@@ -58,6 +60,8 @@ jobs:
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
           MCP_DIR: /home/runner/.claude-review-${{ matrix.model }}
         run: |
+          test -n "$BRAVE_API_KEY" \
+            || { echo "BRAVE_API_KEY is empty — set the BRAVE_API_KEY secret"; exit 1; }
           # jq construction is JSON-safe regardless of what characters
           # the BRAVE_API_KEY contains (qwen review of this workflow
           # caught the heredoc-interpolation hazard).
