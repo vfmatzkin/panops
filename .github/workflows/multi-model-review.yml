@@ -4,13 +4,6 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
 
-# Cancel an in-flight review for the same PR+model when a new push lands.
-# Without this, force-pushes and rapid follow-ups stack reviewer jobs that
-# burn API credits and post stale comments.
-concurrency:
-  group: multi-model-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
   review:
     # Forked PRs don't have access to repo secrets; skip silently.
@@ -20,6 +13,12 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+    # Job-level concurrency so the matrix.model variable is in scope.
+    # A new push cancels any in-flight review for the same PR + same
+    # model, leaving the other model's job untouched.
+    concurrency:
+      group: multi-model-review-${{ github.event.pull_request.number }}-${{ matrix.model }}
+      cancel-in-progress: true
     strategy:
       # Don't cancel the second review if one model errors.
       fail-fast: false
@@ -81,11 +80,11 @@ jobs:
       - name: Run review (${{ matrix.label }})
         env:
           ANTHROPIC_BASE_URL: https://coding-intl.dashscope.aliyuncs.com/apps/anthropic
+          # Set BOTH so we work whether claude CLI uses x-api-key or
+          # Bearer auth. --bare mode reads ANTHROPIC_API_KEY strictly;
+          # non-bare also accepts ANTHROPIC_AUTH_TOKEN. Belt-and-braces.
+          ANTHROPIC_API_KEY: ${{ secrets.BAILIAN_CODING_PLAN_API_KEY }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.BAILIAN_CODING_PLAN_API_KEY }}
-          # ANTHROPIC_API_KEY="" is intentional: the claude CLI tries
-          # ANTHROPIC_API_KEY first; we want it to fall through to
-          # ANTHROPIC_AUTH_TOKEN against the DashScope endpoint.
-          ANTHROPIC_API_KEY: ""
           ANTHROPIC_MODEL: ${{ matrix.model }}
           ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ matrix.model }}
           ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ matrix.model }}
@@ -94,8 +93,8 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          test -n "$ANTHROPIC_AUTH_TOKEN" \
-            || { echo "ANTHROPIC_AUTH_TOKEN is empty — set BAILIAN_CODING_PLAN_API_KEY secret"; exit 1; }
+          test -n "$ANTHROPIC_API_KEY" \
+            || { echo "ANTHROPIC_API_KEY is empty — set BAILIAN_CODING_PLAN_API_KEY secret"; exit 1; }
           PR_META=$(cat /tmp/pr-meta.md)
           REPO_URL="https://github.com/${{ github.repository }}"
           PROMPT="You are a code reviewer for the panops repository.
@@ -147,7 +146,7 @@ jobs:
           # max-turns hit) still posts as the review body.
           set +e
           claude --bare -p "$PROMPT" \
-            --allowedTools 'Read Glob Grep Bash(git*) mcp__brave-search__brave_web_search' \
+            --allowedTools 'Read Glob Grep Bash(git diff *) Bash(git log *) Bash(git show *) Bash(git cat-file *) mcp__brave-search__brave_web_search' \
             --disallowedTools 'WebSearch WebFetch' \
             --max-turns 15 \
             < /dev/null \
@@ -156,6 +155,11 @@ jobs:
           set -e
           if [ "$CLAUDE_EXIT" -ne 0 ]; then
             printf '\n\n_(claude exited %d — output above is partial)_\n' "$CLAUDE_EXIT" >> /tmp/review.md
+          fi
+          # Empty-output guard so the redaction step doesn't silently
+          # paint over a missing review with REDACTED markers.
+          if [ ! -s /tmp/review.md ]; then
+            echo "_(review output is empty — see workflow run logs)_" > /tmp/review.md
           fi
 
       - name: Redact secrets in review output
