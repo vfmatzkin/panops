@@ -130,6 +130,69 @@ jobs:
             printf '\n\n_(claude exited %d — output above is partial)_\n' "$CLAUDE_EXIT" >> /tmp/review.md
           fi
 
+      - name: Redact secrets in review output
+        # Belt-and-braces. GitHub Actions masks secrets in workflow LOGS
+        # but not in files we write or comments we post. Scrub the
+        # known literal values + apply generic vendor-pattern regex
+        # before publishing the review to the PR.
+        env:
+          BAILIAN: ${{ secrets.BAILIAN_CODING_PLAN_API_KEY }}
+          BRAVE: ${{ secrets.BRAVE_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+
+          REDACT = "★★★REDACTED★★★"
+          path = "/tmp/review.md"
+          text = open(path).read()
+
+          # 1. Literal substitution for the two known secrets in env.
+          for var in ("BAILIAN", "BRAVE"):
+              v = os.environ.get(var, "")
+              if v and len(v) >= 12:
+                  text = text.replace(v, REDACT)
+
+          # 2. Vendor-pattern regex (mirrors ~/.claude/scripts/redact-secrets.py).
+          patterns = [
+              r"sk-ant-[A-Za-z0-9_\-]{50,}",
+              r"sk-proj-[A-Za-z0-9_\-]{20,}",
+              r"sk-svcacct-[A-Za-z0-9_\-]{20,}",
+              r"sk-[A-Za-z0-9]{32,}",
+              r"sk-sp-[A-Za-z0-9]{32,}",
+              r"ghp_[A-Za-z0-9]{30,}",
+              r"gho_[A-Za-z0-9]{30,}",
+              r"ghu_[A-Za-z0-9]{30,}",
+              r"ghs_[A-Za-z0-9]{30,}",
+              r"github_pat_[A-Za-z0-9_]{60,}",
+              r"AKIA[A-Z0-9]{16}",
+              r"AIza[A-Za-z0-9_\-]{30,}",
+              r"xox[baprs]-[A-Za-z0-9\-]{10,}",
+              r"hf_[A-Za-z0-9]{30,}",
+              r"BSA[A-Za-z0-9_\-]{20,}",
+          ]
+          for pat in patterns:
+              text = re.sub(pat, REDACT, text)
+
+          # 3. Generic key=value shapes.
+          text = re.sub(
+              r"((?i:api[_\-]?key|access[_\-]?key|secret[_\-]?key|secret|password|passwd|token|bearer|credential|auth(?:orization)?|private[_\-]?key))\s*[:=]\s*['\"]?([A-Za-z0-9_\-/+=.]{16,})['\"]?",
+              lambda m: m.group(0).replace(m.group(2), REDACT),
+              text,
+          )
+
+          # 4. PEM private-key blocks.
+          text = re.sub(
+              r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+              REDACT,
+              text,
+              flags=re.DOTALL,
+          )
+
+          open(path, "w").write(text)
+          print("redaction complete")
+          PY
+
       - name: Post review comment (${{ matrix.label }})
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
