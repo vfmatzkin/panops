@@ -1,13 +1,17 @@
 name: Multi-Model Review
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
   review:
-    # Forked PRs don't have access to repo secrets; skip silently.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Only runs on non-fork PRs from authorized actors.
+    # Add/remove allowed accounts via:
+    #   gh variable set REVIEW_ACTORS --repo vfmatzkin/panops --body '["vfmatzkin", "dependabot[bot]"]'
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && contains(fromJSON(vars.REVIEW_ACTORS), github.actor)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
