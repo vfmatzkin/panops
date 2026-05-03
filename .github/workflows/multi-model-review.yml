@@ -1,11 +1,11 @@
-name: Qwen Review
+name: Multi-Model Review
 
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
-  qwen-review:
+  review:
     # Forked PRs don't have access to repo secrets; skip silently.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -13,6 +13,17 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+    strategy:
+      # Don't cancel the second review if one model errors.
+      fail-fast: false
+      matrix:
+        include:
+          - model: qwen3.6-plus
+            label: "Qwen 3.6 Plus"
+            vendor: Alibaba
+          - model: glm-5
+            label: "GLM-5"
+            vendor: Zhipu
     steps:
       - name: Checkout PR head
         uses: actions/checkout@v4
@@ -35,8 +46,8 @@ jobs:
         env:
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
         run: |
-          mkdir -p $HOME/.claude-qwen
-          cat > $HOME/.claude-qwen/.mcp.json <<EOF
+          mkdir -p $HOME/.claude-review-${{ matrix.model }}
+          cat > $HOME/.claude-review-${{ matrix.model }}/.mcp.json <<EOF
           {
             "mcpServers": {
               "brave-search": {
@@ -48,60 +59,53 @@ jobs:
           }
           EOF
 
-      - name: Run review
+      - name: Run review (${{ matrix.label }})
         env:
-          # Direct Anthropic-compatible endpoint — no adapter needed.
           ANTHROPIC_BASE_URL: https://coding-intl.dashscope.aliyuncs.com/apps/anthropic
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.BAILIAN_CODING_PLAN_API_KEY }}
           ANTHROPIC_API_KEY: ""
-          # qwen3.6-plus was the fastest+most thorough across the
-          # available Coding Plan models (19s, caught the latent
-          # panic-handling bug on PR #93 that single-tool review missed).
-          ANTHROPIC_MODEL: qwen3.6-plus
-          ANTHROPIC_DEFAULT_OPUS_MODEL: qwen3.6-plus
-          ANTHROPIC_DEFAULT_SONNET_MODEL: qwen3.6-plus
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: qwen3.6-plus
-          CLAUDE_CONFIG_DIR: ${{ github.workspace }}/../.claude-qwen
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ANTHROPIC_MODEL: ${{ matrix.model }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ matrix.model }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ matrix.model }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ matrix.model }}
+          CLAUDE_CONFIG_DIR: /home/runner/.claude-review-${{ matrix.model }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          # Move the MCP config into place under CLAUDE_CONFIG_DIR.
-          mv $HOME/.claude-qwen $(dirname $CLAUDE_CONFIG_DIR)/$(basename $CLAUDE_CONFIG_DIR)
           PROMPT="You are a code reviewer for the panops repository.
 
-          Read .github/copilot-instructions.md and AGENTS.md first — those define project conventions, hex-arch invariants, severity calibration. Use them as context for the review.
+          Read .github/copilot-instructions.md and AGENTS.md first — those define project conventions, hex-arch invariants, and severity calibration. Use them as the rubric for this review.
 
-          Review the diff between commits ${BASE_SHA} and ${HEAD_SHA} (currently checked out). Focus areas in priority order:
-          1. Correctness under failure (panic handling in spawn_blocking, SIGTERM mid-init, OnceLock terminal-state)
+          Review the diff between commits ${BASE_SHA} and ${HEAD_SHA} (currently checked out at HEAD). Focus areas in priority order:
+          1. Correctness under failure (panic handling in spawn_blocking, SIGTERM mid-init, OnceLock terminal-state, blocking-pool leaks)
           2. Hex-architecture invariants (panops-core stays platform-free; no serde on domain errors)
-          3. Stdout contract (only one println in panops-engine main)
+          3. Stdout contract (only one println in panops-engine main; everything else through tracing)
           4. Telemetry creep (no env vars for user config; no phone-home)
 
-          For any external library API mentioned in the diff (jsonrpsee, tokio, sherpa-rs, whisper-rs), verify your understanding via the brave-search MCP — DO NOT use the WebSearch tool (disabled). Use mcp__brave-search__brave_web_search instead.
+          For any external library API mentioned in the diff (jsonrpsee, tokio, sherpa-rs, whisper-rs), verify via the brave-search MCP — DO NOT use the WebSearch tool (disabled). Use mcp__brave-search__brave_web_search instead.
 
-          Output BLOCKERS / SUGGESTIONS / NOTES with file:line citations. Be terse, no praise. If nothing to flag say: 'Clean — nothing to flag.'"
+          Output BLOCKERS / SUGGESTIONS / NOTES with file:line citations. Be terse, no praise. If nothing to flag, say: 'Clean — nothing to flag.'"
 
           claude --bare -p "$PROMPT" \
             --allowedTools 'Read Glob Grep Bash(git*) mcp__brave-search__brave_web_search' \
             --disallowedTools 'WebSearch WebFetch' \
             --max-turns 10 \
             < /dev/null \
-            > /tmp/qwen-review.md 2>&1 \
-            || echo "(claude exited non-zero)" >> /tmp/qwen-review.md
+            > /tmp/review.md 2>&1 \
+            || echo "(claude exited non-zero)" >> /tmp/review.md
 
-      - name: Post review comment
+      - name: Post review comment (${{ matrix.label }})
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           {
-            echo "## Qwen review (qwen3.6-plus via Alibaba Coding Plan)"
+            echo "## ${{ matrix.label }} review · via Alibaba Coding Plan (${{ matrix.vendor }})"
             echo
             echo '<details><summary>Review</summary>'
             echo
-            cat /tmp/qwen-review.md
+            cat /tmp/review.md
             echo
             echo '</details>'
-          } > /tmp/qwen-comment.md
+          } > /tmp/comment.md
           gh pr comment ${{ github.event.pull_request.number }} \
-            --body-file /tmp/qwen-comment.md
+            --body-file /tmp/comment.md
