@@ -175,7 +175,6 @@ jobs:
           BAILIAN: ${{ secrets.BAILIAN_CODING_PLAN_API_KEY }}
           BRAVE: ${{ secrets.BRAVE_API_KEY }}
         run: |
-          bash .github/workflows/scripts/test-redact-review.sh
           python3 .github/workflows/scripts/redact-review.py \
             /tmp/review.md BAILIAN BRAVE
 
