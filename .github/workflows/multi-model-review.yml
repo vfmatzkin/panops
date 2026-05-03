@@ -90,6 +90,7 @@ jobs:
           test -n "$ANTHROPIC_AUTH_TOKEN" \
             || { echo "ANTHROPIC_AUTH_TOKEN is empty — set BAILIAN_CODING_PLAN_API_KEY secret"; exit 1; }
           PR_META=$(cat /tmp/pr-meta.md)
+          REPO_URL="https://github.com/${{ github.repository }}"
           PROMPT="You are a code reviewer for the panops repository.
 
           Read .github/copilot-instructions.md and AGENTS.md first — those define project conventions, hex-arch invariants, and severity calibration. Use them as the rubric for this review.
@@ -111,7 +112,29 @@ jobs:
 
           For any external library API mentioned in the diff (jsonrpsee, tokio, sherpa-rs, whisper-rs), verify via the brave-search MCP — DO NOT use the WebSearch tool (disabled). Use mcp__brave-search__brave_web_search instead.
 
-          Output BLOCKERS / SUGGESTIONS / NOTES with file:line citations. Be terse, no praise. If nothing to flag, say: 'Clean — nothing to flag.'"
+          # Output format (strict)
+
+          Use this exact GitHub-flavored markdown structure. No preamble. No trailing commentary.
+
+          If you have nothing to flag: write a single paragraph starting with 'Clean —'.
+
+          Otherwise:
+
+          - Group findings by severity, in order: blockers first, then suggestions, then notes.
+          - Use these section headings exactly:
+            \`#### 🛑 Blockers\`
+            \`#### 💡 Suggestions\`
+            \`#### ℹ️ Notes\`
+          - Omit a section entirely if it has no findings.
+          - Each finding is a list item shaped like:
+
+            \`- **Title in bold.** [\\\`path:line\\\`](${REPO_URL}/blob/${HEAD_SHA}/path#Lline) — explanation in one or two sentences. If quoting code, use a fenced \\\`rust\\\` block. If proposing a change, follow with a fenced \\\`suggestion\\\` block (GitHub Suggested Changes syntax).\`
+
+          - Use real GitHub blob URLs of the form ${REPO_URL}/blob/${HEAD_SHA}/<path>#L<line> so file:line refs are clickable.
+          - Use \\\`backticks\\\` around identifiers, types, file paths, and line numbers.
+          - Quote multi-line code in fenced blocks with the right language tag (\\\`rust\\\`, \\\`yaml\\\`, \\\`bash\\\`, etc.).
+          - Be terse. Lead with what's wrong, then why, then the fix. No praise. No restating the diff.
+          - Never include the literal value of any secret, key, or token, even partially. Refer to them by env var name only."
 
           # Capture exit code separately so partial output (e.g. on
           # max-turns hit) still posts as the review body.
