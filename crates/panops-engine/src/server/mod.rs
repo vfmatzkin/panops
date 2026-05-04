@@ -173,15 +173,21 @@ pub fn run_serve(socket: Option<PathBuf>) -> Result<(), (u8, String)> {
 /// via `with_handle`. We don't delegate to `GenaiLlm::auto` directly
 /// because `auto` uses the lazy shared CLI runtime — `serve` mode
 /// must route outbound HTTP through Runtime B, not the CLI runtime.
-/// Provider precedence stays in sync with `auto`; both should collapse
-/// when `panops-portable::genai_llm` grows a `auto_with_handle` helper.
+/// Provider precedence stays in sync with `GenaiLlm::auto`'s order
+/// (ANTHROPIC_API_KEY → OPENAI_API_KEY → OLLAMA_HOST → default).
+/// Both should collapse when `panops-portable::genai_llm` grows an
+/// `auto_with_handle` helper.
 fn build_llm(handle: tokio::runtime::Handle) -> Arc<dyn LlmProvider + Send + Sync> {
     use panops_portable::genai_llm::GenaiLlm;
     let model = if std::env::var("ANTHROPIC_API_KEY").is_ok() {
         "claude-haiku-4-5-20251001"
     } else if std::env::var("OPENAI_API_KEY").is_ok() {
         "gpt-4o-mini"
+    } else if std::env::var("OLLAMA_HOST").is_ok() {
+        "gemma3:4b"
     } else {
+        // Last-resort default. Matches `GenaiLlm::auto` so the IPC
+        // server is no more restrictive than the CLI's auto mode.
         "gemma3:4b"
     };
     Arc::new(GenaiLlm::with_handle(model, handle))
