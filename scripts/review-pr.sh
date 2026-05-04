@@ -18,7 +18,6 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REDACT="$REPO_ROOT/.github/workflows/scripts/redact-review.py"
 
 PRIMARY_MODEL="qwen3.6-plus"
 RUN_GLM=false
@@ -181,8 +180,6 @@ run_one_model() {
       --max-turns 30 \
       < /dev/null > "$out" 2>&1 \
     || printf '\n_(claude exited non-zero — output above is partial)_\n' >> "$out"
-
-  python3 "$REDACT" "$out" >/dev/null
 
   local marker="<!-- panops-ai-review:$model -->"
   local body="$WORK/comment-$model.md"
