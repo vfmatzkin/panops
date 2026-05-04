@@ -12,7 +12,7 @@ panops-core = { path = "../panops-core" }
 whisper-rs = "0.16"
 sherpa-rs = "0.6"
 hound = "3.5"
-directories = "5"
+directories = "6"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 sha2 = "0.10"
 tar = "0.4"
