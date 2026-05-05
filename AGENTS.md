@@ -52,6 +52,8 @@ Mac app build commands land in slice 06.
 - **MUST** write a conformance fn per port. Every adapter passes the same harness.
 - **MUST** keep one slice = one PR = the maintainer's review gate. **NEVER** start slice N+1 until slice N's PR is merged.
 - **MUST** scope plans per-slice. **NEVER** write whole-project step lists.
+- **MUST** drive `OnceLock` / `OnceCell` (or any once-init slot a handler can observe) to a terminal state on every path — success, error, or panic. Wrap initializing closures in `std::panic::catch_unwind` and convert panic payloads to `Err` so the slot never stays permanently `None`. Precedent: commit `02559a3` (heavy-init panic recovery).
+- **MUST NOT** derive `serde::Serialize` on domain error types (`AsrError`, `DiarError`, `LlmError`, `NotesError`, …). IPC transport types in `crates/panops-protocol` convert from them at the boundary so domain errors stay platform-agnostic and free to evolve.
 
 ## Methodology — solo dev with agents
 
