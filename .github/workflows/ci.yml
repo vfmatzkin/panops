@@ -64,7 +64,7 @@ jobs:
       # run-host. Compile but don't run on Linux. macOS is the primary target.
       - name: Cache ASR + diarization models
         if: matrix.os == 'macos-latest'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .panops-models
           key: panops-models-v3-${{ hashFiles('crates/panops-portable/src/model.rs') }}
@@ -124,7 +124,7 @@ jobs:
               exit 1
             fi
           fi
-      - uses: taiki-e/install-action@v2.75.27
+      - uses: taiki-e/install-action@v2.77.1
         if: matrix.os == 'macos-latest'
         with:
           tool: cargo-nextest
