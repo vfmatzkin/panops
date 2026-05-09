@@ -85,6 +85,11 @@ pub struct NotesGenerateParams {
     pub no_diarize: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// When `Some`, attach the generated note to the existing meeting.
+    /// When `None`, the handler auto-creates a meeting, returns its
+    /// id, and writes notes into `<data_dir>/meetings/<id>/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meeting_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -98,6 +103,9 @@ pub enum NotesDialect {
 pub struct NotesGenerateResult {
     pub primary_file: String,
     pub assets: Vec<String>,
+    /// The meeting this note belongs to. Always set after slice 06
+    /// (auto-created when `NotesGenerateParams.meeting_id` was `None`).
+    pub meeting_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -109,6 +117,34 @@ pub struct MeetingSummary {
     /// a Rust-specific time crate to consume it.
     pub started_at: String,
     pub duration_ms: u64,
+}
+
+/// Full meeting record returned by `meeting.get` / `meeting.start` /
+/// `meeting.stop`. New in slice 06; `MeetingSummary` (lighter shape
+/// for `meeting.list`) remains unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Meeting {
+    pub id: String,
+    pub title: String,
+    /// RFC3339. See `MeetingSummary` doc on string-vs-DateTime choice.
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub duration_ms: Option<u64>,
+    /// BCP-47 language hint, or "auto".
+    pub language: String,
+    /// Absolute path to the meeting directory (where notes / future
+    /// audio + screenshots live).
+    pub dir_path: String,
+}
+
+/// Input shape for `meeting.start`. Both fields optional; server
+/// applies defaults (title="", language="auto").
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct MeetingConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 #[cfg(test)]
@@ -124,6 +160,7 @@ mod tests {
             llm_model: None,
             no_diarize: None,
             language: None,
+            meeting_id: None,
         };
         let json = serde_json::to_string(&p).unwrap();
         // Optional fields with skip_serializing_if must be absent.
@@ -141,10 +178,85 @@ mod tests {
             llm_model: Some("gemma3:4b".into()),
             no_diarize: Some(true),
             language: Some("en".into()),
+            meeting_id: Some("m1".into()),
         };
         let back: NotesGenerateParams =
             serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(back, p);
+    }
+
+    #[test]
+    fn meeting_round_trips_with_all_fields() {
+        let m = Meeting {
+            id: "m1".into(),
+            title: "Test".into(),
+            started_at: "2026-05-05T10:00:00+00:00".into(),
+            ended_at: Some("2026-05-05T11:00:00+00:00".into()),
+            duration_ms: Some(3_600_000),
+            language: "en".into(),
+            dir_path: "/tmp/m1".into(),
+        };
+        let back: Meeting = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back, m);
+    }
+
+    #[test]
+    fn meeting_in_progress_serialises_with_nulls() {
+        let m = Meeting {
+            id: "m1".into(),
+            title: "Test".into(),
+            started_at: "2026-05-05T10:00:00+00:00".into(),
+            ended_at: None,
+            duration_ms: None,
+            language: "auto".into(),
+            dir_path: "/tmp/m1".into(),
+        };
+        let s = serde_json::to_string(&m).unwrap();
+        assert!(s.contains("\"ended_at\":null"), "got: {s}");
+        assert!(s.contains("\"duration_ms\":null"), "got: {s}");
+    }
+
+    #[test]
+    fn meeting_config_round_trips_with_optionals_omitted() {
+        let cfg = MeetingConfig {
+            title: None,
+            language: None,
+        };
+        let s = serde_json::to_string(&cfg).unwrap();
+        let back: MeetingConfig = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn meeting_config_accepts_empty_object() {
+        let back: MeetingConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(back.title, None);
+        assert_eq!(back.language, None);
+    }
+
+    #[test]
+    fn notes_generate_params_accepts_meeting_id() {
+        let json = r#"{"audio":"/x.wav","meeting_id":"abc"}"#;
+        let p: NotesGenerateParams = serde_json::from_str(json).unwrap();
+        assert_eq!(p.meeting_id.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn notes_generate_params_accepts_no_meeting_id() {
+        let json = r#"{"audio":"/x.wav"}"#;
+        let p: NotesGenerateParams = serde_json::from_str(json).unwrap();
+        assert_eq!(p.meeting_id, None);
+    }
+
+    #[test]
+    fn notes_generate_result_emits_meeting_id() {
+        let r = NotesGenerateResult {
+            primary_file: "/x/notes.md".into(),
+            assets: vec!["/x/screenshots/1.jpg".into()],
+            meeting_id: "abc".into(),
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains("\"meeting_id\":\"abc\""), "got: {s}");
     }
 
     #[test]
@@ -166,6 +278,7 @@ mod tests {
             result: NotesGenerateResult {
                 primary_file: "/tmp/notes.md".into(),
                 assets: vec!["/tmp/screenshots/a.jpg".into()],
+                meeting_id: "m1".into(),
             },
         });
         let json = serde_json::to_string(&e).unwrap();

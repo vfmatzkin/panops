@@ -1,4 +1,5 @@
-//! Slice 05 — calling an unknown method returns JSON-RPC error code -32601.
+//! Slice 06 — `ipc.meeting.set_language` updates the row and the
+//! change survives a re-fetch.
 
 mod common;
 
@@ -10,13 +11,15 @@ use panops_core::conformance::fakes::{
     FakeNotesExporter, KnownTurnsFake, MockLlm, TranscriptFileFake,
 };
 use panops_engine::server::{EngineServices, run_serve_in_process};
+use panops_protocol::Meeting;
+use serde_json::json;
 use tempfile::tempdir;
 use tokio::sync::watch;
 
 use common::{tempdir_storage, uds_ws_client, wait_for_socket};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unknown_method_returns_method_not_found() {
+async fn set_language_updates_row() {
     let dir = tempdir().unwrap();
     let socket = dir.path().join("engine.sock");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -24,7 +27,7 @@ async fn unknown_method_returns_method_not_found() {
     let (_storage_tmp, storage, data_dir) = tempdir_storage();
     let services = EngineServices::ready(
         Arc::new(MockLlm::default()),
-        storage,
+        storage.clone(),
         data_dir,
         Arc::new(TranscriptFileFake),
         Arc::new(KnownTurnsFake),
@@ -38,21 +41,30 @@ async fn unknown_method_returns_method_not_found() {
             .await
             .unwrap();
     });
-
     wait_for_socket(&socket).await;
 
     let client = uds_ws_client(&socket).await;
-    let err = ClientT::request::<serde_json::Value, _>(&client, "ipc.foo.bar", rpc_params![])
-        .await
-        .expect_err("foo.bar must error");
+    let id: String = ClientT::request(
+        &client,
+        "ipc.meeting.start",
+        rpc_params![json!({"language":"en"})],
+    )
+    .await
+    .expect("start");
 
-    let msg = format!("{err:?}");
-    assert!(
-        msg.contains("Method not found")
-            || msg.contains("-32601")
-            || msg.contains("MethodNotFound"),
-        "expected method-not-found error, got: {msg}"
-    );
+    let updated: Meeting = ClientT::request(
+        &client,
+        "ipc.meeting.set_language",
+        rpc_params![json!({"id":id.clone(),"language":"es"})],
+    )
+    .await
+    .expect("set_language");
+
+    assert_eq!(updated.language, "es");
+
+    // Round-trip via storage too.
+    let row = storage.get_meeting(&id).unwrap();
+    assert_eq!(row.language, "es");
 
     let _ = shutdown_tx.send(true);
     let _ = server.await;

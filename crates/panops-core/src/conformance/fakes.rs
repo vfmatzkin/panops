@@ -180,3 +180,183 @@ impl crate::exporter::NotesExporter for FakeNotesExporter {
         })
     }
 }
+
+// === InMemoryStorage ============================================
+
+use chrono::Utc;
+
+use crate::storage::{
+    Meeting, MeetingDraft, MeetingSummary, Note, NoteDraft, Storage, StorageError,
+};
+
+/// In-process `Storage` fake. Used by `panops-core`'s own tests and
+/// by `panops-engine`'s IPC integration tests where opening a real
+/// SQLite DB on every run would be unnecessary friction.
+pub struct InMemoryStorage {
+    inner: Mutex<InMemoryInner>,
+}
+
+struct InMemoryInner {
+    meetings: HashMap<String, Meeting>,
+    notes: HashMap<String, Note>,
+}
+
+impl Default for InMemoryStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InMemoryStorage {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(InMemoryInner {
+                meetings: HashMap::new(),
+                notes: HashMap::new(),
+            }),
+        }
+    }
+}
+
+impl Storage for InMemoryStorage {
+    fn create_meeting(&self, d: MeetingDraft) -> Result<Meeting, StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.meetings.contains_key(&d.id) {
+            return Err(StorageError::AlreadyExists {
+                id: d.id,
+                kind: "meeting",
+            });
+        }
+        let m = Meeting {
+            id: d.id.clone(),
+            title: d.title,
+            started_at: d.started_at,
+            ended_at: None,
+            duration_ms: None,
+            language: d.language,
+            dir_path: d.dir_path,
+        };
+        inner.meetings.insert(d.id, m.clone());
+        Ok(m)
+    }
+
+    fn get_meeting(&self, id: &str) -> Result<Meeting, StorageError> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .meetings
+            .get(id)
+            .cloned()
+            .ok_or_else(|| StorageError::NotFound {
+                id: id.into(),
+                kind: "meeting",
+            })
+    }
+
+    fn list_meetings(&self) -> Result<Vec<MeetingSummary>, StorageError> {
+        let inner = self.inner.lock().unwrap();
+        let mut rows: Vec<MeetingSummary> = inner
+            .meetings
+            .values()
+            .map(|m| MeetingSummary {
+                id: m.id.clone(),
+                title: m.title.clone(),
+                started_at: m.started_at.clone(),
+                duration_ms: m.duration_ms.unwrap_or(0),
+            })
+            .collect();
+        rows.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        Ok(rows)
+    }
+
+    fn update_meeting_ended(
+        &self,
+        id: &str,
+        ended_at: &str,
+        duration_ms: u64,
+    ) -> Result<Meeting, StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        let m = inner
+            .meetings
+            .get_mut(id)
+            .ok_or_else(|| StorageError::NotFound {
+                id: id.into(),
+                kind: "meeting",
+            })?;
+        m.ended_at = Some(ended_at.into());
+        m.duration_ms = Some(duration_ms);
+        Ok(m.clone())
+    }
+
+    fn update_meeting_language(&self, id: &str, language: &str) -> Result<Meeting, StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        let m = inner
+            .meetings
+            .get_mut(id)
+            .ok_or_else(|| StorageError::NotFound {
+                id: id.into(),
+                kind: "meeting",
+            })?;
+        m.language = language.into();
+        Ok(m.clone())
+    }
+
+    fn delete_meeting(&self, id: &str) -> Result<(), StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.meetings.remove(id).is_none() {
+            return Err(StorageError::NotFound {
+                id: id.into(),
+                kind: "meeting",
+            });
+        }
+        // FK cascade simulation.
+        inner.notes.retain(|_, n| n.meeting_id != id);
+        Ok(())
+    }
+
+    fn create_note(&self, d: NoteDraft) -> Result<Note, StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.meetings.contains_key(&d.meeting_id) {
+            return Err(StorageError::NotFound {
+                id: d.meeting_id,
+                kind: "meeting",
+            });
+        }
+        if inner.notes.contains_key(&d.id) {
+            return Err(StorageError::AlreadyExists {
+                id: d.id,
+                kind: "note",
+            });
+        }
+        let n = Note {
+            id: d.id.clone(),
+            meeting_id: d.meeting_id,
+            dialect: d.dialect,
+            content_md: d.content_md,
+            primary_path: d.primary_path,
+            created_at: Utc::now().to_rfc3339(),
+        };
+        inner.notes.insert(d.id, n.clone());
+        Ok(n)
+    }
+
+    fn list_notes_for_meeting(&self, meeting_id: &str) -> Result<Vec<Note>, StorageError> {
+        let inner = self.inner.lock().unwrap();
+        Ok(inner
+            .notes
+            .values()
+            .filter(|n| n.meeting_id == meeting_id)
+            .cloned()
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod storage_fake_tests {
+    use super::InMemoryStorage;
+    use crate::conformance::storage::run_suite;
+
+    #[test]
+    fn in_memory_storage_passes_conformance() {
+        run_suite(&InMemoryStorage::new());
+    }
+}

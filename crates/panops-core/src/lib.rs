@@ -8,6 +8,7 @@ pub mod llm;
 pub mod merge;
 pub mod notes;
 pub mod segment;
+pub mod storage;
 pub mod wer;
 
 pub use asr::{AsrError, AsrProvider};
@@ -19,3 +20,4 @@ pub use notes::dialect::MarkdownDialect;
 pub use notes::error::NotesError;
 pub use notes::pipeline::NotesGenerator;
 pub use segment::{Segment, Transcript};
+pub use storage::{Meeting, MeetingDraft, MeetingSummary, Note, NoteDraft, Storage, StorageError};

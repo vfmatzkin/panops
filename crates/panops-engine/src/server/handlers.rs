@@ -22,10 +22,25 @@ use panops_core::notes::dialect::MarkdownDialect;
 use panops_core::notes::input::{MeetingMetadata, NotesInput};
 use panops_core::notes::pipeline::NotesGenerator;
 use panops_protocol::{
-    Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, MeetingSummary, NotesDialect,
-    NotesGenerateParams, NotesGenerateResult,
+    Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, Meeting, MeetingConfig,
+    MeetingSummary, NotesDialect, NotesGenerateParams, NotesGenerateResult,
 };
 use tokio::sync::broadcast;
+
+/// Wrapper for `meeting.{stop,get,delete,set_language}` request params.
+/// jsonrpsee's `#[rpc]` macro accepts strongly-typed params via a single
+/// struct argument; we use distinct types per method so `serde_json` can
+/// validate the shape and so the API surface is self-documenting.
+#[derive(Debug, ::serde::Deserialize)]
+pub struct MeetingIdParam {
+    pub id: String,
+}
+
+#[derive(Debug, ::serde::Deserialize)]
+pub struct MeetingSetLanguageParams {
+    pub id: String,
+    pub language: String,
+}
 
 #[rpc(server, namespace = "ipc", namespace_separator = ".")]
 pub(super) trait Ipc {
@@ -37,6 +52,24 @@ pub(super) trait Ipc {
 
     #[method(name = "meeting.list")]
     async fn meeting_list(&self) -> Result<Vec<MeetingSummary>, ErrorObjectOwned>;
+
+    #[method(name = "meeting.start")]
+    async fn meeting_start(&self, params: MeetingConfig) -> Result<String, ErrorObjectOwned>;
+
+    #[method(name = "meeting.stop")]
+    async fn meeting_stop(&self, params: MeetingIdParam) -> Result<Meeting, ErrorObjectOwned>;
+
+    #[method(name = "meeting.get")]
+    async fn meeting_get(&self, params: MeetingIdParam) -> Result<Meeting, ErrorObjectOwned>;
+
+    #[method(name = "meeting.set_language")]
+    async fn meeting_set_language(
+        &self,
+        params: MeetingSetLanguageParams,
+    ) -> Result<Meeting, ErrorObjectOwned>;
+
+    #[method(name = "meeting.delete")]
+    async fn meeting_delete(&self, params: MeetingIdParam) -> Result<(), ErrorObjectOwned>;
 
     #[subscription(
         name = "events.subscribe" => "events",
@@ -114,9 +147,132 @@ impl IpcServer for IpcImpl {
     }
 
     async fn meeting_list(&self) -> Result<Vec<MeetingSummary>, ErrorObjectOwned> {
-        // Slice 05 stub. Backed by SQLite once #17 lands; ships now to
-        // lock the response shape (see spec §D9).
-        Ok(Vec::new())
+        let storage = self.services.storage.clone();
+        let rows = tokio::task::spawn_blocking(move || storage.list_meetings())
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "meeting.list spawn_blocking join");
+                ipc_error_to_obj(IpcError::Internal {
+                    message: "meeting.list internal error".into(),
+                })
+            })?
+            .map_err(|e| ipc_error_to_obj(e.into()))?;
+
+        // Convert from `panops_core::storage::MeetingSummary` to the
+        // wire-shape `panops_protocol::MeetingSummary`. Same field set
+        // today; the explicit map keeps us free to diverge later.
+        Ok(rows
+            .into_iter()
+            .map(|s| MeetingSummary {
+                id: s.id,
+                title: s.title,
+                started_at: s.started_at,
+                duration_ms: s.duration_ms,
+            })
+            .collect())
+    }
+
+    async fn meeting_start(&self, params: MeetingConfig) -> Result<String, ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        let data_dir = self.services.data_dir.clone();
+        spawn_blocking_into_ipc("meeting.start", move || {
+            let id = uuid::Uuid::new_v4().simple().to_string();
+            let dir = data_dir.join("meetings").join(&id);
+            // The dir + screenshots subdir let the Mac shell drop
+            // assets immediately. `create_dir_all` is idempotent if
+            // the dir already exists (it can't, since `id` is fresh).
+            std::fs::create_dir_all(dir.join("screenshots")).map_err(|e| {
+                tracing::error!(error = %e, "meeting.start create_dir_all");
+                IpcError::Internal {
+                    message: "create meeting dir failed".into(),
+                }
+            })?;
+            let started_at = chrono::Local::now().fixed_offset().to_rfc3339();
+            storage
+                .create_meeting(panops_core::storage::MeetingDraft {
+                    id: id.clone(),
+                    title: params.title.unwrap_or_default(),
+                    started_at,
+                    language: params.language.unwrap_or_else(|| "auto".into()),
+                    dir_path: dir.to_string_lossy().into_owned(),
+                })
+                .map_err(IpcError::from)?;
+            Ok(id)
+        })
+        .await
+    }
+
+    async fn meeting_stop(&self, params: MeetingIdParam) -> Result<Meeting, ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        let id = params.id;
+        spawn_blocking_into_ipc("meeting.stop", move || {
+            // Read the existing row to compute duration_ms from
+            // started_at -> now. NotFound surfaces immediately as
+            // InputNotFound (no need to attempt the update).
+            let m = storage.get_meeting(&id).map_err(IpcError::from)?;
+            let ended_at = chrono::Local::now().fixed_offset().to_rfc3339();
+            let started = chrono::DateTime::parse_from_rfc3339(&m.started_at).map_err(|e| {
+                tracing::error!(error = %e, "meeting.stop parse started_at");
+                IpcError::Internal {
+                    message: "internal time-parse error".into(),
+                }
+            })?;
+            let ended = chrono::DateTime::parse_from_rfc3339(&ended_at).expect("just-formatted");
+            let dur = (ended - started).num_milliseconds().max(0) as u64;
+            let updated = storage
+                .update_meeting_ended(&id, &ended_at, dur)
+                .map_err(IpcError::from)?;
+            Ok(to_protocol_meeting(updated))
+        })
+        .await
+    }
+
+    async fn meeting_get(&self, params: MeetingIdParam) -> Result<Meeting, ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        let id = params.id;
+        spawn_blocking_into_ipc("meeting.get", move || {
+            storage
+                .get_meeting(&id)
+                .map(to_protocol_meeting)
+                .map_err(IpcError::from)
+        })
+        .await
+    }
+
+    async fn meeting_set_language(
+        &self,
+        params: MeetingSetLanguageParams,
+    ) -> Result<Meeting, ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("meeting.set_language", move || {
+            storage
+                .update_meeting_language(&params.id, &params.language)
+                .map(to_protocol_meeting)
+                .map_err(IpcError::from)
+        })
+        .await
+    }
+
+    async fn meeting_delete(&self, params: MeetingIdParam) -> Result<(), ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        let id = params.id;
+        spawn_blocking_into_ipc("meeting.delete", move || {
+            // Read first to capture dir_path. Deleting the row before
+            // the fs cleanup keeps the registry the source of truth
+            // (orphan dir on fs failure is recoverable; orphan rows
+            // are surprises waiting to bite later).
+            let m = storage.get_meeting(&id).map_err(IpcError::from)?;
+            storage.delete_meeting(&id).map_err(IpcError::from)?;
+            if let Err(e) = std::fs::remove_dir_all(&m.dir_path) {
+                tracing::warn!(
+                    error = %e,
+                    dir = %m.dir_path,
+                    "meeting.delete: row gone but fs cleanup failed (orphan dir)"
+                );
+            }
+            Ok(())
+        })
+        .await
     }
 
     async fn subscribe_events(&self, pending: PendingSubscriptionSink) -> SubscriptionResult {
@@ -233,6 +389,46 @@ pub(super) fn run_notes_pipeline(
         }
     })?;
 
+    // Slice 06: resolve `meeting_id`. If the caller passed one, verify
+    // it exists (NotFound -> InputNotFound surfaces synchronously).
+    // Otherwise, auto-create the meeting now so the exporter writes
+    // into the canonical `meetings/<uuid>/` layout. The created
+    // meeting's `started_at` is server-set; `title` defaults to the
+    // audio file stem.
+    let (resolved_meeting_id, canonical_out_dir) = match &params.meeting_id {
+        Some(id) => {
+            let m = services.storage.get_meeting(id).map_err(IpcError::from)?;
+            (id.clone(), PathBuf::from(m.dir_path))
+        }
+        None => {
+            let id = uuid::Uuid::new_v4().simple().to_string();
+            let dir = services.data_dir.join("meetings").join(&id);
+            std::fs::create_dir_all(dir.join("screenshots")).map_err(|e| {
+                tracing::error!(error = %e, "notes.generate auto-create meetings dir");
+                IpcError::Internal {
+                    message: "failed to prepare meeting directory".into(),
+                }
+            })?;
+            let title = audio_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("untitled")
+                .to_string();
+            let started_at_str = chrono::Local::now().fixed_offset().to_rfc3339();
+            services
+                .storage
+                .create_meeting(panops_core::storage::MeetingDraft {
+                    id: id.clone(),
+                    title,
+                    started_at: started_at_str,
+                    language: params.language.clone().unwrap_or_else(|| "auto".into()),
+                    dir_path: dir.to_string_lossy().into_owned(),
+                })
+                .map_err(IpcError::from)?;
+            (id, dir)
+        }
+    };
+
     let mut transcript = heavy
         .asr
         .transcribe_full(&audio_path, params.language.as_deref())
@@ -269,23 +465,14 @@ pub(super) fn run_notes_pipeline(
     let notes = generator.generate(input).map_err(IpcError::from)?;
     let exporter = heavy.exporter.clone();
 
-    // Output dir convention matches CLI `run_notes`: `<audio_stem>-notes`
-    // alongside the audio file. Falls back to `./notes` if the parent
-    // can't be resolved (shouldn't happen for valid inputs but keeps
-    // unwrap-free).
-    let stem = audio_path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "notes".to_string());
-    let out_dir = audio_path
-        .parent()
-        .map(|p| p.join(format!("{stem}-notes")))
-        .unwrap_or_else(|| PathBuf::from("./notes"));
+    // Slice 06: write into the canonical `meetings/<uuid>/` layout
+    // (resolved above). The on-disk `screenshots/` subdir was already
+    // created during meeting.start (or during auto-create above) so
+    // we only need to make sure the dir itself exists for the
+    // existing-meeting path.
+    let out_dir = canonical_out_dir;
     if !out_dir.exists() {
         std::fs::create_dir_all(&out_dir).map_err(|e| {
-            // Wire-side message stays opaque: the full path + os error
-            // would let a probing client map the local FS layout. The
-            // operator gets the detail via tracing.
             tracing::error!(
                 error = %e,
                 path = ?out_dir,
@@ -306,6 +493,25 @@ pub(super) fn run_notes_pipeline(
         IpcError::from(e)
     })?;
 
+    // Persist the note row. Best-effort: even if storage rejects (e.g.,
+    // FK violation because the meeting was deleted mid-flight), we
+    // still surface the file we wrote to disk via the result so the
+    // caller has the artifact. Surface the storage error to the wire.
+    let dialect_str = match dialect {
+        MarkdownDialect::Basic => "basic",
+        MarkdownDialect::NotionEnhanced => "notion-enhanced",
+    };
+    services
+        .storage
+        .create_note(panops_core::storage::NoteDraft {
+            id: uuid::Uuid::new_v4().simple().to_string(),
+            meeting_id: resolved_meeting_id.clone(),
+            dialect: dialect_str.into(),
+            content_md: std::fs::read_to_string(&artifact.primary_file).unwrap_or_default(),
+            primary_path: artifact.primary_file.display().to_string(),
+        })
+        .map_err(IpcError::from)?;
+
     Ok(NotesGenerateResult {
         primary_file: artifact.primary_file.display().to_string(),
         assets: artifact
@@ -313,6 +519,7 @@ pub(super) fn run_notes_pipeline(
             .iter()
             .map(|p| p.display().to_string())
             .collect(),
+        meeting_id: resolved_meeting_id,
     })
 }
 
@@ -325,10 +532,44 @@ pub(super) fn run_notes_pipeline(
 /// `Ok(vec![])`. Kept because synchronous methods added in slice 06+
 /// (e.g. `meeting.get`) will need it. Removing now means re-deriving
 /// the (-32000, kind, data) shape later from the spec.
-#[allow(dead_code)]
 pub(super) fn ipc_error_to_obj(e: IpcError) -> ErrorObjectOwned {
     let data = serde_json::to_value(&e).expect("IpcError serialise");
     ErrorObjectOwned::owned(-32000, e.to_string(), Some(data))
+}
+
+/// Convert a `panops_core::storage::Meeting` (domain) to a
+/// `panops_protocol::Meeting` (wire). Same field set today; the
+/// explicit map keeps domain free to evolve without breaking wire.
+fn to_protocol_meeting(m: panops_core::storage::Meeting) -> Meeting {
+    Meeting {
+        id: m.id,
+        title: m.title,
+        started_at: m.started_at,
+        ended_at: m.ended_at,
+        duration_ms: m.duration_ms,
+        language: m.language,
+        dir_path: m.dir_path,
+    }
+}
+
+/// Run a synchronous closure on the blocking pool and convert the
+/// result into a JSON-RPC `ErrorObjectOwned`. Centralizes the
+/// `JoinError -> Internal` mapping so each handler stays focused on
+/// its own logic. `op` is the method name for tracing context.
+async fn spawn_blocking_into_ipc<T, F>(op: &'static str, f: F) -> Result<T, ErrorObjectOwned>
+where
+    F: FnOnce() -> Result<T, IpcError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| {
+            tracing::error!(method = op, error = %e, "spawn_blocking join error");
+            ipc_error_to_obj(IpcError::Internal {
+                message: format!("{op} internal error"),
+            })
+        })?
+        .map_err(ipc_error_to_obj)
 }
 
 #[cfg(test)]
@@ -352,13 +593,17 @@ mod readiness_tests {
             llm_model: None,
             no_diarize: None,
             language: None,
+            meeting_id: None,
         }
     }
 
     #[test]
     fn pending_services_yield_provider_unavailable_during_warmup() {
         let llm: Arc<dyn LlmProvider + Send + Sync> = Arc::new(MockLlm::default());
-        let (services, _heavy_lock) = crate::server::EngineServices::pending(llm);
+        let storage: Arc<dyn panops_core::storage::Storage> =
+            Arc::new(panops_core::conformance::fakes::InMemoryStorage::new());
+        let (services, _heavy_lock) =
+            crate::server::EngineServices::pending(llm, storage, std::path::PathBuf::from("/tmp"));
         let err = run_notes_pipeline(&services, &dummy_params()).expect_err("warmup must error");
         match err {
             IpcError::ProviderUnavailable { message } => {
@@ -374,7 +619,10 @@ mod readiness_tests {
     #[test]
     fn pending_services_yield_internal_when_init_failed() {
         let llm: Arc<dyn LlmProvider + Send + Sync> = Arc::new(MockLlm::default());
-        let (services, heavy_lock) = crate::server::EngineServices::pending(llm);
+        let storage: Arc<dyn panops_core::storage::Storage> =
+            Arc::new(panops_core::conformance::fakes::InMemoryStorage::new());
+        let (services, heavy_lock) =
+            crate::server::EngineServices::pending(llm, storage, std::path::PathBuf::from("/tmp"));
         // Simulate init failure (e.g., model download blew up).
         heavy_lock
             .set(Err("simulated whisper init failure".to_string()))

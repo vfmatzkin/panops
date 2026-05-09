@@ -14,7 +14,7 @@ use panops_protocol::MeetingSummary;
 use tempfile::tempdir;
 use tokio::sync::watch;
 
-use common::{uds_ws_client, wait_for_socket};
+use common::{tempdir_storage, uds_ws_client, wait_for_socket};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn meeting_list_returns_empty_array() {
@@ -22,8 +22,11 @@ async fn meeting_list_returns_empty_array() {
     let socket = dir.path().join("engine.sock");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    let (_storage_tmp, storage, data_dir) = tempdir_storage();
     let services = EngineServices::ready(
         Arc::new(MockLlm::default()),
+        storage,
+        data_dir,
         Arc::new(TranscriptFileFake),
         Arc::new(KnownTurnsFake),
         Arc::new(FakeNotesExporter),
