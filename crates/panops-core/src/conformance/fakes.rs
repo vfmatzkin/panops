@@ -227,6 +227,17 @@ impl Storage for InMemoryStorage {
                 kind: "meeting",
             });
         }
+        // Mirror the schema's `dir_path TEXT NOT NULL UNIQUE` so the
+        // fake and real adapter behave identically. Without this,
+        // tests that pass against the fake could break against the
+        // real adapter on a dir_path collision.
+        if inner.meetings.values().any(|m| m.dir_path == d.dir_path) {
+            return Err(StorageError::UniqueConflict {
+                kind: "meeting",
+                field: "dir_path",
+                value: d.dir_path,
+            });
+        }
         let m = Meeting {
             id: d.id.clone(),
             title: d.title,
@@ -238,6 +249,70 @@ impl Storage for InMemoryStorage {
         };
         inner.meetings.insert(d.id, m.clone());
         Ok(m)
+    }
+
+    fn create_meeting_with_note(
+        &self,
+        meeting: MeetingDraft,
+        note: NoteDraft,
+        ended_at: Option<&str>,
+        duration_ms: Option<u64>,
+    ) -> Result<(Meeting, Note), StorageError> {
+        // Validate everything up front under a single lock so partial
+        // commits aren't visible. Real adapter (RusqliteStorage) does
+        // this with `BEGIN`/`COMMIT`; we fake atomicity here by holding
+        // the lock for the whole sequence and only mutating after all
+        // checks pass.
+        let mut inner = self.inner.lock().unwrap();
+        if inner.meetings.contains_key(&meeting.id) {
+            return Err(StorageError::AlreadyExists {
+                id: meeting.id,
+                kind: "meeting",
+            });
+        }
+        if inner
+            .meetings
+            .values()
+            .any(|m| m.dir_path == meeting.dir_path)
+        {
+            return Err(StorageError::UniqueConflict {
+                kind: "meeting",
+                field: "dir_path",
+                value: meeting.dir_path,
+            });
+        }
+        if note.meeting_id != meeting.id {
+            return Err(StorageError::Sql {
+                message: "create_meeting_with_note: note.meeting_id must match meeting.id".into(),
+            });
+        }
+        if inner.notes.contains_key(&note.id) {
+            return Err(StorageError::AlreadyExists {
+                id: note.id,
+                kind: "note",
+            });
+        }
+        // All checks passed — commit both rows.
+        let m = Meeting {
+            id: meeting.id.clone(),
+            title: meeting.title,
+            started_at: meeting.started_at,
+            ended_at: ended_at.map(str::to_owned),
+            duration_ms,
+            language: meeting.language,
+            dir_path: meeting.dir_path,
+        };
+        let n = Note {
+            id: note.id.clone(),
+            meeting_id: note.meeting_id,
+            dialect: note.dialect,
+            content_md: note.content_md,
+            primary_path: note.primary_path,
+            created_at: Utc::now().to_rfc3339(),
+        };
+        inner.meetings.insert(meeting.id, m.clone());
+        inner.notes.insert(note.id, n.clone());
+        Ok((m, n))
     }
 
     fn get_meeting(&self, id: &str) -> Result<Meeting, StorageError> {

@@ -226,7 +226,9 @@ impl EngineServices {
 }
 ```
 
-`run_serve` constructs `RusqliteStorage::new(data_dir.join("panops.db"))?` eagerly **after** binding the socket but **before** registering handlers (matches the eager-after-bind pattern from #74 fix in `dbd80c8`). Failure during DB open returns the same error path as `--socket` failures. Each integration test that uses `run_serve_in_process` injects its own `Arc<InMemoryStorage>` + `tempfile::TempDir` for `data_dir`.
+`run_serve` constructs `RusqliteStorage::new(data_dir.join("panops.db"))?` **before** binding the socket. SQLite open is microseconds (no model load, no I/O budget concern), so the eager-after-bind pattern from #74 — which exists specifically to defer multi-second Whisper / Sherpa init past the 5s "socket appears" test budget — does NOT apply to storage. Opening before bind means a corrupt or wrong-schema-version DB fails with a clean exit code BEFORE we claim the socket, instead of leaving a dangling socket file behind a startup failure. (Spec amended 2026-05-09 from earlier "after bind" wording, ratified by maintainer; the code has always done this.)
+
+Each integration test that uses `run_serve_in_process` injects its own `Arc<InMemoryStorage>` + `tempfile::TempDir` for `data_dir`.
 
 ### IPC surface
 

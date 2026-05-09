@@ -325,10 +325,17 @@ fn run_notes(
     Ok(())
 }
 
-/// Insert a fresh meeting + its initial note row into `storage`. Pure
-/// trait calls — no FS or DB-open — so callers may pass any `Storage`
-/// impl (real `RusqliteStorage` from CLI, in-memory fake from tests,
-/// or a future shared handle from a daemon-only-writes design).
+/// Insert a fresh meeting + its initial note row into `storage`
+/// **atomically**. Uses `Storage::create_meeting_with_note` which
+/// wraps both inserts in a single transaction (real adapter) or
+/// validates-all-then-commits (in-memory fake), so a note insert
+/// failure rolls back the meeting and never leaves the registry in
+/// a meeting-without-note state.
+///
+/// Pure trait calls — no FS-side DB open here — so callers may pass
+/// any `Storage` impl (real `RusqliteStorage` from CLI, in-memory
+/// fake from tests, or a future shared handle from a daemon-only-
+/// writes design).
 #[allow(clippy::too_many_arguments)]
 fn register_meeting_in_registry(
     storage: &dyn Storage,
@@ -341,32 +348,41 @@ fn register_meeting_in_registry(
     primary_path: String,
 ) -> Result<(), (u8, String)> {
     let meeting_id = uuid::Uuid::new_v4().simple().to_string();
-    let meeting = storage
-        .create_meeting(MeetingDraft {
-            id: meeting_id.clone(),
-            title,
-            started_at: started_at.clone(),
-            language,
-            dir_path,
-        })
-        .map_err(|e| (3, format!("register meeting: {e}")))?;
     // Mark ended_at = started_at + duration so the registry row is
-    // immediately "complete" (CLI flow has no live capture).
+    // immediately "complete" (CLI flow has no live capture). On
+    // parse failure (shouldn't happen — `started_at` came from
+    // chrono's own `to_rfc3339`), fall back to leaving ended_at
+    // unset so the row is still queryable.
     let ended_at = chrono::DateTime::parse_from_rfc3339(&started_at)
         .map(|dt| (dt + chrono::Duration::milliseconds(duration_ms as i64)).to_rfc3339())
-        .unwrap_or(started_at);
-    let _ = storage
-        .update_meeting_ended(&meeting.id, &ended_at, duration_ms)
-        .map_err(|e| (3, format!("update meeting ended: {e}")))?;
-    let _ = storage
-        .create_note(NoteDraft {
-            id: uuid::Uuid::new_v4().simple().to_string(),
-            meeting_id,
-            dialect,
-            content_md: std::fs::read_to_string(&primary_path).unwrap_or_default(),
-            primary_path,
-        })
-        .map_err(|e| (3, format!("register note: {e}")))?;
+        .ok();
+    // Surface read failures explicitly. If the freshly-written
+    // markdown can't be read back, the operator should know
+    // (permissions, antivirus quarantine, disk flap) — silently
+    // storing empty content makes debugging meeting search later
+    // much harder.
+    let content_md = std::fs::read_to_string(&primary_path)
+        .map_err(|e| (3, format!("read notes file {primary_path}: {e}")))?;
+    let (meeting, _note) = storage
+        .create_meeting_with_note(
+            MeetingDraft {
+                id: meeting_id.clone(),
+                title,
+                started_at,
+                language,
+                dir_path,
+            },
+            NoteDraft {
+                id: uuid::Uuid::new_v4().simple().to_string(),
+                meeting_id,
+                dialect,
+                content_md,
+                primary_path,
+            },
+            ended_at.as_deref(),
+            Some(duration_ms),
+        )
+        .map_err(|e| (3, format!("register meeting+note: {e}")))?;
     tracing::info!(meeting = %meeting.id, "registered meeting in registry");
     Ok(())
 }

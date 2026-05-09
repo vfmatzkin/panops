@@ -188,15 +188,27 @@ impl IpcServer for IpcImpl {
                 }
             })?;
             let started_at = chrono::Local::now().fixed_offset().to_rfc3339();
-            storage
-                .create_meeting(panops_core::storage::MeetingDraft {
-                    id: id.clone(),
-                    title: params.title.unwrap_or_default(),
-                    started_at,
-                    language: params.language.unwrap_or_else(|| "auto".into()),
-                    dir_path: dir.to_string_lossy().into_owned(),
-                })
-                .map_err(IpcError::from)?;
+            // If the row insert fails, remove the dir we just created
+            // so we don't leave an orphan that no registry row points
+            // at. (Row-then-fs ordering is for delete; for create the
+            // safe path is fs-then-row + remove-fs-on-row-failure.)
+            let create_result = storage.create_meeting(panops_core::storage::MeetingDraft {
+                id: id.clone(),
+                title: params.title.unwrap_or_default(),
+                started_at,
+                language: params.language.unwrap_or_else(|| "auto".into()),
+                dir_path: dir.to_string_lossy().into_owned(),
+            });
+            if let Err(e) = create_result {
+                if let Err(rm_err) = std::fs::remove_dir_all(&dir) {
+                    tracing::warn!(
+                        error = %rm_err,
+                        dir = ?dir,
+                        "meeting.start: failed to clean up meeting dir after row insert error"
+                    );
+                }
+                return Err(IpcError::from(e));
+            }
             Ok(id)
         })
         .await
@@ -217,7 +229,16 @@ impl IpcServer for IpcImpl {
                     message: "internal time-parse error".into(),
                 }
             })?;
-            let ended = chrono::DateTime::parse_from_rfc3339(&ended_at).expect("just-formatted");
+            let ended = chrono::DateTime::parse_from_rfc3339(&ended_at).map_err(|e| {
+                // Should be unreachable — we just formatted ended_at
+                // ourselves with chrono. If chrono ever changes its
+                // round-trip contract, this surfaces as Internal
+                // instead of panicking + poisoning shared state.
+                tracing::error!(error = %e, "meeting.stop parse self-formatted ended_at");
+                IpcError::Internal {
+                    message: "internal time-format error".into(),
+                }
+            })?;
             let dur = (ended - started).num_milliseconds().max(0) as u64;
             let updated = storage
                 .update_meeting_ended(&id, &ended_at, dur)
@@ -415,16 +436,29 @@ pub(super) fn run_notes_pipeline(
                 .unwrap_or("untitled")
                 .to_string();
             let started_at_str = chrono::Local::now().fixed_offset().to_rfc3339();
-            services
-                .storage
-                .create_meeting(panops_core::storage::MeetingDraft {
-                    id: id.clone(),
-                    title,
-                    started_at: started_at_str,
-                    language: params.language.clone().unwrap_or_else(|| "auto".into()),
-                    dir_path: dir.to_string_lossy().into_owned(),
-                })
-                .map_err(IpcError::from)?;
+            // If the row insert fails, remove the dir we just created
+            // so we don't orphan a `meetings/<uuid>/` directory under
+            // the data dir. Same rationale as `meeting.start`.
+            let create_result =
+                services
+                    .storage
+                    .create_meeting(panops_core::storage::MeetingDraft {
+                        id: id.clone(),
+                        title,
+                        started_at: started_at_str,
+                        language: params.language.clone().unwrap_or_else(|| "auto".into()),
+                        dir_path: dir.to_string_lossy().into_owned(),
+                    });
+            if let Err(e) = create_result {
+                if let Err(rm_err) = std::fs::remove_dir_all(&dir) {
+                    tracing::warn!(
+                        error = %rm_err,
+                        dir = ?dir,
+                        "notes.generate auto-create: failed to clean up dir after row insert error"
+                    );
+                }
+                return Err(IpcError::from(e));
+            }
             (id, dir)
         }
     };
@@ -493,24 +527,50 @@ pub(super) fn run_notes_pipeline(
         IpcError::from(e)
     })?;
 
-    // Persist the note row. Best-effort: even if storage rejects (e.g.,
-    // FK violation because the meeting was deleted mid-flight), we
-    // still surface the file we wrote to disk via the result so the
-    // caller has the artifact. Surface the storage error to the wire.
+    // Persist the note row. Genuinely best-effort: the markdown file
+    // is already on disk at `artifact.primary_file`. If the registry
+    // insert fails (e.g. FK violation because the meeting was
+    // deleted mid-flight, mutex poisoned, etc.), the client should
+    // still get JobDone with the path to the file we just wrote —
+    // hiding the artifact would be worse UX than an unregistered
+    // note. The storage error goes to `tracing::error!`.
     let dialect_str = match dialect {
         MarkdownDialect::Basic => "basic",
         MarkdownDialect::NotionEnhanced => "notion-enhanced",
     };
-    services
+    let content_md = match std::fs::read_to_string(&artifact.primary_file) {
+        Ok(s) => s,
+        Err(e) => {
+            // The file existed long enough for the exporter to write
+            // it; failing to read it back is unusual. Log the
+            // specific failure so the operator can investigate (FS
+            // permission flap, antivirus quarantine, disk error).
+            // Continue with empty `content_md` rather than blocking
+            // the client from learning about the artifact.
+            tracing::warn!(
+                error = %e,
+                path = ?artifact.primary_file,
+                "notes.generate could not read back artifact for registry; storing empty content"
+            );
+            String::new()
+        }
+    };
+    if let Err(e) = services
         .storage
         .create_note(panops_core::storage::NoteDraft {
             id: uuid::Uuid::new_v4().simple().to_string(),
             meeting_id: resolved_meeting_id.clone(),
             dialect: dialect_str.into(),
-            content_md: std::fs::read_to_string(&artifact.primary_file).unwrap_or_default(),
+            content_md,
             primary_path: artifact.primary_file.display().to_string(),
         })
-        .map_err(IpcError::from)?;
+    {
+        tracing::error!(
+            error = %e,
+            meeting_id = %resolved_meeting_id,
+            "notes.generate: registry insert failed; markdown file is on disk anyway"
+        );
+    }
 
     Ok(NotesGenerateResult {
         primary_file: artifact.primary_file.display().to_string(),
