@@ -22,6 +22,21 @@ pub trait Storage: Send + Sync {
     fn delete_meeting(&self, id: &str) -> Result<(), StorageError>;
     fn create_note(&self, draft: NoteDraft) -> Result<Note, StorageError>;
     fn list_notes_for_meeting(&self, meeting_id: &str) -> Result<Vec<Note>, StorageError>;
+
+    /// Atomic combined insert: meeting + note + (optional) ended_at
+    /// in a single transaction. Used by the CLI's `notes` flow so a
+    /// note insert failure rolls back the meeting row instead of
+    /// leaving a meeting-without-note in the registry. Real adapters
+    /// should use `BEGIN`/`COMMIT`; the in-memory fake fakes atomicity
+    /// by constructing both records up front and inserting only after
+    /// both validate.
+    fn create_meeting_with_note(
+        &self,
+        meeting: MeetingDraft,
+        note: NoteDraft,
+        ended_at: Option<&str>,
+        duration_ms: Option<u64>,
+    ) -> Result<(Meeting, Note), StorageError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,8 +93,21 @@ pub struct Note {
 pub enum StorageError {
     #[error("{kind} not found: {id}")]
     NotFound { id: String, kind: &'static str },
+    /// Primary-key collision: a row with this `id` already exists.
     #[error("{kind} already exists: {id}")]
     AlreadyExists { id: String, kind: &'static str },
+    /// Non-PK UNIQUE constraint collision. `field` names the column
+    /// (e.g., "dir_path") and `value` is the colliding value the
+    /// caller tried to write. Lets the wire layer surface a precise
+    /// error like "meeting.dir_path already in use" instead of
+    /// misattributing the conflict to the meeting's id (which is
+    /// what a blanket `AlreadyExists` mapping would do).
+    #[error("{kind}.{field} already in use: {value}")]
+    UniqueConflict {
+        kind: &'static str,
+        field: &'static str,
+        value: String,
+    },
     #[error("storage schema mismatch: actual {actual}, expected {expected}")]
     SchemaMismatch { actual: u32, expected: u32 },
     #[error("io: {source}")]

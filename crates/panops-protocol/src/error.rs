@@ -205,6 +205,9 @@ mod from_domain {
                 StorageError::AlreadyExists { kind, .. } => IpcError::InvalidInput {
                     message: format!("{kind} already exists"),
                 },
+                StorageError::UniqueConflict { kind, field, .. } => IpcError::InvalidInput {
+                    message: format!("{kind}.{field} already in use"),
+                },
                 // Internal-state conditions: the wire stays opaque so
                 // version numbers / SQL fragments / FS paths never reach
                 // the client. Full detail is logged at the call site
@@ -392,6 +395,23 @@ mod from_domain_tests {
         };
         assert!(path.contains("meeting"), "got: {path}");
         assert!(path.contains("abc"), "got: {path}");
+    }
+
+    #[test]
+    fn storage_unique_conflict_maps_to_invalid_input_without_value_leak() {
+        let e: IpcError = StorageError::UniqueConflict {
+            kind: "meeting",
+            field: "dir_path",
+            value: "/Users/fran/Library/Application Support/panops/meetings/abc".into(),
+        }
+        .into();
+        let IpcError::InvalidInput { message } = e else {
+            panic!("expected InvalidInput");
+        };
+        assert!(message.contains("meeting"), "got: {message}");
+        assert!(message.contains("dir_path"), "got: {message}");
+        // The path itself must not leak — only kind+field on the wire.
+        assert!(!message.contains("/Users/fran"), "value leaked: {message}");
     }
 
     #[test]

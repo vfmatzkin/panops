@@ -5,7 +5,7 @@
 //! capture); for now everything lives in one registry DB.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -13,6 +13,50 @@ use rusqlite::{Connection, OptionalExtension, params};
 use panops_core::storage::{
     Meeting, MeetingDraft, MeetingSummary, Note, NoteDraft, Storage, StorageError,
 };
+
+/// Lock the connection mutex, mapping a poisoned mutex to a
+/// `StorageError::Sql` instead of panicking. A poisoned mutex
+/// indicates a panic happened in another storage call (rare, since
+/// our calls are short rusqlite operations) — surfacing it as a
+/// recoverable storage error is friendlier to long-running callers
+/// than tearing down the whole server with another panic.
+fn lock<'a>(m: &'a Mutex<Connection>) -> Result<MutexGuard<'a, Connection>, StorageError> {
+    m.lock().map_err(|e| StorageError::Sql {
+        message: format!("storage mutex poisoned: {e}"),
+    })
+}
+
+/// Inspect a rusqlite SqliteFailure on `meeting` insert and choose
+/// the right `StorageError` variant. PK collision (`meeting.id`) maps
+/// to `AlreadyExists`; the secondary `dir_path` UNIQUE collision maps
+/// to `UniqueConflict { field: "dir_path", value }` so callers don't
+/// receive a misleading id-already-exists error when the actual
+/// conflict was on a different column.
+fn map_meeting_constraint_violation(
+    err: rusqlite::Error,
+    draft_id: &str,
+    draft_dir_path: &str,
+) -> StorageError {
+    if let rusqlite::Error::SqliteFailure(_, Some(ref msg)) = err {
+        // libsqlite encodes the constraint name in the message:
+        //   "UNIQUE constraint failed: meeting.id"
+        //   "UNIQUE constraint failed: meeting.dir_path"
+        if msg.contains("meeting.dir_path") {
+            return StorageError::UniqueConflict {
+                kind: "meeting",
+                field: "dir_path",
+                value: draft_dir_path.to_string(),
+            };
+        }
+        if msg.contains("meeting.id") {
+            return StorageError::AlreadyExists {
+                id: draft_id.to_string(),
+                kind: "meeting",
+            };
+        }
+    }
+    StorageError::sql(err)
+}
 
 const EXPECTED_SCHEMA_VERSION: u32 = 1;
 
@@ -86,7 +130,16 @@ fn map_meeting_row(r: &rusqlite::Row) -> rusqlite::Result<Meeting> {
         title: r.get(1)?,
         started_at: r.get(2)?,
         ended_at: r.get(3)?,
-        duration_ms: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+        // Clamp negative durations to 0. SQLite stores `INTEGER` as
+        // signed i64; a negative value (corruption, manual edit) cast
+        // straight to u64 would wrap to ~9 quintillion ms and
+        // surface as a nonsensical wire value. Clamping is the
+        // conservative read-side defense; insert-side validation
+        // would also reject negatives before storage but read-side
+        // doesn't trust the database file.
+        duration_ms: r
+            .get::<_, Option<i64>>(4)?
+            .map(|v| if v < 0 { 0 } else { v as u64 }),
         language: r.get(5)?,
         dir_path: r.get(6)?,
     })
@@ -94,7 +147,7 @@ fn map_meeting_row(r: &rusqlite::Row) -> rusqlite::Result<Meeting> {
 
 impl Storage for RusqliteStorage {
     fn create_meeting(&self, d: MeetingDraft) -> Result<Meeting, StorageError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = lock(&self.conn)?;
         let result = conn.execute(
             "INSERT INTO meeting (id, title, started_at, language, dir_path)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -110,20 +163,120 @@ impl Storage for RusqliteStorage {
                 language: d.language,
                 dir_path: d.dir_path,
             }),
-            Err(rusqlite::Error::SqliteFailure(e, _))
+            Err(rusqlite::Error::SqliteFailure(e, ref msg))
                 if e.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
-                Err(StorageError::AlreadyExists {
-                    id: d.id,
-                    kind: "meeting",
-                })
+                Err(map_meeting_constraint_violation(
+                    rusqlite::Error::SqliteFailure(e, msg.clone()),
+                    &d.id,
+                    &d.dir_path,
+                ))
             }
             Err(e) => Err(StorageError::sql(e)),
         }
     }
 
+    fn create_meeting_with_note(
+        &self,
+        meeting: MeetingDraft,
+        note: NoteDraft,
+        ended_at: Option<&str>,
+        duration_ms: Option<u64>,
+    ) -> Result<(Meeting, Note), StorageError> {
+        if note.meeting_id != meeting.id {
+            return Err(StorageError::Sql {
+                message: "create_meeting_with_note: note.meeting_id must match meeting.id".into(),
+            });
+        }
+        let mut conn = lock(&self.conn)?;
+        let tx = conn.transaction().map_err(StorageError::sql)?;
+
+        // Meeting insert (with optional ended_at + duration_ms in one shot).
+        let dur_i64 = duration_ms.map(|v| v as i64);
+        let result = tx.execute(
+            "INSERT INTO meeting
+                (id, title, started_at, ended_at, duration_ms, language, dir_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                meeting.id,
+                meeting.title,
+                meeting.started_at,
+                ended_at,
+                dur_i64,
+                meeting.language,
+                meeting.dir_path
+            ],
+        );
+        if let Err(e) = result {
+            return Err(match e {
+                rusqlite::Error::SqliteFailure(c, ref m)
+                    if c.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    map_meeting_constraint_violation(
+                        rusqlite::Error::SqliteFailure(c, m.clone()),
+                        &meeting.id,
+                        &meeting.dir_path,
+                    )
+                }
+                other => StorageError::sql(other),
+            });
+        }
+
+        // Note insert. FK on `meeting_id` references the row we just
+        // inserted in this transaction; it'll resolve before COMMIT.
+        let created_at = Utc::now().to_rfc3339();
+        let note_result = tx.execute(
+            "INSERT INTO note (id, meeting_id, dialect, content_md, primary_path, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                note.id,
+                note.meeting_id,
+                note.dialect,
+                note.content_md,
+                note.primary_path,
+                created_at
+            ],
+        );
+        if let Err(e) = note_result {
+            // Transaction will roll back on drop (we don't COMMIT).
+            return Err(match e {
+                rusqlite::Error::SqliteFailure(c, _)
+                    if c.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    StorageError::AlreadyExists {
+                        id: note.id,
+                        kind: "note",
+                    }
+                }
+                other => StorageError::sql(other),
+            });
+        }
+
+        tx.commit().map_err(StorageError::sql)?;
+
+        Ok((
+            Meeting {
+                id: meeting.id,
+                title: meeting.title,
+                started_at: meeting.started_at,
+                ended_at: ended_at.map(str::to_owned),
+                duration_ms,
+                language: meeting.language,
+                dir_path: meeting.dir_path,
+            },
+            Note {
+                id: note.id,
+                meeting_id: note.meeting_id,
+                dialect: note.dialect,
+                content_md: note.content_md,
+                primary_path: note.primary_path,
+                created_at,
+            },
+        ))
+    }
+
     fn get_meeting(&self, id: &str) -> Result<Meeting, StorageError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = lock(&self.conn)?;
         conn.query_row(
             "SELECT id, title, started_at, ended_at, duration_ms, language, dir_path
              FROM meeting WHERE id = ?1",
@@ -139,7 +292,7 @@ impl Storage for RusqliteStorage {
     }
 
     fn list_meetings(&self) -> Result<Vec<MeetingSummary>, StorageError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = lock(&self.conn)?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, title, started_at, COALESCE(duration_ms, 0)
@@ -169,7 +322,7 @@ impl Storage for RusqliteStorage {
         ended_at: &str,
         duration_ms: u64,
     ) -> Result<Meeting, StorageError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = lock(&self.conn)?;
         let n = conn
             .execute(
                 "UPDATE meeting SET ended_at = ?2, duration_ms = ?3 WHERE id = ?1",
@@ -187,7 +340,7 @@ impl Storage for RusqliteStorage {
     }
 
     fn update_meeting_language(&self, id: &str, language: &str) -> Result<Meeting, StorageError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = lock(&self.conn)?;
         let n = conn
             .execute(
                 "UPDATE meeting SET language = ?2 WHERE id = ?1",
@@ -205,7 +358,7 @@ impl Storage for RusqliteStorage {
     }
 
     fn delete_meeting(&self, id: &str) -> Result<(), StorageError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = lock(&self.conn)?;
         let n = conn
             .execute("DELETE FROM meeting WHERE id = ?1", params![id])
             .map_err(StorageError::sql)?;
@@ -219,7 +372,7 @@ impl Storage for RusqliteStorage {
     }
 
     fn create_note(&self, d: NoteDraft) -> Result<Note, StorageError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = lock(&self.conn)?;
         // FK guard: surface a friendly NotFound instead of a raw FK error.
         let exists: bool = conn
             .query_row(
@@ -272,7 +425,7 @@ impl Storage for RusqliteStorage {
     }
 
     fn list_notes_for_meeting(&self, meeting_id: &str) -> Result<Vec<Note>, StorageError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = lock(&self.conn)?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, meeting_id, dialect, content_md, primary_path, created_at
