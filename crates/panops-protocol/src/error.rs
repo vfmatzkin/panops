@@ -103,6 +103,7 @@ mod from_domain {
     use panops_core::exporter::ExportError;
     use panops_core::llm::LlmError;
     use panops_core::notes::error::NotesError;
+    use panops_core::storage::StorageError;
 
     impl From<AsrError> for IpcError {
         fn from(e: AsrError) -> Self {
@@ -186,6 +187,37 @@ mod from_domain {
                 // emitted via `tracing::error!` at the call site.
                 ExportError::Io(_) | ExportError::Render(_) => IpcError::Internal {
                     message: "export failed".into(),
+                },
+            }
+        }
+    }
+
+    impl From<StorageError> for IpcError {
+        fn from(e: StorageError) -> Self {
+            match e {
+                // `path` carries `<kind>/<id>` so clients can tell which
+                // entity was missing. `kind` is a `&'static` from a
+                // closed set ("meeting" | "note"); the id was the input
+                // they just passed, so this is not a new info leak.
+                StorageError::NotFound { id, kind } => IpcError::InputNotFound {
+                    path: format!("{kind}/{id}"),
+                },
+                StorageError::AlreadyExists { kind, .. } => IpcError::InvalidInput {
+                    message: format!("{kind} already exists"),
+                },
+                // Internal-state conditions: the wire stays opaque so
+                // version numbers / SQL fragments / FS paths never reach
+                // the client. Full detail is logged at the call site
+                // (handlers.rs) where `tracing` is available — this
+                // crate is `tracing`-free to keep transport types thin.
+                StorageError::SchemaMismatch { .. } => IpcError::Internal {
+                    message: "storage schema mismatch".into(),
+                },
+                StorageError::Io { .. } => IpcError::Internal {
+                    message: "storage io error".into(),
+                },
+                StorageError::Sql { .. } => IpcError::Internal {
+                    message: "storage error".into(),
                 },
             }
         }
@@ -344,5 +376,76 @@ mod from_domain_tests {
         } else {
             panic!("expected InvalidInput");
         }
+    }
+
+    use panops_core::storage::StorageError;
+
+    #[test]
+    fn storage_not_found_maps_to_input_not_found_with_kind_and_id() {
+        let e: IpcError = StorageError::NotFound {
+            id: "abc".into(),
+            kind: "meeting",
+        }
+        .into();
+        let IpcError::InputNotFound { path } = e else {
+            panic!("expected InputNotFound");
+        };
+        assert!(path.contains("meeting"), "got: {path}");
+        assert!(path.contains("abc"), "got: {path}");
+    }
+
+    #[test]
+    fn storage_already_exists_maps_to_invalid_input_without_id_leak() {
+        let e: IpcError = StorageError::AlreadyExists {
+            id: "secret-id-do-not-leak".into(),
+            kind: "note",
+        }
+        .into();
+        let IpcError::InvalidInput { message } = e else {
+            panic!("expected InvalidInput");
+        };
+        assert!(message.contains("note"), "got: {message}");
+        assert!(
+            !message.contains("secret-id-do-not-leak"),
+            "id leaked: {message}"
+        );
+    }
+
+    #[test]
+    fn storage_schema_mismatch_maps_to_internal_without_version_leak() {
+        let e: IpcError = StorageError::SchemaMismatch {
+            actual: 2,
+            expected: 1,
+        }
+        .into();
+        let IpcError::Internal { message } = e else {
+            panic!("expected Internal");
+        };
+        // No version-number leak in wire message.
+        assert_eq!(message, "storage schema mismatch");
+    }
+
+    #[test]
+    fn storage_io_maps_to_internal_without_path_leak() {
+        let io = std::io::Error::other("/some/secret/path failed");
+        let e: IpcError = StorageError::Io { source: io }.into();
+        let IpcError::Internal { message } = e else {
+            panic!("expected Internal");
+        };
+        assert_eq!(message, "storage io error");
+        assert!(!message.contains("/some/secret/path"));
+    }
+
+    #[test]
+    fn storage_sql_maps_to_internal_without_query_leak() {
+        let e: IpcError = StorageError::Sql {
+            message: "near 'SELECT': syntax error".into(),
+        }
+        .into();
+        let IpcError::Internal { message } = e else {
+            panic!("expected Internal");
+        };
+        assert_eq!(message, "storage error");
+        assert!(!message.contains("SELECT"));
     }
 }

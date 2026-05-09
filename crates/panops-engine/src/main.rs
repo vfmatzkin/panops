@@ -15,6 +15,7 @@ use panops_core::notes::dialect::MarkdownDialect;
 use panops_core::notes::input::{MeetingMetadata, NotesInput};
 use panops_core::notes::ir::Screenshot;
 use panops_core::notes::pipeline::NotesGenerator;
+use panops_core::storage::{MeetingDraft, NoteDraft, Storage};
 use panops_portable::SherpaDiarizer;
 use panops_portable::WhisperRsAsr;
 use panops_portable::genai_llm::GenaiLlm;
@@ -22,6 +23,7 @@ use panops_portable::markdown_exporter::MarkdownExporter;
 use panops_portable::model::{
     DEFAULT_MODEL_NAME, default_model_path, ensure_diar_models, ensure_model,
 };
+use panops_portable::rusqlite_storage::RusqliteStorage;
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
@@ -40,6 +42,13 @@ struct Cli {
 
     #[arg(long)]
     no_diarize: bool,
+
+    /// Override the data directory. Defaults to
+    /// `~/Library/Application Support/panops/`. The `panops.db`
+    /// registry and `meetings/<uuid>/` subdirs live here. No env
+    /// var equivalent — per AGENTS.md "no env vars for user config".
+    #[arg(long, global = true, value_name = "DIR")]
+    data_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -95,6 +104,7 @@ fn main() -> ExitCode {
         "panops-engine starting"
     );
     let cli = Cli::parse();
+    let data_dir = default_or_resolved_data_dir(&cli.data_dir);
     let res = match cli.cmd {
         None => run_default(cli.audio, cli.model, cli.language, cli.no_diarize),
         Some(Cmd::Notes {
@@ -117,8 +127,9 @@ fn main() -> ExitCode {
             llm_model,
             model,
             language,
+            data_dir.clone(),
         ),
-        Some(Cmd::Serve { socket }) => panops_engine::server::run_serve(socket),
+        Some(Cmd::Serve { socket }) => panops_engine::server::run_serve(socket, data_dir),
     };
     match res {
         Ok(()) => ExitCode::SUCCESS,
@@ -127,6 +138,24 @@ fn main() -> ExitCode {
             ExitCode::from(code)
         }
     }
+}
+
+/// Default data directory for the CLI. Mirrors `server::socket::default_socket_path`'s
+/// HOME handling: requires an absolute, non-empty HOME; falls back to
+/// `/tmp/panops` only if HOME is missing or relative (CI / unusual envs).
+/// Tests pass `--data-dir` explicitly so this fallback is for shell use.
+fn default_data_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && !p.as_os_str().is_empty())
+        .map_or_else(
+            || PathBuf::from("/tmp/panops"),
+            |home| home.join("Library/Application Support/panops"),
+        )
+}
+
+fn default_or_resolved_data_dir(opt: &Option<PathBuf>) -> PathBuf {
+    opt.clone().unwrap_or_else(default_data_dir)
 }
 
 fn init_tracing() {
@@ -184,6 +213,7 @@ fn run_notes(
     llm_model: Option<String>,
     model: Option<PathBuf>,
     language: Option<String>,
+    data_dir: PathBuf,
 ) -> Result<(), (u8, String)> {
     let mut transcript = transcribe(&audio, model, language.as_deref())?;
     if !no_diarize {
@@ -220,12 +250,14 @@ fn run_notes(
         .unwrap_or_default();
 
     let started_at = chrono::Local::now().fixed_offset();
+    let language_for_meeting = language.clone();
+    let audio_duration_ms = transcript.audio_duration_ms;
     let input = NotesInput {
         transcript: transcript.segments,
         screenshots,
         meeting_metadata: MeetingMetadata {
             started_at,
-            duration_ms: transcript.audio_duration_ms,
+            duration_ms: audio_duration_ms,
             source_path: Some(audio.clone()),
             language_hint: language,
         },
@@ -248,6 +280,94 @@ fn run_notes(
         .export(&notes, &out_dir)
         .map_err(|e| (2, e.to_string()))?;
     tracing::info!(file = ?art.primary_file, assets = art.assets.len(), "wrote notes");
+
+    // Slice 06: register the meeting + note in the registry. The CLI
+    // preserves its existing on-disk layout (notes alongside audio,
+    // not under `<data_dir>/meetings/<uuid>/`) — only the registry
+    // entry is new. Failure is non-fatal: the notes file is already
+    // on disk; we surface the storage error as a warning + non-zero
+    // exit so CI catches it but the user still has the artifact.
+    let dir_path = out_dir
+        .canonicalize()
+        .unwrap_or(out_dir.clone())
+        .to_string_lossy()
+        .into_owned();
+    let title = audio
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("untitled")
+        .to_string();
+    let dialect_str = match dialect {
+        MarkdownDialect::Basic => "basic",
+        MarkdownDialect::NotionEnhanced => "notion-enhanced",
+    };
+    // Open `panops.db` once for this CLI invocation. The handle is
+    // dropped at the end of `run_notes`. SQLite serialises concurrent
+    // writers file-wide, so a long-running `panops-engine serve`
+    // holding its own handle won't conflict — our brief insert just
+    // queues. If usage ever grows beyond single-user, the handle is
+    // a `&dyn Storage` arg to `register_meeting_in_registry` so a
+    // future shared-handle pattern is a one-line caller change.
+    std::fs::create_dir_all(&data_dir).map_err(|e| (3, format!("create data dir: {e}")))?;
+    let storage = RusqliteStorage::new(&data_dir.join("panops.db"))
+        .map_err(|e| (3, format!("open registry: {e}")))?;
+    register_meeting_in_registry(
+        &storage,
+        title,
+        started_at.to_rfc3339(),
+        audio_duration_ms,
+        language_for_meeting.unwrap_or_else(|| "auto".into()),
+        dir_path,
+        dialect_str.to_string(),
+        art.primary_file.display().to_string(),
+    )?;
+
+    Ok(())
+}
+
+/// Insert a fresh meeting + its initial note row into `storage`. Pure
+/// trait calls — no FS or DB-open — so callers may pass any `Storage`
+/// impl (real `RusqliteStorage` from CLI, in-memory fake from tests,
+/// or a future shared handle from a daemon-only-writes design).
+#[allow(clippy::too_many_arguments)]
+fn register_meeting_in_registry(
+    storage: &dyn Storage,
+    title: String,
+    started_at: String,
+    duration_ms: u64,
+    language: String,
+    dir_path: String,
+    dialect: String,
+    primary_path: String,
+) -> Result<(), (u8, String)> {
+    let meeting_id = uuid::Uuid::new_v4().simple().to_string();
+    let meeting = storage
+        .create_meeting(MeetingDraft {
+            id: meeting_id.clone(),
+            title,
+            started_at: started_at.clone(),
+            language,
+            dir_path,
+        })
+        .map_err(|e| (3, format!("register meeting: {e}")))?;
+    // Mark ended_at = started_at + duration so the registry row is
+    // immediately "complete" (CLI flow has no live capture).
+    let ended_at = chrono::DateTime::parse_from_rfc3339(&started_at)
+        .map(|dt| (dt + chrono::Duration::milliseconds(duration_ms as i64)).to_rfc3339())
+        .unwrap_or(started_at);
+    let _ = storage
+        .update_meeting_ended(&meeting.id, &ended_at, duration_ms)
+        .map_err(|e| (3, format!("update meeting ended: {e}")))?;
+    let _ = storage
+        .create_note(NoteDraft {
+            id: uuid::Uuid::new_v4().simple().to_string(),
+            meeting_id,
+            dialect,
+            content_md: std::fs::read_to_string(&primary_path).unwrap_or_default(),
+            primary_path,
+        })
+        .map_err(|e| (3, format!("register note: {e}")))?;
+    tracing::info!(meeting = %meeting.id, "registered meeting in registry");
     Ok(())
 }
 
@@ -310,4 +430,61 @@ fn diarize(audio: &std::path::Path) -> Result<Vec<panops_core::diar::SpeakerTurn
     let (seg, emb) = ensure_diar_models().map_err(|e| (3, e.to_string()))?;
     let diar = SherpaDiarizer::new(seg, emb).map_err(|e| (3, e.to_string()))?;
     diar.diarize(audio).map_err(|e| (2, e.to_string()))
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    use panops_core::conformance::fakes::InMemoryStorage;
+
+    /// Trait-level test: `register_meeting_in_registry` is now a pure
+    /// `&dyn Storage` consumer, so we exercise it against the
+    /// in-memory fake (no DB open, no FS write for the storage path).
+    /// Verifies that the function inserts a meeting + an attached note
+    /// + the meeting is "complete" (ended_at + duration_ms set).
+    ///
+    /// `RusqliteStorage` independently passes the same conformance
+    /// suite (`crates/panops-portable/tests/conformance_rusqlite_storage.rs`),
+    /// so this fake-backed test doubles as evidence that the real
+    /// adapter behaves identically when the CLI calls it.
+    #[test]
+    fn register_meeting_inserts_meeting_and_note_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Only the `primary_path` needs to exist on disk — we read its
+        // contents into the `note.content_md` field. Everything else
+        // is pure storage trait calls.
+        let notes_dir = tmp.path().join("audio-notes");
+        std::fs::create_dir_all(&notes_dir).unwrap();
+        let notes_md = notes_dir.join("notes.md");
+        std::fs::write(&notes_md, "# Test notes\n").unwrap();
+
+        let storage = InMemoryStorage::new();
+        register_meeting_in_registry(
+            &storage,
+            "Test Meeting".to_string(),
+            "2026-05-05T10:00:00+00:00".to_string(),
+            60_000,
+            "en".to_string(),
+            notes_dir.to_string_lossy().into_owned(),
+            "basic".to_string(),
+            notes_md.to_string_lossy().into_owned(),
+        )
+        .expect("registration should succeed");
+
+        let rows = storage.list_meetings().unwrap();
+        assert_eq!(rows.len(), 1, "expected one registered meeting");
+        assert_eq!(rows[0].title, "Test Meeting");
+        assert_eq!(rows[0].duration_ms, 60_000);
+
+        let m = storage.get_meeting(&rows[0].id).unwrap();
+        assert_eq!(m.language, "en");
+        assert!(m.ended_at.is_some(), "ended_at should be set");
+        assert_eq!(m.duration_ms, Some(60_000));
+
+        let notes = storage.list_notes_for_meeting(&m.id).unwrap();
+        assert_eq!(notes.len(), 1, "expected one note row");
+        assert_eq!(notes[0].dialect, "basic");
+        assert_eq!(notes[0].primary_path, notes_md.to_string_lossy());
+        assert_eq!(notes[0].content_md, "# Test notes\n");
+    }
 }

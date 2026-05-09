@@ -13,11 +13,28 @@
 
 #![allow(dead_code)]
 
-use std::path::Path;
+pub mod notes_pipeline;
+
+use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use panops_core::conformance::fakes::InMemoryStorage;
+use panops_core::storage::Storage;
+use tempfile::TempDir;
 use tokio::net::UnixStream;
+
+/// Returns a `(TempDir, Arc<dyn Storage>, PathBuf)` triple for tests.
+/// The caller MUST hold the `TempDir` until after the test ends so the
+/// dir isn't reaped while the engine still expects it. The `PathBuf`
+/// is the same `tmp.path()`, copied to free the borrow.
+pub fn tempdir_storage() -> (TempDir, Arc<dyn Storage>, PathBuf) {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let path = tmp.path().to_owned();
+    let storage: Arc<dyn Storage> = Arc::new(InMemoryStorage::new());
+    (tmp, storage, path)
+}
 
 /// Poll `child.try_wait()` until it exits or `dur` elapses, then SIGKILL
 /// and reap. Used by tests that send SIGTERM to the engine and need a

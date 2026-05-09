@@ -22,7 +22,7 @@ use panops_protocol::{Event, IpcError, JobAccepted};
 use tempfile::tempdir;
 use tokio::sync::watch;
 
-use common::{uds_ws_client, wait_for_socket};
+use common::{tempdir_storage, uds_ws_client, wait_for_socket};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn notes_generate_emits_job_error_with_input_not_found_kind() {
@@ -30,8 +30,11 @@ async fn notes_generate_emits_job_error_with_input_not_found_kind() {
     let socket = dir.path().join("engine.sock");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    let (_storage_tmp, storage, data_dir) = tempdir_storage();
     let services = EngineServices::ready(
         Arc::new(MockLlm::default()),
+        storage,
+        data_dir,
         Arc::new(TranscriptFileFake),
         Arc::new(KnownTurnsFake),
         Arc::new(FakeNotesExporter),

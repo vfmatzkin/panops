@@ -37,6 +37,7 @@ use panops_core::asr::AsrProvider;
 use panops_core::diar::Diarizer;
 use panops_core::exporter::NotesExporter;
 use panops_core::llm::LlmProvider;
+use panops_core::storage::Storage;
 use tokio::sync::watch;
 
 use crate::server::handlers::{IpcImpl, IpcServer};
@@ -70,6 +71,14 @@ pub(super) struct HeavyAdapters {
 /// in `run_notes_pipeline`.
 pub struct EngineServices {
     pub llm: Arc<dyn LlmProvider + Send + Sync>,
+    /// Storage port (slice 06). Cheap to open (SQLite file open is
+    /// microseconds), so it lives in the **direct** lane next to
+    /// `llm`, NOT in the `heavy` `OnceLock`.
+    pub storage: Arc<dyn Storage>,
+    /// Root for `panops.db` and `meetings/<uuid>/` subdirs.
+    /// Defaults to `~/Library/Application Support/panops/` in the
+    /// CLI; tests inject a `tempfile::TempDir.path()`.
+    pub data_dir: PathBuf,
     pub(super) heavy: Arc<OnceLock<Result<HeavyAdapters, String>>>,
 }
 
@@ -79,6 +88,8 @@ impl EngineServices {
     /// shape every integration test uses.
     pub fn ready(
         llm: Arc<dyn LlmProvider + Send + Sync>,
+        storage: Arc<dyn Storage>,
+        data_dir: PathBuf,
         asr: Arc<dyn AsrProvider + Send + Sync>,
         diar: Arc<dyn Diarizer + Send + Sync>,
         exporter: Arc<dyn NotesExporter + Send + Sync>,
@@ -89,13 +100,18 @@ impl EngineServices {
             diar,
             exporter,
         }));
-        Self { llm, heavy }
+        Self {
+            llm,
+            storage,
+            data_dir,
+            heavy,
+        }
     }
 
-    /// Construct with only the (cheap) LLM adapter. Returns the
-    /// `OnceLock` handle so the caller can spawn a background init
-    /// task that resolves the heavy trio and fills the lock. Until
-    /// the lock is set, `notes.generate` returns
+    /// Construct with only the (cheap) LLM + storage adapters.
+    /// Returns the `OnceLock` handle so the caller can spawn a
+    /// background init task that resolves the heavy trio and fills
+    /// the lock. Until the lock is set, `notes.generate` returns
     /// `IpcError::ProviderUnavailable`.
     ///
     /// `pub(crate)` — only `run_serve` (same crate) needs to construct
@@ -104,10 +120,14 @@ impl EngineServices {
     /// `server::*`.
     pub(crate) fn pending(
         llm: Arc<dyn LlmProvider + Send + Sync>,
+        storage: Arc<dyn Storage>,
+        data_dir: PathBuf,
     ) -> (Self, Arc<OnceLock<Result<HeavyAdapters, String>>>) {
         let heavy = Arc::new(OnceLock::new());
         let services = Self {
             llm,
+            storage,
+            data_dir,
             heavy: heavy.clone(),
         };
         (services, heavy)
@@ -115,11 +135,22 @@ impl EngineServices {
 }
 
 /// CLI entry point — owns both tokio runtimes and the signal handler.
-pub fn run_serve(socket: Option<PathBuf>) -> Result<(), (u8, String)> {
+pub fn run_serve(socket: Option<PathBuf>, data_dir: PathBuf) -> Result<(), (u8, String)> {
     let path = match socket {
         Some(p) => p,
         None => socket::default_socket_path().map_err(|e| (3, e))?,
     };
+
+    // Ensure the data directory exists; benign if it already does.
+    // Open the registry DB before starting any runtime so a corrupt or
+    // wrong-version DB fails fast with a clean exit code.
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|e| (3, format!("create data dir {data_dir:?}: {e}")))?;
+    let storage_path = data_dir.join("panops.db");
+    let storage: Arc<dyn Storage> = Arc::new(
+        panops_portable::RusqliteStorage::new(&storage_path)
+            .map_err(|e| (3, format!("open storage at {storage_path:?}: {e}")))?,
+    );
 
     // Runtime B: outbound LLM HTTP. Built first so its handle can be
     // cloned into the LLM adapter before Runtime A starts polling RPC.
@@ -138,14 +169,14 @@ pub fn run_serve(socket: Option<PathBuf>) -> Result<(), (u8, String)> {
         .map_err(|e| (3, format!("build rpc runtime: {e}")))?;
 
     let result = rpc_rt.block_on(async move {
-        // Build the LIGHT services first — just the LLM adapter (cheap,
-        // instant). The heavy trio (Whisper / Sherpa / MarkdownExporter)
-        // is filled by a `spawn_blocking` task that runs concurrent
+        // Build the LIGHT services first — LLM + storage (both cheap).
+        // The heavy trio (Whisper / Sherpa / MarkdownExporter) is
+        // filled by a `spawn_blocking` task that runs concurrent
         // with the accept loop, so the socket binds within the 5s
         // budget and `notes.generate` is gated with
         // `ProviderUnavailable` until the trio is ready.
         let llm = build_llm(llm_handle);
-        let (services, heavy_lock) = EngineServices::pending(llm);
+        let (services, heavy_lock) = EngineServices::pending(llm, storage, data_dir);
         spawn_heavy_init(heavy_lock);
         run_serve_in_process(&path, services, None).await
     });
