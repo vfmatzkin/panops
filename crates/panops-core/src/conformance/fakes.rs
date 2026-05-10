@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::asr::{AsrError, AsrProvider};
 use crate::diar::{DiarError, Diarizer, SpeakerTurn};
+use crate::vad::{SpeechRegion, Vad, VadError};
 use crate::{Segment, Transcript};
 
 /// A degenerate `AsrProvider` that reads `<audio>.transcript.txt` from disk
@@ -427,14 +428,13 @@ impl Storage for InMemoryStorage {
 
 // === KnownRegionsFake ============================================
 
-use crate::vad::{SpeechRegion, Vad, VadError};
-
 /// Deterministic `Vad` fake that detects regions wherever the
 /// **absolute** sample value exceeds a small threshold. Used by
 /// `panops-core`'s own conformance test and by `panops-engine`'s
 /// integration tests where loading a real VAD model would be
-/// unnecessary friction. Threshold is `1e-3` (sine waves of
-/// amplitude 0.5 trip it; pure-silent samples at `0.0` don't).
+/// unnecessary friction. Threshold is `1e-3` (any sample with
+/// `|s| >= threshold` triggers detection; the `1e-3` default rejects
+/// pure-silent (`0.0`) samples).
 pub struct KnownRegionsFake {
     /// Frame size in milliseconds. Samples are bucketed into frames
     /// of this size and a frame is "speech" if its peak abs sample
@@ -478,7 +478,6 @@ impl Vad for KnownRegionsFake {
 
         let mut regions: Vec<SpeechRegion> = Vec::new();
         let mut current_start: Option<u64> = None;
-        let total_chunks = samples.chunks(frame_size_samples).count();
         for (i, frame) in samples.chunks(frame_size_samples).enumerate() {
             let peak = frame.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
             let frame_start_ms = (i as u64) * self.frame_ms;
@@ -495,15 +494,14 @@ impl Vad for KnownRegionsFake {
                     end_ms: frame_end_ms - (frame.len() as u64 * 1000) / u64::from(sample_rate),
                 });
             }
-            // If we're on the last chunk and still in-speech, close the region.
-            if i + 1 == total_chunks {
-                if let Some(start) = current_start.take() {
-                    regions.push(SpeechRegion {
-                        start_ms: start,
-                        end_ms: frame_end_ms,
-                    });
-                }
-            }
+        }
+        // Close any trailing open region after the loop.
+        if let Some(start) = current_start.take() {
+            let trailing_end_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
+            regions.push(SpeechRegion {
+                start_ms: start,
+                end_ms: trailing_end_ms,
+            });
         }
         Ok(regions)
     }
