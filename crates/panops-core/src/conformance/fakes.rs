@@ -425,6 +425,105 @@ impl Storage for InMemoryStorage {
     }
 }
 
+// === KnownRegionsFake ============================================
+
+use crate::vad::{SpeechRegion, Vad, VadError};
+
+/// Deterministic `Vad` fake that detects regions wherever the
+/// **absolute** sample value exceeds a small threshold. Used by
+/// `panops-core`'s own conformance test and by `panops-engine`'s
+/// integration tests where loading a real VAD model would be
+/// unnecessary friction. Threshold is `1e-3` (sine waves of
+/// amplitude 0.5 trip it; pure-silent samples at `0.0` don't).
+pub struct KnownRegionsFake {
+    /// Frame size in milliseconds. Samples are bucketed into frames
+    /// of this size and a frame is "speech" if its peak abs sample
+    /// is above `threshold`. Defaults to 100 ms.
+    pub frame_ms: u64,
+    pub threshold: f32,
+}
+
+impl Default for KnownRegionsFake {
+    fn default() -> Self {
+        Self {
+            frame_ms: 100,
+            threshold: 1e-3,
+        }
+    }
+}
+
+impl KnownRegionsFake {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Vad for KnownRegionsFake {
+    fn detect_speech(
+        &self,
+        samples: &[f32],
+        sample_rate: u32,
+    ) -> Result<Vec<SpeechRegion>, VadError> {
+        if sample_rate != 16_000 {
+            return Err(VadError::InvalidAudio(format!(
+                "expected 16 kHz, got {sample_rate} Hz"
+            )));
+        }
+        let frame_size_samples = ((sample_rate as u64 * self.frame_ms) / 1000) as usize;
+        if frame_size_samples == 0 {
+            return Err(VadError::InvalidAudio(
+                "frame_ms produces zero samples per frame".into(),
+            ));
+        }
+
+        let mut regions: Vec<SpeechRegion> = Vec::new();
+        let mut current_start: Option<u64> = None;
+        let total_chunks = samples.chunks(frame_size_samples).count();
+        for (i, frame) in samples.chunks(frame_size_samples).enumerate() {
+            let peak = frame.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
+            let frame_start_ms = (i as u64) * self.frame_ms;
+            let frame_end_ms =
+                frame_start_ms + (frame.len() as u64 * 1000) / u64::from(sample_rate);
+
+            if peak >= self.threshold {
+                if current_start.is_none() {
+                    current_start = Some(frame_start_ms);
+                }
+            } else if let Some(start) = current_start.take() {
+                regions.push(SpeechRegion {
+                    start_ms: start,
+                    end_ms: frame_end_ms - (frame.len() as u64 * 1000) / u64::from(sample_rate),
+                });
+            }
+            // If we're on the last chunk and still in-speech, close the region.
+            if i + 1 == total_chunks {
+                if let Some(start) = current_start.take() {
+                    regions.push(SpeechRegion {
+                        start_ms: start,
+                        end_ms: frame_end_ms,
+                    });
+                }
+            }
+        }
+        Ok(regions)
+    }
+
+    fn is_fake(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod vad_fake_tests {
+    use super::KnownRegionsFake;
+    use crate::conformance::vad::run_suite;
+
+    #[test]
+    fn known_regions_fake_passes_conformance() {
+        run_suite(&KnownRegionsFake::new());
+    }
+}
+
 #[cfg(test)]
 mod storage_fake_tests {
     use super::InMemoryStorage;
