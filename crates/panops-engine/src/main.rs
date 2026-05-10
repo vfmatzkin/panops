@@ -445,19 +445,29 @@ fn transcribe_with_vad(
     let merged = panops_portable::audio::merge_adjacent_regions(regions, 5_000);
 
     let mut stitched: Vec<panops_core::Segment> = Vec::new();
+    let mut stitched_model: Option<String> = None;
     let total_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
     for region in merged.iter() {
         let start_sample = ((region.start_ms * u64::from(sample_rate)) / 1000) as usize;
-        let end_sample =
-            (((region.end_ms * u64::from(sample_rate)) / 1000) as usize).min(samples.len());
-        let chunk = &samples[start_sample..end_sample];
-        if chunk.is_empty() {
+        let end_sample = ((region.end_ms * u64::from(sample_rate)) / 1000) as usize;
+        let start_sample = start_sample.min(samples.len());
+        let end_sample = end_sample.min(samples.len());
+        if start_sample >= end_sample {
+            tracing::warn!(
+                start_ms = region.start_ms,
+                end_ms = region.end_ms,
+                "degenerate VAD region after bounds clamping, skipping"
+            );
             continue;
         }
+        let chunk = &samples[start_sample..end_sample];
         let region_t = asr.transcribe(chunk, sample_rate, language).map_err(|e| {
             tracing::error!(error = %e, "asr transcribe failed");
             (2, "transcription failed".to_string())
         })?;
+        if stitched_model.is_none() && !region_t.segments.is_empty() {
+            stitched_model = Some(region_t.model.clone());
+        }
         for mut seg in region_t.segments {
             seg.start_ms = (seg.start_ms + region.start_ms).min(total_ms);
             seg.end_ms = (seg.end_ms + region.start_ms).min(total_ms);
@@ -465,9 +475,10 @@ fn transcribe_with_vad(
         }
     }
 
+    let final_model = stitched_model.unwrap_or_else(|| "vad-multilingual".to_string());
     Ok(panops_core::Transcript {
         schema_version: panops_core::Transcript::SCHEMA_VERSION,
-        model: "vad-multilingual".to_string(),
+        model: final_model,
         audio_path: audio.to_path_buf(),
         audio_duration_ms: total_ms,
         diarized: false,
