@@ -23,6 +23,18 @@ impl MarkdownDialect {
             Self::Basic => CHEAT_SHEET_BASIC,
         }
     }
+
+    /// Stable kebab-case wire / DB string for this dialect. Matches
+    /// the `#[serde(rename_all = "kebab-case")]` form. Single source
+    /// of truth — used by the IPC handler when persisting a `note`
+    /// row, by the CLI's notes registration, and by anywhere else
+    /// that needs the dialect as a string column.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotionEnhanced => "notion-enhanced",
+            Self::Basic => "basic",
+        }
+    }
 }
 
 const CHEAT_SHEET_NOTION_ENHANCED: &str = "\
@@ -77,5 +89,17 @@ mod tests {
     #[test]
     fn default_is_notion_enhanced() {
         assert_eq!(MarkdownDialect::default(), MarkdownDialect::NotionEnhanced);
+    }
+
+    #[test]
+    fn as_str_matches_serde_kebab_case() {
+        // Stay in lock-step with the wire form so `dialect` columns
+        // and JSON values agree.
+        assert_eq!(MarkdownDialect::NotionEnhanced.as_str(), "notion-enhanced");
+        assert_eq!(MarkdownDialect::Basic.as_str(), "basic");
+        assert_eq!(
+            serde_json::to_string(&MarkdownDialect::NotionEnhanced).unwrap(),
+            format!("\"{}\"", MarkdownDialect::NotionEnhanced.as_str())
+        );
     }
 }

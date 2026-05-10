@@ -74,13 +74,7 @@ fn render_frontmatter(notes: &StructuredNotes) -> String {
         }
     }
     s.push_str(&format!("template: {}\n", yaml_scalar(&fm.template)));
-    s.push_str(&format!(
-        "dialect: {}\n",
-        match fm.dialect {
-            MarkdownDialect::NotionEnhanced => "notion-enhanced",
-            MarkdownDialect::Basic => "basic",
-        }
-    ));
+    s.push_str(&format!("dialect: {}\n", fm.dialect.as_str()));
     s.push_str(&format!(
         "panops_version: {}\n",
         yaml_scalar(&fm.panops_version)
