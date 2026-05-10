@@ -437,7 +437,10 @@ pub(super) fn run_notes_pipeline(
     let regions = heavy
         .vad
         .detect_speech(&samples, sample_rate)
-        .map_err(IpcError::from)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "vad detect_speech failed");
+            IpcError::from(e)
+        })?;
     let merged = panops_portable::audio::merge_adjacent_regions(regions, 5_000);
 
     let mut stitched_segments: Vec<panops_core::Segment> = Vec::new();

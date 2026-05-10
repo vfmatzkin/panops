@@ -40,24 +40,22 @@ fn load_wav_mono16k_rejects_nonexistent() {
 #[test]
 fn load_wav_mono16k_rejects_wrong_sample_format() {
     // Write a minimal WAV header with 32-bit float samples.
-    let dir = std::env::temp_dir();
-    let path = dir.join("panops_test_float32.wav");
+    let tmp = tempfile::NamedTempFile::new().expect("create temp file");
+    let path = tmp.path().to_path_buf();
     write_wav_header(&path, 16_000, 1, 32, hound::SampleFormat::Float);
     let err = load_wav_mono16k(&path).expect_err("should reject float32");
     let s = format!("{err}");
     assert!(s.contains("sample format"), "got: {s}");
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn load_wav_mono16k_rejects_wrong_bit_depth() {
-    let dir = std::env::temp_dir();
-    let path = dir.join("panops_test_24bit.wav");
+    let tmp = tempfile::NamedTempFile::new().expect("create temp file");
+    let path = tmp.path().to_path_buf();
     write_wav_header(&path, 16_000, 1, 24, hound::SampleFormat::Int);
     let err = load_wav_mono16k(&path).expect_err("should reject 24-bit");
     let s = format!("{err}");
     assert!(s.contains("bits per sample"), "got: {s}");
-    let _ = std::fs::remove_file(&path);
 }
 
 fn write_wav_header(

@@ -234,7 +234,7 @@ mod from_domain {
                 VadError::Model(_) => IpcError::Internal {
                     message: "vad model error".into(),
                 },
-                VadError::Io { .. } => IpcError::Internal {
+                VadError::Io(_) => IpcError::Internal {
                     message: "vad io error".into(),
                 },
             }
