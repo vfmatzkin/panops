@@ -208,4 +208,9 @@ fn continuous_bilingual_detects_only_first_language() {
         langs.iter().any(|l| l == "en"),
         "expected English segments, got {langs:?}"
     );
+
+    assert!(
+        !langs.iter().any(|l| l == "es"),
+        "Spanish should NOT be detected in continuous bilingual (slice-08 regression baseline). When this fails, slice 08 work has landed and this baseline should flip to assert BOTH languages."
+    );
 }

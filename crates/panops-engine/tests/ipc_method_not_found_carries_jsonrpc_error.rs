@@ -29,7 +29,7 @@ async fn unknown_method_returns_method_not_found() {
         Arc::new(TranscriptFileFake::default()),
         Arc::new(KnownTurnsFake),
         Arc::new(FakeNotesExporter),
-        Arc::new(KnownRegionsFake::new()),
+        Arc::new(KnownRegionsFake::default()),
     );
 
     let server_socket = socket.clone();

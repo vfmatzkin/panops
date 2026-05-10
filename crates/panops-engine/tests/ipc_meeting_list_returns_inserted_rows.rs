@@ -57,7 +57,7 @@ async fn meeting_list_returns_rows_inserted_via_storage() {
         Arc::new(TranscriptFileFake::default()),
         Arc::new(KnownTurnsFake),
         Arc::new(FakeNotesExporter),
-        Arc::new(KnownRegionsFake::new()),
+        Arc::new(KnownRegionsFake::default()),
     );
 
     let server_socket = socket.clone();

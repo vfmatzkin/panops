@@ -39,7 +39,7 @@ async fn meetings_created_in_one_session_visible_in_next() {
             Arc::new(TranscriptFileFake::default()),
             Arc::new(KnownTurnsFake),
             Arc::new(FakeNotesExporter),
-            Arc::new(KnownRegionsFake::new()),
+            Arc::new(KnownRegionsFake::default()),
         );
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -83,7 +83,7 @@ async fn meetings_created_in_one_session_visible_in_next() {
             Arc::new(TranscriptFileFake::default()),
             Arc::new(KnownTurnsFake),
             Arc::new(FakeNotesExporter),
-            Arc::new(KnownRegionsFake::new()),
+            Arc::new(KnownRegionsFake::default()),
         );
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);

@@ -73,7 +73,7 @@ Everything else (concrete trait shapes, error variants, the `merge_adjacent_regi
 - **LLM model evaluation** (already filed as #108).
 - **ASR backend alternatives** for English-only / real-time paths (already filed as #109).
 - **Whisper bundled VAD model fallback to a different VAD provider.** YAGNI.
-- **Audio resampling / channel mixing.** The CLI already requires 16 kHz mono WAV; `WhisperVad` and `WhisperRsAsr` both assume that. If a future input doesn't match, surface a clear `InvalidAudio` error. Anchor B's live-capture path will produce 16 kHz mono samples directly.
+- **Audio resampling / channel mixing.** The CLI already requires 16 kHz mono WAV; `WhisperVad` and `WhisperRsAsr` both assume that. If a future input doesn't match, surface a clear `InvalidAudio` error. Anchor B's live-capture path will produce 16 kHz mono samples directly. **Amended 2026-05-10 (post-implementation review):** stereo input IS accepted and downmixed to mono via `whisper_rs::convert_stereo_to_mono_audio` for ergonomic CLI use (the maintainer's actual recordings come out of OBS as stereo). Resampling (non-16kHz sample rates) is still out of scope and surfaces `InvalidAudio`.
 
 ## Architecture
 

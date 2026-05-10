@@ -434,11 +434,14 @@ fn transcribe_with_vad(
     vad: &dyn Vad,
     language: Option<&str>,
 ) -> Result<panops_core::Transcript, (u8, String)> {
-    let (samples, sample_rate) =
-        panops_portable::audio::load_wav_mono16k(audio).map_err(|e| (2, e.to_string()))?;
-    let regions = vad
-        .detect_speech(&samples, sample_rate)
-        .map_err(|e| (2, e.to_string()))?;
+    let (samples, sample_rate) = panops_portable::audio::load_wav_mono16k(audio).map_err(|e| {
+        tracing::error!(error = %e, "audio loading failed");
+        (2, "audio decode failed".to_string())
+    })?;
+    let regions = vad.detect_speech(&samples, sample_rate).map_err(|e| {
+        tracing::error!(error = %e, "vad detect_speech failed");
+        (2, "vad failed".to_string())
+    })?;
     let merged = panops_portable::audio::merge_adjacent_regions(regions, 5_000);
 
     let mut stitched: Vec<panops_core::Segment> = Vec::new();
@@ -451,9 +454,10 @@ fn transcribe_with_vad(
         if chunk.is_empty() {
             continue;
         }
-        let region_t = asr
-            .transcribe(chunk, sample_rate, language)
-            .map_err(|e| (2, e.to_string()))?;
+        let region_t = asr.transcribe(chunk, sample_rate, language).map_err(|e| {
+            tracing::error!(error = %e, "asr transcribe failed");
+            (2, "transcription failed".to_string())
+        })?;
         for mut seg in region_t.segments {
             seg.start_ms = (seg.start_ms + region.start_ms).min(total_ms);
             seg.end_ms = (seg.end_ms + region.start_ms).min(total_ms);
@@ -486,7 +490,7 @@ fn transcribe(
         // KnownRegionsFake VAD so the pipeline still runs end-to-end.
         let canned = panops_core::conformance::fakes::read_canned_sidecar(audio);
         let asr = panops_core::conformance::fakes::TranscriptFileFake::with_canned(canned);
-        let vad = panops_core::conformance::fakes::KnownRegionsFake::new();
+        let vad = panops_core::conformance::fakes::KnownRegionsFake::default();
         return transcribe_with_vad(audio, &asr, &vad, language);
     }
 

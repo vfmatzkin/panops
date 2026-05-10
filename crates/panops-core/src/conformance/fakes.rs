@@ -521,11 +521,7 @@ impl Default for KnownRegionsFake {
     }
 }
 
-impl KnownRegionsFake {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
+impl KnownRegionsFake {}
 
 impl Vad for KnownRegionsFake {
     fn detect_speech(
@@ -585,7 +581,7 @@ mod vad_fake_tests {
 
     #[test]
     fn known_regions_fake_passes_conformance() {
-        run_suite(&KnownRegionsFake::new());
+        run_suite(&KnownRegionsFake::default());
     }
 }
 
