@@ -444,18 +444,29 @@ pub(super) fn run_notes_pipeline(
     let merged = panops_portable::audio::merge_adjacent_regions(regions, 5_000);
 
     let mut stitched_segments: Vec<panops_core::Segment> = Vec::new();
+    let mut stitched_model: Option<String> = None;
     let total_audio_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
     for region in merged.iter() {
         let start_sample = ms_to_samples(region.start_ms, sample_rate);
-        let end_sample = ms_to_samples(region.end_ms, sample_rate).min(samples.len());
-        let chunk = &samples[start_sample..end_sample];
-        if chunk.is_empty() {
+        let end_sample = ms_to_samples(region.end_ms, sample_rate);
+        let start_sample = start_sample.min(samples.len());
+        let end_sample = end_sample.min(samples.len());
+        if start_sample >= end_sample {
+            tracing::warn!(
+                start_ms = region.start_ms,
+                end_ms = region.end_ms,
+                "degenerate VAD region after bounds clamping, skipping"
+            );
             continue;
         }
+        let chunk = &samples[start_sample..end_sample];
         let region_t = heavy
             .asr
             .transcribe(chunk, sample_rate, params.language.as_deref())
             .map_err(IpcError::from)?;
+        if stitched_model.is_none() && !region_t.segments.is_empty() {
+            stitched_model = Some(region_t.model.clone());
+        }
         for mut seg in region_t.segments {
             // Offset region-local timestamps to absolute audio time.
             seg.start_ms = (seg.start_ms + region.start_ms).min(total_audio_ms);
@@ -464,9 +475,10 @@ pub(super) fn run_notes_pipeline(
         }
     }
 
+    let final_model = stitched_model.unwrap_or_else(|| "vad-multilingual".to_string());
     let mut transcript = panops_core::Transcript {
         schema_version: panops_core::Transcript::SCHEMA_VERSION,
-        model: "vad-multilingual".to_string(),
+        model: final_model,
         audio_path: audio_path.clone(),
         audio_duration_ms: total_audio_ms,
         diarized: false,
