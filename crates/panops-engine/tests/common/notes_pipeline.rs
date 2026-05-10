@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use panops_core::asr::{AsrError, AsrProvider};
-use panops_core::conformance::fakes::{KnownRegionsFake, MockLlm};
+use panops_core::conformance::fakes::MockLlm;
 use panops_core::diar::{DiarError, Diarizer, SpeakerTurn};
 use panops_core::llm::LlmResponse;
 use panops_core::notes::dialect::MarkdownDialect;
@@ -19,6 +19,7 @@ use panops_core::notes::prompts::{
     SectionSummary, build_frontmatter_prompt, build_section_narrative_prompt,
 };
 use panops_core::storage::Storage;
+use panops_core::vad::{SpeechRegion, Vad, VadError};
 use panops_core::{Segment, Transcript};
 use panops_engine::server::EngineServices;
 use panops_portable::markdown_exporter::MarkdownExporter;
@@ -158,6 +159,25 @@ pub fn build_mock_llm(dialect: MarkdownDialect) -> MockLlm {
         )
 }
 
+/// Deterministic VAD fake that always returns a single region covering
+/// the entire audio. Used in IPC tests where splitting into multiple
+/// regions would duplicate the deterministic ASR output.
+pub struct SingleRegionVad;
+
+impl Vad for SingleRegionVad {
+    fn detect_speech(
+        &self,
+        samples: &[f32],
+        sample_rate: u32,
+    ) -> Result<Vec<SpeechRegion>, VadError> {
+        let duration_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
+        Ok(vec![SpeechRegion {
+            start_ms: 0,
+            end_ms: duration_ms,
+        }])
+    }
+}
+
 /// Build an `EngineServices` with a deterministic ASR + diar + LLM
 /// pipeline and a real `MarkdownExporter`. Uses dialect = `Basic` so
 /// the prompts are simpler and the goldens are short.
@@ -172,6 +192,6 @@ pub fn build_deterministic_notes_services(
         Arc::new(DeterministicAsr),
         Arc::new(DeterministicDiar),
         Arc::new(MarkdownExporter),
-        Arc::new(KnownRegionsFake::new()),
+        Arc::new(SingleRegionVad),
     )
 }

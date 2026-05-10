@@ -420,13 +420,55 @@ pub(super) fn run_notes_pipeline(
         }
     };
 
+    // Slice 07: VAD-aware multilingual transcription.
+    //
+    // Pipeline:
+    //   1. Load samples once (16 kHz mono).
+    //   2. Run VAD to find speech regions.
+    //   3. Merge adjacent regions (gap < 5s) so each region is long
+    //      enough for Whisper's per-call language detection (>= 30s
+    //      ideally; merging helps when natural pauses are short).
+    //   4. For each merged region, call asr.transcribe(slice, sr, lang_hint)
+    //      with lang_hint=None to trigger per-region auto-detect.
+    //   5. Stitch transcripts back with absolute-time offsets.
     let (samples, sample_rate) =
         panops_portable::audio::load_wav_mono16k(&audio_path).map_err(IpcError::from)?;
-    let mut transcript = heavy
-        .asr
-        .transcribe(&samples, sample_rate, params.language.as_deref())
+
+    let regions = heavy
+        .vad
+        .detect_speech(&samples, sample_rate)
         .map_err(IpcError::from)?;
-    transcript.audio_path = audio_path.clone();
+    let merged = panops_portable::audio::merge_adjacent_regions(regions, 5_000);
+
+    let mut stitched_segments: Vec<panops_core::Segment> = Vec::new();
+    let total_audio_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
+    for region in merged.iter() {
+        let start_sample = ms_to_samples(region.start_ms, sample_rate);
+        let end_sample = ms_to_samples(region.end_ms, sample_rate).min(samples.len());
+        let chunk = &samples[start_sample..end_sample];
+        if chunk.is_empty() {
+            continue;
+        }
+        let region_t = heavy
+            .asr
+            .transcribe(chunk, sample_rate, params.language.as_deref())
+            .map_err(IpcError::from)?;
+        for mut seg in region_t.segments {
+            // Offset region-local timestamps to absolute audio time.
+            seg.start_ms = (seg.start_ms + region.start_ms).min(total_audio_ms);
+            seg.end_ms = (seg.end_ms + region.start_ms).min(total_audio_ms);
+            stitched_segments.push(seg);
+        }
+    }
+
+    let mut transcript = panops_core::Transcript {
+        schema_version: panops_core::Transcript::SCHEMA_VERSION,
+        model: "vad-multilingual".to_string(),
+        audio_path: audio_path.clone(),
+        audio_duration_ms: total_audio_ms,
+        diarized: false,
+        segments: stitched_segments,
+    };
 
     let no_diarize = params.no_diarize.unwrap_or(false);
     if !no_diarize {
@@ -538,6 +580,10 @@ pub(super) fn run_notes_pipeline(
             .collect(),
         meeting_id: resolved_meeting_id,
     })
+}
+
+fn ms_to_samples(ms: u64, sample_rate: u32) -> usize {
+    ((ms * u64::from(sample_rate)) / 1000) as usize
 }
 
 /// Map `IpcError` to a JSON-RPC server error (-32000) carrying the
