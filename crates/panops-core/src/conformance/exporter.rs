@@ -92,6 +92,7 @@ fn sample_notes() -> StructuredNotes {
                 .unwrap(),
             duration_ms: 60_000,
             speakers: vec!["speaker_0".into()],
+            languages: vec!["en".into()],
             tags: vec!["conformance".into()],
             template: "default".into(),
             dialect: MarkdownDialect::Basic,

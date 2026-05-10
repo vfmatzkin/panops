@@ -3,7 +3,7 @@ title: Quarterly budget review kickoff
 date: 2026-05-01
 started_at: 2026-05-01T10:00:00+00:00
 duration_ms: 60000
-language: en
+languages: [en]
 speakers:
   - speaker_0
   - speaker_1

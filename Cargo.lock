@@ -1768,6 +1768,7 @@ dependencies = [
  "chrono",
  "clap",
  "futures-util",
+ "hound",
  "jsonrpsee",
  "libc",
  "panops-core",

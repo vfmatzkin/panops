@@ -45,6 +45,7 @@ impl NotesGenerator<'_> {
             .language_hint
             .clone()
             .unwrap_or_else(|| dominant_language(&input.transcript));
+        let unique_languages = unique_languages(&input.transcript);
 
         // Stage 1
         let raw_sections = segment_topics(&input.transcript, &TopicSegmentationConfig::default());
@@ -185,6 +186,7 @@ impl NotesGenerator<'_> {
                 started_at: input.meeting_metadata.started_at,
                 duration_ms: input.meeting_metadata.duration_ms,
                 speakers,
+                languages: unique_languages,
                 tags,
                 template: "default".into(),
                 dialect: self.dialect,
@@ -294,6 +296,23 @@ fn dominant_language(segments: &[Segment]) -> String {
         .unwrap_or_else(|| "en".into())
 }
 
+fn unique_languages(segments: &[Segment]) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for s in segments {
+        if let Some(lang) = s.language_detected.as_deref() {
+            if seen.insert(lang.to_string()) {
+                out.push(lang.to_string());
+            }
+        }
+    }
+    if out.is_empty() {
+        vec!["en".into()]
+    } else {
+        out
+    }
+}
+
 fn collect_speakers(segments: &[Segment]) -> Vec<String> {
     let mut seen: HashSet<u32> = HashSet::new();
     let mut out: Vec<String> = Vec::new();
@@ -323,4 +342,75 @@ fn extract_frontmatter(v: serde_json::Value) -> (String, Vec<String>) {
         })
         .unwrap_or_default();
     (title, tags)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Segment;
+
+    #[test]
+    fn unique_languages_preserves_first_appearance_order() {
+        let segs = vec![
+            Segment {
+                start_ms: 0,
+                end_ms: 1000,
+                text: "hello".into(),
+                language_detected: Some("en".into()),
+                confidence: 1.0,
+                is_partial: false,
+                speaker_id: Some(0),
+            },
+            Segment {
+                start_ms: 1000,
+                end_ms: 2000,
+                text: "hola".into(),
+                language_detected: Some("es".into()),
+                confidence: 1.0,
+                is_partial: false,
+                speaker_id: Some(1),
+            },
+            Segment {
+                start_ms: 2000,
+                end_ms: 3000,
+                text: "world".into(),
+                language_detected: Some("en".into()),
+                confidence: 1.0,
+                is_partial: false,
+                speaker_id: Some(0),
+            },
+            Segment {
+                start_ms: 3000,
+                end_ms: 4000,
+                text: "mundo".into(),
+                language_detected: Some("es".into()),
+                confidence: 1.0,
+                is_partial: false,
+                speaker_id: Some(1),
+            },
+        ];
+        let langs = unique_languages(&segs);
+        assert_eq!(langs, vec!["en", "es"]);
+    }
+
+    #[test]
+    fn unique_languages_defaults_to_en_when_none_detected() {
+        let segs = vec![Segment {
+            start_ms: 0,
+            end_ms: 1000,
+            text: "hello".into(),
+            language_detected: None,
+            confidence: 1.0,
+            is_partial: false,
+            speaker_id: None,
+        }];
+        let langs = unique_languages(&segs);
+        assert_eq!(langs, vec!["en"]);
+    }
+
+    #[test]
+    fn unique_languages_empty_transcript_defaults_to_en() {
+        let langs = unique_languages(&[]);
+        assert_eq!(langs, vec!["en"]);
+    }
 }

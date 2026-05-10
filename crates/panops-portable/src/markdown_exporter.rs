@@ -56,7 +56,10 @@ fn render_frontmatter(notes: &StructuredNotes) -> String {
     s.push_str(&format!("date: {}\n", fm.date.format("%Y-%m-%d")));
     s.push_str(&format!("started_at: {}\n", fm.started_at.to_rfc3339()));
     s.push_str(&format!("duration_ms: {}\n", fm.duration_ms));
-    s.push_str(&format!("language: {}\n", yaml_scalar(&notes.language)));
+    s.push_str(&format!(
+        "languages: {}\n",
+        yaml_list(&notes.frontmatter.languages)
+    ));
     if fm.speakers.is_empty() {
         s.push_str("speakers: []\n");
     } else {
@@ -212,6 +215,14 @@ fn yaml_scalar(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+fn yaml_list(items: &[String]) -> String {
+    if items.is_empty() {
+        return "[]".to_string();
+    }
+    let quoted: Vec<String> = items.iter().map(|s| yaml_scalar(s)).collect();
+    format!("[{}]", quoted.join(", "))
 }
 
 #[cfg(test)]
