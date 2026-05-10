@@ -163,7 +163,7 @@ Everything else is composable trajectory toward v0.1, decided slice-by-slice. **
 3. Post-pass + diarization — pyannote via sherpa-rs adapter, speaker labels merged.
 4. Notes generation — `LlmProvider` + `NotesGenerator` + `MarkdownExporter`.
 5. IPC — JSON-RPC + WebSocket over UDS, Rust test client.
-6. SQLite persistence + Mac shell scaffolding — `Storage` port, per-meeting DB, cross-meeting registry, SwiftUI app shell + ASR/LLM sidecars.
+6. SQLite storage + meeting lifecycle — `Storage` port, single `panops.db` registry with `meeting + note` tables, six new IPC `meeting.*` methods, per-meeting directories at `meetings/<uuid>/`. Per-meeting `meeting.db` (segment/speaker/screenshot/job tables) deferred to Anchor B.
 7. VAD-aware multilingual ASR — `Vad` port, `WhisperVad` adapter, samples-based `AsrProvider`, per-region language detection. Closes the multilingual-day-1 north-star gap confirmed on `2026-05-08 19-04-03.mov`.
 
 ### Current trajectory toward v0.1 (amendable)
