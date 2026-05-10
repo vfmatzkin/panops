@@ -9,3 +9,4 @@ pub mod exporter;
 pub mod fakes;
 pub mod llm;
 pub mod storage;
+pub mod vad;
