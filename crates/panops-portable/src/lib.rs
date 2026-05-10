@@ -1,6 +1,7 @@
 //! Portable AsrProvider + Diarizer adapters. Used everywhere the
 //! Mac sidecars aren't (Linux, Windows, fallback on Mac).
 
+pub mod audio;
 pub mod genai_llm;
 pub mod markdown_exporter;
 pub mod model;
