@@ -24,33 +24,46 @@ use crate::vad::{Vad, VadError};
 
 const SR: u32 = 16_000;
 
-static SPEECH_FIXTURE: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+static SPEECH_FIXTURE: std::sync::OnceLock<Result<Vec<f32>, String>> = std::sync::OnceLock::new();
 
 /// Load `en_30s.wav` from the workspace fixtures directory once and
 /// return a borrowed slice for reuse across tests.
 fn load_speech_fixture() -> &'static [f32] {
     SPEECH_FIXTURE
         .get_or_init(|| {
-            let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .ancestors()
-                .find(|p| p.join("tests/fixtures/audio").is_dir())
-                .expect("workspace root with tests/fixtures/audio not found");
-            let wav_path = workspace_root.join("tests/fixtures/audio/en_30s.wav");
-            let mut reader = hound::WavReader::open(&wav_path)
-                .unwrap_or_else(|_| panic!("open fixture {}", wav_path.display()));
-            let spec = reader.spec();
-            assert!(
-                spec.sample_format == hound::SampleFormat::Int && spec.bits_per_sample == 16,
-                "fixture {} must be 16-bit PCM, got {:?} {}-bit",
-                wav_path.display(),
-                spec.sample_format,
-                spec.bits_per_sample
-            );
-            reader
-                .samples::<i16>()
-                .map(|r| r.expect("decode fixture sample") as f32 / i16::MAX as f32)
-                .collect()
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .find(|p| p.join("tests/fixtures/audio").is_dir())
+                    .expect("workspace root with tests/fixtures/audio not found");
+                let wav_path = workspace_root.join("tests/fixtures/audio/en_30s.wav");
+                let mut reader = hound::WavReader::open(&wav_path)
+                    .unwrap_or_else(|_| panic!("open fixture {}", wav_path.display()));
+                let spec = reader.spec();
+                assert!(
+                    spec.sample_format == hound::SampleFormat::Int && spec.bits_per_sample == 16,
+                    "fixture {} must be 16-bit PCM, got {:?} {}-bit",
+                    wav_path.display(),
+                    spec.sample_format,
+                    spec.bits_per_sample
+                );
+                reader
+                    .samples::<i16>()
+                    .map(|r| r.expect("decode fixture sample") as f32 / i16::MAX as f32)
+                    .collect::<Vec<f32>>()
+            }))
+            .map_err(|e| {
+                if let Some(s) = e.downcast_ref::<String>() {
+                    s.clone()
+                } else if let Some(s) = e.downcast_ref::<&str>() {
+                    s.to_string()
+                } else {
+                    "vad fixture init panicked".to_string()
+                }
+            })
         })
+        .as_ref()
+        .expect("vad fixture init failed")
         .as_slice()
 }
 

@@ -33,7 +33,7 @@ async fn meeting_get_returns_all_fields() {
         Arc::new(TranscriptFileFake::default()),
         Arc::new(KnownTurnsFake),
         Arc::new(FakeNotesExporter),
-        Arc::new(KnownRegionsFake::new()),
+        Arc::new(KnownRegionsFake::default()),
     );
 
     let server_socket = socket.clone();
@@ -87,7 +87,7 @@ async fn meeting_get_unknown_id_is_input_not_found() {
         Arc::new(TranscriptFileFake::default()),
         Arc::new(KnownTurnsFake),
         Arc::new(FakeNotesExporter),
-        Arc::new(KnownRegionsFake::new()),
+        Arc::new(KnownRegionsFake::default()),
     );
 
     let server_socket = socket.clone();

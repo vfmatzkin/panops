@@ -38,7 +38,7 @@ async fn notes_generate_emits_job_error_with_input_not_found_kind() {
         Arc::new(TranscriptFileFake::default()),
         Arc::new(KnownTurnsFake),
         Arc::new(FakeNotesExporter),
-        Arc::new(KnownRegionsFake::new()),
+        Arc::new(KnownRegionsFake::default()),
     );
 
     let server_socket = socket.clone();

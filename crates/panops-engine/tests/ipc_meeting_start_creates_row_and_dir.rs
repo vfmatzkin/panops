@@ -33,7 +33,7 @@ async fn meeting_start_creates_row_directory_and_screenshots_subdir() {
         Arc::new(TranscriptFileFake::default()),
         Arc::new(KnownTurnsFake),
         Arc::new(FakeNotesExporter),
-        Arc::new(KnownRegionsFake::new()),
+        Arc::new(KnownRegionsFake::default()),
     );
 
     let server_socket = socket.clone();
@@ -92,7 +92,7 @@ async fn meeting_start_with_empty_config_uses_defaults() {
         Arc::new(TranscriptFileFake::default()),
         Arc::new(KnownTurnsFake),
         Arc::new(FakeNotesExporter),
-        Arc::new(KnownRegionsFake::new()),
+        Arc::new(KnownRegionsFake::default()),
     );
 
     let server_socket = socket.clone();
