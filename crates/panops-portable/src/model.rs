@@ -50,7 +50,17 @@ pub const DIAR_MODELS: &[ModelInfo] = &[
     },
 ];
 
+pub const VAD_MODELS: &[ModelInfo] = &[ModelInfo {
+    name: "ggml-silero-v6.2.0",
+    url: "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
+    // SHA256 captured 2026-05-09 by `shasum -a 256` after manual download.
+    sha256: "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+    approx_size_mb: 1,
+}];
+
 pub const DEFAULT_MODEL_NAME: &str = "ggml-large-v3-turbo-q5_0";
+
+pub const DEFAULT_VAD_MODEL_NAME: &str = "ggml-silero-v6.2.0";
 
 fn data_dir() -> Result<PathBuf, AsrError> {
     let dirs = ProjectDirs::from("dev", "panops", "panops")
@@ -81,6 +91,13 @@ pub fn default_diar_emb_path() -> Result<PathBuf, AsrError> {
     Ok(data_dir()?.join("3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"))
 }
 
+pub fn default_vad_model_path() -> Result<PathBuf, AsrError> {
+    if let Ok(p) = std::env::var("PANOPS_VAD_MODEL") {
+        return Ok(PathBuf::from(p));
+    }
+    Ok(data_dir()?.join(format!("{DEFAULT_VAD_MODEL_NAME}.bin")))
+}
+
 fn http_client() -> Result<reqwest::blocking::Client, AsrError> {
     reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
@@ -93,6 +110,7 @@ fn lookup_model(name: &str) -> Result<&'static ModelInfo, AsrError> {
     MODELS
         .iter()
         .chain(DIAR_MODELS.iter())
+        .chain(VAD_MODELS.iter())
         .find(|m| m.name == name)
         .ok_or_else(|| AsrError::Model(format!("no registered model named {name}")))
 }
@@ -278,4 +296,38 @@ pub fn ensure_diar_models() -> Result<(PathBuf, PathBuf), AsrError> {
     }
 
     Ok((seg, emb))
+}
+
+/// Ensure the VAD model exists at `dest`. Verifies sha256 against the
+/// registered hash. Idempotent. The VAD model is a single `.bin` file
+/// (no tarball, no extraction).
+///
+/// Behavior on existing files:
+/// - If `PANOPS_VAD_MODEL` env is set: trust the user-provided file, skip checksum.
+/// - If `PANOPS_SKIP_MODEL_CHECKSUM` env is set: skip checksum.
+/// - Otherwise: verify against the registered hash.
+pub fn ensure_vad_model(dest: &Path) -> Result<PathBuf, AsrError> {
+    let info = &VAD_MODELS[0];
+    if dest.exists() {
+        let user_override = std::env::var("PANOPS_VAD_MODEL").is_ok();
+        let skip_checksum = std::env::var("PANOPS_SKIP_MODEL_CHECKSUM").is_ok();
+        if !user_override && !skip_checksum {
+            verify_sha256(dest, info.sha256)?;
+        }
+        return Ok(dest.to_path_buf());
+    }
+    tracing::info!(
+        name = info.name,
+        approx_mb = info.approx_size_mb,
+        url = info.url,
+        "downloading vad model"
+    );
+    let client = http_client()?;
+    let n = download(&client, info.url, dest)?;
+    if let Err(e) = verify_sha256(dest, info.sha256) {
+        let _ = fs::remove_file(dest);
+        return Err(e);
+    }
+    tracing::info!(bytes = n, dest = ?dest, "vad model download complete");
+    Ok(dest.to_path_buf())
 }
