@@ -14,7 +14,7 @@
 //! - Non-16 kHz input returns `VadError::InvalidAudio`.
 //!
 //! Speech detection tests use `tests/fixtures/audio/en_30s.wav` (real
-//! synthesized English speech) so that Silera-based adapters (which
+//! synthesized English speech) so that Silero-based adapters (which
 //! reject pure-tone sine waves) pass the harness. Silence tests still
 //! use synthetic `vec![0.0; …]`.
 
@@ -24,35 +24,41 @@ use crate::vad::{Vad, VadError};
 
 const SR: u32 = 16_000;
 
+static SPEECH_FIXTURE: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+
 /// Load `en_30s.wav` from the workspace fixtures directory once and
 /// return a borrowed slice for reuse across tests.
-fn load_speech_fixture() -> Vec<f32> {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .find(|p| p.join("tests/fixtures/audio").is_dir())
-        .expect("workspace root with tests/fixtures/audio not found");
-    let wav_path = workspace_root.join("tests/fixtures/audio/en_30s.wav");
-    let mut reader = hound::WavReader::open(&wav_path)
-        .unwrap_or_else(|_| panic!("open fixture {}", wav_path.display()));
-    let spec = reader.spec();
-    assert!(
-        spec.sample_format == hound::SampleFormat::Int && spec.bits_per_sample == 16,
-        "fixture {} must be 16-bit PCM, got {:?} {}-bit",
-        wav_path.display(),
-        spec.sample_format,
-        spec.bits_per_sample
-    );
-    reader
-        .samples::<i16>()
-        .map(|r| r.expect("decode fixture sample") as f32 / i16::MAX as f32)
-        .collect()
+fn load_speech_fixture() -> &'static [f32] {
+    SPEECH_FIXTURE
+        .get_or_init(|| {
+            let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .find(|p| p.join("tests/fixtures/audio").is_dir())
+                .expect("workspace root with tests/fixtures/audio not found");
+            let wav_path = workspace_root.join("tests/fixtures/audio/en_30s.wav");
+            let mut reader = hound::WavReader::open(&wav_path)
+                .unwrap_or_else(|_| panic!("open fixture {}", wav_path.display()));
+            let spec = reader.spec();
+            assert!(
+                spec.sample_format == hound::SampleFormat::Int && spec.bits_per_sample == 16,
+                "fixture {} must be 16-bit PCM, got {:?} {}-bit",
+                wav_path.display(),
+                spec.sample_format,
+                spec.bits_per_sample
+            );
+            reader
+                .samples::<i16>()
+                .map(|r| r.expect("decode fixture sample") as f32 / i16::MAX as f32)
+                .collect()
+        })
+        .as_slice()
 }
 
 /// Run the full conformance suite against a `Vad` implementation.
 pub fn run_suite<V: Vad>(adapter: &V) {
     let speech_samples = load_speech_fixture();
-    detects_speech_in_simple_burst(adapter, &speech_samples);
-    returns_sorted_non_overlapping_regions(adapter, &speech_samples);
+    detects_speech_in_simple_burst(adapter, speech_samples);
+    returns_sorted_non_overlapping_regions(adapter, speech_samples);
     rejects_non_16khz_sample_rate(adapter);
     handles_silence_without_panic(adapter);
 }
@@ -77,6 +83,12 @@ fn detects_speech_in_simple_burst<V: Vad>(adapter: &V, samples: &[f32]) {
         );
         prev_end = r.end_ms;
         assert!(r.start_ms < r.end_ms, "region[{i}] start>=end: {r:?}");
+        assert!(
+            r.start_ms <= total_ms,
+            "region[{i}] start {} > audio duration {}",
+            r.start_ms,
+            total_ms
+        );
         assert!(
             r.end_ms <= total_ms,
             "region[{i}] end {} > audio duration {}",

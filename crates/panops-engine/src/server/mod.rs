@@ -50,7 +50,6 @@ pub(super) struct HeavyAdapters {
     pub(super) asr: Arc<dyn AsrProvider + Send + Sync>,
     pub(super) diar: Arc<dyn Diarizer + Send + Sync>,
     pub(super) exporter: Arc<dyn NotesExporter + Send + Sync>,
-    #[allow(dead_code)] // wired in Task 13 (VAD orchestration in run_notes_pipeline)
     pub(super) vad: Arc<dyn Vad>,
 }
 
