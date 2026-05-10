@@ -13,12 +13,31 @@
 //!   adapters that have a noise floor; we accept 0..=1 here).
 //! - Non-16 kHz input returns `VadError::InvalidAudio`.
 //!
-//! The harness generates its own synthetic audio (silence + a sine
-//! wave burst) so it doesn't depend on fixture files.
+//! Speech detection tests use `tests/fixtures/audio/en_30s.wav` (real
+//! synthesized English speech) so that Silera-based adapters (which
+//! reject pure-tone sine waves) pass the harness. Silence tests still
+//! use synthetic `vec![0.0; …]`.
+
+use std::path::Path;
 
 use crate::vad::{Vad, VadError};
 
 const SR: u32 = 16_000;
+
+/// Load `en_30s.wav` from the workspace fixtures directory.
+fn load_speech_fixture() -> Vec<f32> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .find(|p| p.join("tests/fixtures/audio").is_dir())
+        .expect("workspace root with tests/fixtures/audio not found");
+    let wav_path = workspace_root.join("tests/fixtures/audio/en_30s.wav");
+    let mut reader = hound::WavReader::open(&wav_path)
+        .unwrap_or_else(|_| panic!("open fixture {}", wav_path.display()));
+    reader
+        .samples::<i16>()
+        .map(|r| r.expect("decode fixture sample") as f32 / i16::MAX as f32)
+        .collect()
+}
 
 /// Run the full conformance suite against a `Vad` implementation.
 pub fn run_suite<V: Vad>(adapter: &V) {
@@ -29,24 +48,21 @@ pub fn run_suite<V: Vad>(adapter: &V) {
 }
 
 fn detects_speech_in_simple_burst<V: Vad>(adapter: &V) {
-    // 5s total: 1s silence + 2s tone + 2s silence.
-    let mut samples = vec![0.0_f32; SR as usize]; // 1s silence
-    samples.extend(sine_wave(2 * SR as usize, 440.0)); // 2s tone
-    samples.extend(vec![0.0_f32; 2 * SR as usize]); // 2s silence
+    let samples = load_speech_fixture();
+    let total_ms = (samples.len() as u64 * 1000) / u64::from(SR);
 
     let regions = adapter
         .detect_speech(&samples, SR)
-        .expect("detect_speech on simple burst should succeed");
+        .expect("detect_speech on real speech should succeed");
     assert!(
         !regions.is_empty(),
-        "expected >=1 speech region for a 2s tone; got 0"
+        "expected >=1 speech region for 30s of speech; got 0"
     );
-    let total_ms = (samples.len() as u64 * 1000) / u64::from(SR);
     for (i, r) in regions.iter().enumerate() {
         assert!(r.start_ms < r.end_ms, "region[{i}] start>=end: {r:?}");
         assert!(
-            r.end_ms <= total_ms + 100,
-            "region[{i}] end {} > audio {} + 100",
+            r.end_ms <= total_ms,
+            "region[{i}] end {} > audio duration {}",
             r.end_ms,
             total_ms
         );
@@ -54,10 +70,12 @@ fn detects_speech_in_simple_burst<V: Vad>(adapter: &V) {
 }
 
 fn returns_sorted_non_overlapping_regions<V: Vad>(adapter: &V) {
-    // Two tones separated by silence: 0.5s tone + 0.5s silence + 0.5s tone.
-    let mut samples = sine_wave((SR / 2) as usize, 440.0);
-    samples.extend(vec![0.0_f32; (SR / 2) as usize]);
-    samples.extend(sine_wave((SR / 2) as usize, 440.0));
+    // Split the 30s fixture into two halves separated by 1s of silence.
+    let full = load_speech_fixture();
+    let half = full.len() / 2;
+    let mut samples = full[..half].to_vec();
+    samples.extend(vec![0.0_f32; SR as usize]); // 1s silence gap
+    samples.extend(&full[half..]);
 
     let regions = adapter.detect_speech(&samples, SR).unwrap();
     let mut prev_end = 0_u64;
@@ -96,14 +114,4 @@ fn handles_silence_without_panic<V: Vad>(adapter: &V) {
         "expected 0..=1 regions for silence, got {}",
         regions.len()
     );
-}
-
-fn sine_wave(n_samples: usize, freq_hz: f32) -> Vec<f32> {
-    use std::f32::consts::TAU;
-    let mut out = Vec::with_capacity(n_samples);
-    for i in 0..n_samples {
-        let t = i as f32 / SR as f32;
-        out.push(0.5 * (TAU * freq_hz * t).sin());
-    }
-    out
 }

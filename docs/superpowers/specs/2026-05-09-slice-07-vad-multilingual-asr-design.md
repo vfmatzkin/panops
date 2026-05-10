@@ -136,13 +136,12 @@ pub enum VadError {
     Model(String),
     #[error("invalid audio: {0}")]
     InvalidAudio(String),
-    #[error("io: {source}")]
-    Io {
-        #[from]
-        source: std::io::Error,
-    },
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
 }
 // MUST NOT derive Serialize per AGENTS.md.
+
+**Amended 2026-05-09 (post-implementation):** `VadError::Io` is a tuple variant matching `AsrError::Io` and `DiarError::Io` conventions, not the struct variant shown earlier in design drafts. Adopting the convention keeps the future `From<VadError> for IpcError` mapping consistent with sibling domain-error mappings.
 ```
 
 ```rust

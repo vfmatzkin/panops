@@ -10,8 +10,9 @@ use thiserror::Error;
 pub trait Vad: Send + Sync {
     /// Detect speech regions in PCM samples. `samples` is mono f32
     /// in `[-1.0, 1.0]`; `sample_rate` is the source sample rate (Hz).
-    /// Adapters typically require 16 kHz; verify and surface as
-    /// `VadError::InvalidAudio` if mismatched.
+    /// Adapters MUST accept 16 kHz mono `f32` samples and MUST reject
+    /// other sample rates with `VadError::InvalidAudio`. The conformance
+    /// harness asserts this contract.
     fn detect_speech(
         &self,
         samples: &[f32],
