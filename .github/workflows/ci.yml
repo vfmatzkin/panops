@@ -54,6 +54,7 @@ jobs:
       PANOPS_MODEL: ${{ github.workspace }}/.panops-models/ggml-base-q5_1.bin
       PANOPS_DIAR_SEG: ${{ github.workspace }}/.panops-models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx
       PANOPS_DIAR_EMB: ${{ github.workspace }}/.panops-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
+      PANOPS_VAD_MODEL: ${{ github.workspace }}/.panops-models/ggml-silero-v6.2.0.bin
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
@@ -123,6 +124,24 @@ jobs:
               rm -f "$PANOPS_DIAR_EMB"
               exit 1
             fi
+          fi
+      - name: Ensure VAD model
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        env:
+          VAD_SHA256: 2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987
+        run: |
+          mkdir -p .panops-models
+          if [ ! -f "$PANOPS_VAD_MODEL" ]; then
+            curl -fL -o "$PANOPS_VAD_MODEL.partial" \
+              https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin
+            mv "$PANOPS_VAD_MODEL.partial" "$PANOPS_VAD_MODEL"
+          fi
+          actual=$(shasum -a 256 "$PANOPS_VAD_MODEL" | awk '{print $1}')
+          if [ "$actual" != "$VAD_SHA256" ]; then
+            echo "vad model checksum mismatch: expected $VAD_SHA256, got $actual" >&2
+            rm -f "$PANOPS_VAD_MODEL"
+            exit 1
           fi
       - uses: taiki-e/install-action@v2.75.27
         if: matrix.os == 'macos-latest'
