@@ -24,6 +24,18 @@ pub fn load_wav_mono16k(path: &Path) -> Result<(Vec<f32>, u32), AsrError> {
     }
     let reader = WavReader::open(path).map_err(|e| AsrError::InvalidAudio(e.to_string()))?;
     let spec = reader.spec();
+    if spec.sample_format != hound::SampleFormat::Int {
+        return Err(AsrError::InvalidAudio(format!(
+            "unsupported sample format {:?} (expected 16-bit PCM)",
+            spec.sample_format
+        )));
+    }
+    if spec.bits_per_sample != 16 {
+        return Err(AsrError::InvalidAudio(format!(
+            "unsupported bits per sample {} (expected 16)",
+            spec.bits_per_sample
+        )));
+    }
     if spec.sample_rate != 16_000 {
         return Err(AsrError::InvalidAudio(format!(
             "expected 16 kHz, got {} Hz",

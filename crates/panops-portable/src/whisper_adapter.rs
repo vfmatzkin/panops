@@ -1,12 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use panops_core::Segment;
 use panops_core::Transcript;
 use panops_core::asr::{AsrError, AsrProvider};
-use whisper_rs::{
-    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
-    convert_integer_to_float_audio, convert_stereo_to_mono_audio,
-};
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 pub struct WhisperRsAsr {
     model_path: PathBuf,
@@ -38,48 +35,18 @@ impl WhisperRsAsr {
 }
 
 impl AsrProvider for WhisperRsAsr {
-    fn transcribe_full(
+    fn transcribe(
         &self,
-        audio_path: &Path,
+        samples: &[f32],
+        sample_rate: u32,
         language_hint: Option<&str>,
     ) -> Result<Transcript, AsrError> {
-        if !audio_path.exists() {
-            return Err(AsrError::AudioNotFound(audio_path.to_path_buf()));
-        }
-        let reader = hound::WavReader::open(audio_path)
-            .map_err(|e| AsrError::InvalidAudio(e.to_string()))?;
-        let spec = reader.spec();
-        if spec.sample_rate != 16_000 {
+        if sample_rate != 16_000 {
             return Err(AsrError::InvalidAudio(format!(
-                "expected 16 kHz, got {} Hz",
-                spec.sample_rate
+                "expected 16 kHz, got {sample_rate} Hz"
             )));
         }
-        let samples_i16: Vec<i16> = reader
-            .into_samples::<i16>()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AsrError::InvalidAudio(e.to_string()))?;
-
-        let mut audio_f32 = vec![0.0_f32; samples_i16.len()];
-        convert_integer_to_float_audio(&samples_i16, &mut audio_f32)
-            .map_err(|e| AsrError::InvalidAudio(e.to_string()))?;
-
-        let audio = if spec.channels == 2 {
-            let mono_len = audio_f32.len() / 2;
-            let mut mono = vec![0.0_f32; mono_len];
-            convert_stereo_to_mono_audio(&audio_f32, &mut mono)
-                .map_err(|e| AsrError::InvalidAudio(e.to_string()))?;
-            mono
-        } else if spec.channels == 1 {
-            audio_f32
-        } else {
-            return Err(AsrError::InvalidAudio(format!(
-                "expected 1 or 2 channels, got {}",
-                spec.channels
-            )));
-        };
-
-        let audio_duration_ms = (audio.len() as f64 * 1000.0 / 16_000.0) as u64;
+        let audio_duration_ms = (samples.len() as f64 * 1000.0 / 16_000.0) as u64;
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(language_hint);
@@ -98,10 +65,9 @@ impl AsrProvider for WhisperRsAsr {
             .create_state()
             .map_err(|e| AsrError::Transcription(e.to_string()))?;
         state
-            .full(params, &audio)
+            .full(params, samples)
             .map_err(|e| AsrError::Transcription(e.to_string()))?;
 
-        // full_lang_id_from_state returns c_int directly (not Result) in 0.16
         let detected_lang = match language_hint {
             Some(hint) => Some(hint.to_string()),
             None => {
@@ -152,7 +118,7 @@ impl AsrProvider for WhisperRsAsr {
         Ok(Transcript {
             schema_version: Transcript::SCHEMA_VERSION,
             model: self.model_name(),
-            audio_path: audio_path.to_path_buf(),
+            audio_path: PathBuf::new(),
             audio_duration_ms,
             diarized: false,
             segments,

@@ -420,10 +420,13 @@ pub(super) fn run_notes_pipeline(
         }
     };
 
+    let (samples, sample_rate) =
+        panops_portable::audio::load_wav_mono16k(&audio_path).map_err(IpcError::from)?;
     let mut transcript = heavy
         .asr
-        .transcribe_full(&audio_path, params.language.as_deref())
+        .transcribe(&samples, sample_rate, params.language.as_deref())
         .map_err(IpcError::from)?;
+    transcript.audio_path = audio_path.clone();
 
     let no_diarize = params.no_diarize.unwrap_or(false);
     if !no_diarize {

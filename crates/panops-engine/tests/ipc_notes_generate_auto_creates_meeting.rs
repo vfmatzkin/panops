@@ -4,7 +4,7 @@
 
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,9 +24,12 @@ async fn notes_generate_without_meeting_id_auto_creates_one() {
     let socket = dir.path().join("engine.sock");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let audio_dir = tempdir().unwrap();
-    let audio_path = audio_dir.path().join("multi_speaker_60s.wav");
-    std::fs::write(&audio_path, b"placeholder").unwrap();
+    let audio_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("repo root above crates/panops-engine")
+        .join("tests/fixtures/audio");
+    let audio_path = audio_dir.join("multi_speaker_60s.wav");
 
     let (_storage_tmp, storage, data_dir) = tempdir_storage();
     let services = build_deterministic_notes_services(Arc::clone(&storage), data_dir.clone());

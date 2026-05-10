@@ -9,7 +9,7 @@ use std::sync::Arc;
 use jsonrpsee::core::client::{ClientT, Error as ClientError};
 use jsonrpsee::rpc_params;
 use panops_core::conformance::fakes::{
-    FakeNotesExporter, KnownTurnsFake, MockLlm, TranscriptFileFake,
+    FakeNotesExporter, KnownRegionsFake, KnownTurnsFake, MockLlm, TranscriptFileFake,
 };
 use panops_core::storage::NoteDraft;
 use panops_engine::server::{EngineServices, run_serve_in_process};
@@ -30,9 +30,10 @@ async fn delete_removes_row_dir_and_cascades_notes() {
         Arc::new(MockLlm::default()),
         storage.clone(),
         data_dir.clone(),
-        Arc::new(TranscriptFileFake),
+        Arc::new(TranscriptFileFake::default()),
         Arc::new(KnownTurnsFake),
         Arc::new(FakeNotesExporter),
+        Arc::new(KnownRegionsFake::new()),
     );
 
     let server_socket = socket.clone();
@@ -96,9 +97,10 @@ async fn delete_unknown_id_is_input_not_found() {
         Arc::new(MockLlm::default()),
         storage,
         data_dir,
-        Arc::new(TranscriptFileFake),
+        Arc::new(TranscriptFileFake::default()),
         Arc::new(KnownTurnsFake),
         Arc::new(FakeNotesExporter),
+        Arc::new(KnownRegionsFake::new()),
     );
 
     let server_socket = socket.clone();

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::rpc_params;
 use panops_core::conformance::fakes::{
-    FakeNotesExporter, KnownTurnsFake, MockLlm, TranscriptFileFake,
+    FakeNotesExporter, KnownRegionsFake, KnownTurnsFake, MockLlm, TranscriptFileFake,
 };
 use panops_core::storage::Storage;
 use panops_engine::server::{EngineServices, run_serve_in_process};
@@ -36,9 +36,10 @@ async fn meetings_created_in_one_session_visible_in_next() {
             Arc::new(MockLlm::default()),
             storage,
             data_dir.clone(),
-            Arc::new(TranscriptFileFake),
+            Arc::new(TranscriptFileFake::default()),
             Arc::new(KnownTurnsFake),
             Arc::new(FakeNotesExporter),
+            Arc::new(KnownRegionsFake::new()),
         );
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -79,9 +80,10 @@ async fn meetings_created_in_one_session_visible_in_next() {
             Arc::new(MockLlm::default()),
             storage,
             data_dir.clone(),
-            Arc::new(TranscriptFileFake),
+            Arc::new(TranscriptFileFake::default()),
             Arc::new(KnownTurnsFake),
             Arc::new(FakeNotesExporter),
+            Arc::new(KnownRegionsFake::new()),
         );
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);

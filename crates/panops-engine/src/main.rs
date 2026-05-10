@@ -7,7 +7,6 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use panops_core::asr::AsrProvider;
-use panops_core::conformance::fakes::TranscriptFileFake;
 use panops_core::diar::Diarizer;
 use panops_core::exporter::NotesExporter;
 use panops_core::merge::merge_speaker_turns;
@@ -431,13 +430,22 @@ fn transcribe(
     if !audio.exists() {
         return Err((1, format!("audio file not found: {audio:?}")));
     }
+
+    let (samples, sample_rate) =
+        panops_portable::audio::load_wav_mono16k(audio).map_err(|e| (2, e.to_string()))?;
+
     // When PANOPS_FAKE_ASR=1, use the sidecar-file fake instead of downloading
     // and loading the real Whisper model. Intended for integration tests.
     if std::env::var("PANOPS_FAKE_ASR").ok().as_deref() == Some("1") {
-        return TranscriptFileFake
-            .transcribe_full(audio, language)
-            .map_err(|e| (2, e.to_string()));
+        let canned = panops_core::conformance::fakes::read_canned_sidecar(audio);
+        let fake = panops_core::conformance::fakes::TranscriptFileFake::with_canned(canned);
+        let mut t = fake
+            .transcribe(&samples, sample_rate, language)
+            .map_err(|e| (2, e.to_string()))?;
+        t.audio_path = audio.to_path_buf();
+        return Ok(t);
     }
+
     let model_path = match model {
         Some(p) => p,
         None => default_model_path().map_err(|e| (3, e.to_string()))?,
@@ -445,8 +453,11 @@ fn transcribe(
     let model_path =
         ensure_model(DEFAULT_MODEL_NAME, &model_path).map_err(|e| (3, e.to_string()))?;
     let asr = WhisperRsAsr::new(model_path).map_err(|e| (3, e.to_string()))?;
-    asr.transcribe_full(audio, language)
-        .map_err(|e| (2, e.to_string()))
+    let mut t = asr
+        .transcribe(&samples, sample_rate, language)
+        .map_err(|e| (2, e.to_string()))?;
+    t.audio_path = audio.to_path_buf();
+    Ok(t)
 }
 
 fn diarize(audio: &std::path::Path) -> Result<Vec<panops_core::diar::SpeakerTurn>, (u8, String)> {

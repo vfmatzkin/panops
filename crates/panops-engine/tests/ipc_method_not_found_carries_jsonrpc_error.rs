@@ -7,7 +7,7 @@ use std::sync::Arc;
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::rpc_params;
 use panops_core::conformance::fakes::{
-    FakeNotesExporter, KnownTurnsFake, MockLlm, TranscriptFileFake,
+    FakeNotesExporter, KnownRegionsFake, KnownTurnsFake, MockLlm, TranscriptFileFake,
 };
 use panops_engine::server::{EngineServices, run_serve_in_process};
 use tempfile::tempdir;
@@ -26,9 +26,10 @@ async fn unknown_method_returns_method_not_found() {
         Arc::new(MockLlm::default()),
         storage,
         data_dir,
-        Arc::new(TranscriptFileFake),
+        Arc::new(TranscriptFileFake::default()),
         Arc::new(KnownTurnsFake),
         Arc::new(FakeNotesExporter),
+        Arc::new(KnownRegionsFake::new()),
     );
 
     let server_socket = socket.clone();
