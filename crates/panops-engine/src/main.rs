@@ -15,6 +15,7 @@ use panops_core::notes::input::{MeetingMetadata, NotesInput};
 use panops_core::notes::ir::Screenshot;
 use panops_core::notes::pipeline::NotesGenerator;
 use panops_core::storage::{MeetingDraft, NoteDraft, Storage};
+use panops_core::vad::Vad;
 use panops_portable::SherpaDiarizer;
 use panops_portable::WhisperRsAsr;
 use panops_portable::genai_llm::GenaiLlm;
@@ -422,6 +423,54 @@ fn collect_screenshots(
         .collect())
 }
 
+/// VAD-aware transcription. Loads audio once, runs VAD, merges
+/// adjacent regions with gap < 5s, calls ASR per merged region with
+/// `language` as the per-call hint (`None` triggers auto-detect),
+/// stitches the per-region transcripts back together with absolute
+/// timestamps. Returns one `Transcript` covering the whole audio.
+fn transcribe_with_vad(
+    audio: &std::path::Path,
+    asr: &dyn AsrProvider,
+    vad: &dyn Vad,
+    language: Option<&str>,
+) -> Result<panops_core::Transcript, (u8, String)> {
+    let (samples, sample_rate) =
+        panops_portable::audio::load_wav_mono16k(audio).map_err(|e| (2, e.to_string()))?;
+    let regions = vad
+        .detect_speech(&samples, sample_rate)
+        .map_err(|e| (2, e.to_string()))?;
+    let merged = panops_portable::audio::merge_adjacent_regions(regions, 5_000);
+
+    let mut stitched: Vec<panops_core::Segment> = Vec::new();
+    let total_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
+    for region in merged.iter() {
+        let start_sample = ((region.start_ms * u64::from(sample_rate)) / 1000) as usize;
+        let end_sample =
+            (((region.end_ms * u64::from(sample_rate)) / 1000) as usize).min(samples.len());
+        let chunk = &samples[start_sample..end_sample];
+        if chunk.is_empty() {
+            continue;
+        }
+        let region_t = asr
+            .transcribe(chunk, sample_rate, language)
+            .map_err(|e| (2, e.to_string()))?;
+        for mut seg in region_t.segments {
+            seg.start_ms = (seg.start_ms + region.start_ms).min(total_ms);
+            seg.end_ms = (seg.end_ms + region.start_ms).min(total_ms);
+            stitched.push(seg);
+        }
+    }
+
+    Ok(panops_core::Transcript {
+        schema_version: panops_core::Transcript::SCHEMA_VERSION,
+        model: "vad-multilingual".to_string(),
+        audio_path: audio.to_path_buf(),
+        audio_duration_ms: total_ms,
+        diarized: false,
+        segments: stitched,
+    })
+}
+
 fn transcribe(
     audio: &std::path::Path,
     model: Option<PathBuf>,
@@ -431,19 +480,14 @@ fn transcribe(
         return Err((1, format!("audio file not found: {audio:?}")));
     }
 
-    let (samples, sample_rate) =
-        panops_portable::audio::load_wav_mono16k(audio).map_err(|e| (2, e.to_string()))?;
-
-    // When PANOPS_FAKE_ASR=1, use the sidecar-file fake instead of downloading
-    // and loading the real Whisper model. Intended for integration tests.
     if std::env::var("PANOPS_FAKE_ASR").ok().as_deref() == Some("1") {
+        // Fake path: TranscriptFileFake (samples-based) returns the
+        // canned sidecar transcript regardless of VAD output. Wire a
+        // KnownRegionsFake VAD so the pipeline still runs end-to-end.
         let canned = panops_core::conformance::fakes::read_canned_sidecar(audio);
-        let fake = panops_core::conformance::fakes::TranscriptFileFake::with_canned(canned);
-        let mut t = fake
-            .transcribe(&samples, sample_rate, language)
-            .map_err(|e| (2, e.to_string()))?;
-        t.audio_path = audio.to_path_buf();
-        return Ok(t);
+        let asr = panops_core::conformance::fakes::TranscriptFileFake::with_canned(canned);
+        let vad = panops_core::conformance::fakes::KnownRegionsFake::new();
+        return transcribe_with_vad(audio, &asr, &vad, language);
     }
 
     let model_path = match model {
@@ -453,11 +497,14 @@ fn transcribe(
     let model_path =
         ensure_model(DEFAULT_MODEL_NAME, &model_path).map_err(|e| (3, e.to_string()))?;
     let asr = WhisperRsAsr::new(model_path).map_err(|e| (3, e.to_string()))?;
-    let mut t = asr
-        .transcribe(&samples, sample_rate, language)
-        .map_err(|e| (2, e.to_string()))?;
-    t.audio_path = audio.to_path_buf();
-    Ok(t)
+
+    let vad_path =
+        panops_portable::model::default_vad_model_path().map_err(|e| (3, e.to_string()))?;
+    let vad_path =
+        panops_portable::model::ensure_vad_model(&vad_path).map_err(|e| (3, e.to_string()))?;
+    let vad = panops_portable::WhisperVad::new(&vad_path).map_err(|e| (3, e.to_string()))?;
+
+    transcribe_with_vad(audio, &asr, &vad, language)
 }
 
 fn diarize(audio: &std::path::Path) -> Result<Vec<panops_core::diar::SpeakerTurn>, (u8, String)> {
