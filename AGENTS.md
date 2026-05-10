@@ -163,14 +163,14 @@ Everything else is composable trajectory toward v0.1, decided slice-by-slice. **
 3. Post-pass + diarization — pyannote via sherpa-rs adapter, speaker labels merged.
 4. Notes generation — `LlmProvider` + `NotesGenerator` + `MarkdownExporter`.
 5. IPC — JSON-RPC + WebSocket over UDS, Rust test client.
+6. SQLite persistence + Mac shell scaffolding — `Storage` port, per-meeting DB, cross-meeting registry, SwiftUI app shell + ASR/LLM sidecars.
+7. VAD-aware multilingual ASR — `Vad` port, `WhisperVad` adapter, samples-based `AsrProvider`, per-region language detection. Closes the multilingual-day-1 north-star gap confirmed on `2026-05-08 19-04-03.mov`.
 
 ### Current trajectory toward v0.1 (amendable)
 
-- **#74 fix** — real adapters in `panops-engine serve` (eager-after-bind or lazy ctor). Blocks Anchor A.
-- **#17 SQLite persistence** — `Storage` port + per-meeting + cross-meeting registry. Blocks Anchor A AND v0.1 acceptance #4.
-- **Real-meeting calibration** — #14 ASR threshold, #18 model fallback, #19 diar coverage. Run on a real bilingual meeting. Blocks v0.1 acceptance #5.
-- **Anchor A — Mac shell + ASR sidecar.**
-- **Anchor B — Live capture.**
+- **Real-meeting calibration** — #14 ASR threshold, #18 model fallback, #19 diar coverage. Run on a real bilingual meeting. Blocks v0.1 acceptance #5. Followup: confidence-based per-region recursion (deferred from slice 07) — if VAD+ASR returns low-confidence segments, re-run with a tighter VAD gap threshold or larger region window.
+- **Anchor A — Mac shell + ASR sidecar.** First time the product is usable in app form. SwiftUI app under `apps/Panops/`, sidecars `apps/panops-asr-mac/` and `apps/panops-llm-mac/`.
+- **Anchor B — Live capture.** ScreenCaptureKit + audio + screenshot sampling. Risk-last surface.
 - **Real-meeting smoke** — end-to-end real bilingual meeting. Inevitably surfaces issues. Don't pre-empt.
 - **Package + sign + notarize** — `scripts/package.sh`, code signing, notarization. v0.1 acceptance #6.
 - **v0.1 release** — tag, release notes, public README polish.
