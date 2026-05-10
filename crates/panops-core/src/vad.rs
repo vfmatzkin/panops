@@ -43,11 +43,8 @@ pub enum VadError {
     Model(String),
     #[error("invalid audio: {0}")]
     InvalidAudio(String),
-    #[error("io: {source}")]
-    Io {
-        #[from]
-        source: std::io::Error,
-    },
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 #[cfg(test)]
@@ -55,13 +52,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn speech_region_is_copy() {
-        let r = SpeechRegion {
+    fn speech_region_eq_and_dedup() {
+        let a = SpeechRegion {
             start_ms: 0,
             end_ms: 1000,
         };
-        let r2 = r;
-        assert_eq!(r.start_ms, r2.start_ms);
+        let b = SpeechRegion {
+            start_ms: 0,
+            end_ms: 1000,
+        };
+        let c = SpeechRegion {
+            start_ms: 500,
+            end_ms: 2000,
+        };
+
+        // Equal fields → PartialEq holds.
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+
+        // Eq: dedup on a Vec collapses duplicates.
+        let mut regions = vec![a, b, c];
+        regions.dedup();
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0], a);
+        assert_eq!(regions[1], c);
     }
 
     #[test]
@@ -76,6 +90,6 @@ mod tests {
     fn vad_error_io_via_from() {
         let io: std::io::Error = std::io::Error::other("disk full");
         let e: VadError = io.into();
-        assert!(matches!(e, VadError::Io { .. }));
+        assert!(matches!(e, VadError::Io(..)));
     }
 }
