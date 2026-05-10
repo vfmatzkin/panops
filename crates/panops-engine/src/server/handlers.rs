@@ -176,39 +176,12 @@ impl IpcServer for IpcImpl {
         let storage = self.services.storage.clone();
         let data_dir = self.services.data_dir.clone();
         spawn_blocking_into_ipc("meeting.start", move || {
-            let id = uuid::Uuid::new_v4().simple().to_string();
-            let dir = data_dir.join("meetings").join(&id);
-            // The dir + screenshots subdir let the Mac shell drop
-            // assets immediately. `create_dir_all` is idempotent if
-            // the dir already exists (it can't, since `id` is fresh).
-            std::fs::create_dir_all(dir.join("screenshots")).map_err(|e| {
-                tracing::error!(error = %e, "meeting.start create_dir_all");
-                IpcError::Internal {
-                    message: "create meeting dir failed".into(),
-                }
-            })?;
-            let started_at = chrono::Local::now().fixed_offset().to_rfc3339();
-            // If the row insert fails, remove the dir we just created
-            // so we don't leave an orphan that no registry row points
-            // at. (Row-then-fs ordering is for delete; for create the
-            // safe path is fs-then-row + remove-fs-on-row-failure.)
-            let create_result = storage.create_meeting(panops_core::storage::MeetingDraft {
-                id: id.clone(),
-                title: params.title.unwrap_or_default(),
-                started_at,
-                language: params.language.unwrap_or_else(|| "auto".into()),
-                dir_path: dir.to_string_lossy().into_owned(),
-            });
-            if let Err(e) = create_result {
-                if let Err(rm_err) = std::fs::remove_dir_all(&dir) {
-                    tracing::warn!(
-                        error = %rm_err,
-                        dir = ?dir,
-                        "meeting.start: failed to clean up meeting dir after row insert error"
-                    );
-                }
-                return Err(IpcError::from(e));
-            }
+            let (id, _dir) = create_meeting_dir_and_row(
+                storage.as_ref(),
+                &data_dir,
+                params.title.unwrap_or_default(),
+                params.language.unwrap_or_else(|| "auto".into()),
+            )?;
             Ok(id)
         })
         .await
@@ -276,6 +249,7 @@ impl IpcServer for IpcImpl {
 
     async fn meeting_delete(&self, params: MeetingIdParam) -> Result<(), ErrorObjectOwned> {
         let storage = self.services.storage.clone();
+        let data_dir = self.services.data_dir.clone();
         let id = params.id;
         spawn_blocking_into_ipc("meeting.delete", move || {
             // Read first to capture dir_path. Deleting the row before
@@ -283,11 +257,18 @@ impl IpcServer for IpcImpl {
             // (orphan dir on fs failure is recoverable; orphan rows
             // are surprises waiting to bite later).
             let m = storage.get_meeting(&id).map_err(IpcError::from)?;
+            // Defense against a tampered `panops.db` whose `dir_path`
+            // points outside `<data_dir>/meetings/`. Without this,
+            // `remove_dir_all(/Users/fran/Code)` would be one row edit
+            // away. We refuse to delete the row at all if the path
+            // doesn't validate — better an orphan row than catastrophic
+            // recursive delete.
+            let safe_dir = validate_meeting_dir(&data_dir, &m.dir_path)?;
             storage.delete_meeting(&id).map_err(IpcError::from)?;
-            if let Err(e) = std::fs::remove_dir_all(&m.dir_path) {
+            if let Err(e) = std::fs::remove_dir_all(&safe_dir) {
                 tracing::warn!(
                     error = %e,
-                    dir = %m.dir_path,
+                    dir = ?safe_dir,
                     "meeting.delete: row gone but fs cleanup failed (orphan dir)"
                 );
             }
@@ -419,47 +400,23 @@ pub(super) fn run_notes_pipeline(
     let (resolved_meeting_id, canonical_out_dir) = match &params.meeting_id {
         Some(id) => {
             let m = services.storage.get_meeting(id).map_err(IpcError::from)?;
-            (id.clone(), PathBuf::from(m.dir_path))
+            // Same defense as `meeting.delete`: a tampered registry
+            // could route note output to an arbitrary location.
+            let safe_dir = validate_meeting_dir(&services.data_dir, &m.dir_path)?;
+            (id.clone(), safe_dir)
         }
         None => {
-            let id = uuid::Uuid::new_v4().simple().to_string();
-            let dir = services.data_dir.join("meetings").join(&id);
-            std::fs::create_dir_all(dir.join("screenshots")).map_err(|e| {
-                tracing::error!(error = %e, "notes.generate auto-create meetings dir");
-                IpcError::Internal {
-                    message: "failed to prepare meeting directory".into(),
-                }
-            })?;
             let title = audio_path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("untitled")
                 .to_string();
-            let started_at_str = chrono::Local::now().fixed_offset().to_rfc3339();
-            // If the row insert fails, remove the dir we just created
-            // so we don't orphan a `meetings/<uuid>/` directory under
-            // the data dir. Same rationale as `meeting.start`.
-            let create_result =
-                services
-                    .storage
-                    .create_meeting(panops_core::storage::MeetingDraft {
-                        id: id.clone(),
-                        title,
-                        started_at: started_at_str,
-                        language: params.language.clone().unwrap_or_else(|| "auto".into()),
-                        dir_path: dir.to_string_lossy().into_owned(),
-                    });
-            if let Err(e) = create_result {
-                if let Err(rm_err) = std::fs::remove_dir_all(&dir) {
-                    tracing::warn!(
-                        error = %rm_err,
-                        dir = ?dir,
-                        "notes.generate auto-create: failed to clean up dir after row insert error"
-                    );
-                }
-                return Err(IpcError::from(e));
-            }
-            (id, dir)
+            create_meeting_dir_and_row(
+                services.storage.as_ref(),
+                &services.data_dir,
+                title,
+                params.language.clone().unwrap_or_else(|| "auto".into()),
+            )?
         }
     };
 
@@ -534,10 +491,7 @@ pub(super) fn run_notes_pipeline(
     // still get JobDone with the path to the file we just wrote —
     // hiding the artifact would be worse UX than an unregistered
     // note. The storage error goes to `tracing::error!`.
-    let dialect_str = match dialect {
-        MarkdownDialect::Basic => "basic",
-        MarkdownDialect::NotionEnhanced => "notion-enhanced",
-    };
+    let dialect_str = dialect.as_str();
     let content_md = match std::fs::read_to_string(&artifact.primary_file) {
         Ok(s) => s,
         Err(e) => {
@@ -595,6 +549,108 @@ pub(super) fn run_notes_pipeline(
 pub(super) fn ipc_error_to_obj(e: IpcError) -> ErrorObjectOwned {
     let data = serde_json::to_value(&e).expect("IpcError serialise");
     ErrorObjectOwned::owned(-32000, e.to_string(), Some(data))
+}
+
+/// Allocate a fresh meeting id, create its `meetings/<id>/screenshots/`
+/// directory, and insert the corresponding registry row. On row
+/// insert failure, removes the freshly-created directory so we don't
+/// leave an orphan that no row points at. Used by both `meeting.start`
+/// and the `notes.generate` auto-create branch — extracted to keep
+/// the cleanup-on-failure pattern in one place.
+fn create_meeting_dir_and_row(
+    storage: &dyn panops_core::storage::Storage,
+    data_dir: &std::path::Path,
+    title: String,
+    language: String,
+) -> Result<(String, PathBuf), IpcError> {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let dir = data_dir.join("meetings").join(&id);
+    std::fs::create_dir_all(dir.join("screenshots")).map_err(|e| {
+        tracing::error!(error = %e, "create meetings dir");
+        IpcError::Internal {
+            message: "create meeting dir failed".into(),
+        }
+    })?;
+    let started_at = chrono::Local::now().fixed_offset().to_rfc3339();
+    let create_result = storage.create_meeting(panops_core::storage::MeetingDraft {
+        id: id.clone(),
+        title,
+        started_at,
+        language,
+        dir_path: dir.to_string_lossy().into_owned(),
+    });
+    if let Err(e) = create_result {
+        // Row didn't commit — fs-then-row + cleanup-on-row-error
+        // ordering means we have to remove the dir we just created.
+        // Cleanup failure is logged but does NOT mask the original
+        // storage error (registry stays the source of truth).
+        if let Err(rm_err) = std::fs::remove_dir_all(&dir) {
+            tracing::warn!(
+                error = %rm_err,
+                dir = ?dir,
+                "failed to clean up meeting dir after row insert error"
+            );
+        }
+        return Err(IpcError::from(e));
+    }
+    Ok((id, dir))
+}
+
+/// Validate that a `dir_path` read from the registry actually lives
+/// under `<data_dir>/meetings/` before we delete it or write notes
+/// into it. Defends against a tampered `panops.db` whose `dir_path`
+/// column has been edited to point at e.g. `/Users/fran/Code` —
+/// `remove_dir_all` on that would be catastrophic. Two checks:
+///
+/// 1. **Lexical** prefix match (no FS access). Catches obviously-bad
+///    paths like `/etc` or `../etc/passwd` without requiring the file
+///    to exist (so `meeting.delete` of a row whose dir was rm'd out
+///    of band still works).
+/// 2. **Canonical** prefix match if the file exists. Resolves any
+///    symlinks. Catches the case where `dir_path` IS under
+///    `meetings/` but is a symlink to somewhere outside.
+///
+/// Returns the original `PathBuf` (for use as the destination) on
+/// success. The wire-side error is opaque (`Internal`); the operator
+/// gets the full path detail via `tracing::error!`.
+fn validate_meeting_dir(data_dir: &std::path::Path, dir_path: &str) -> Result<PathBuf, IpcError> {
+    let dir = PathBuf::from(dir_path);
+    let allowed_root = data_dir.join("meetings");
+
+    if !dir.starts_with(&allowed_root) {
+        tracing::error!(
+            dir = %dir_path,
+            allowed = ?allowed_root,
+            "registry dir_path escapes data_dir/meetings (lexical check failed)"
+        );
+        return Err(IpcError::Internal {
+            message: "registry path invalid".into(),
+        });
+    }
+
+    if dir.exists() {
+        let canonical_dir = std::fs::canonicalize(&dir).map_err(|e| {
+            tracing::error!(error = %e, path = %dir_path, "canonicalize dir_path failed");
+            IpcError::Internal {
+                message: "registry path invalid".into(),
+            }
+        })?;
+        // `meetings/` may not exist yet; fall back to the lexical root
+        // for the canonical comparison if so.
+        let canonical_root = std::fs::canonicalize(&allowed_root).unwrap_or(allowed_root);
+        if !canonical_dir.starts_with(&canonical_root) {
+            tracing::error!(
+                canonical_dir = ?canonical_dir,
+                canonical_root = ?canonical_root,
+                "registry dir_path escapes data_dir/meetings (symlink escape)"
+            );
+            return Err(IpcError::Internal {
+                message: "registry path invalid".into(),
+            });
+        }
+    }
+
+    Ok(dir)
 }
 
 /// Convert a `panops_core::storage::Meeting` (domain) to a

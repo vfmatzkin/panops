@@ -305,7 +305,9 @@ impl Storage for RusqliteStorage {
                     id: r.get(0)?,
                     title: r.get(1)?,
                     started_at: r.get(2)?,
-                    duration_ms: r.get::<_, i64>(3)? as u64,
+                    // Clamp negative durations to 0 (same defense as
+                    // `map_meeting_row` — the DB file is not trusted).
+                    duration_ms: r.get::<_, i64>(3)?.max(0) as u64,
                 })
             })
             .map_err(StorageError::sql)?;

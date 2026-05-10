@@ -297,10 +297,7 @@ fn run_notes(
         .and_then(|s| s.to_str())
         .unwrap_or("untitled")
         .to_string();
-    let dialect_str = match dialect {
-        MarkdownDialect::Basic => "basic",
-        MarkdownDialect::NotionEnhanced => "notion-enhanced",
-    };
+    let dialect_str = dialect.as_str();
     // Open `panops.db` once for this CLI invocation. The handle is
     // dropped at the end of `run_notes`. SQLite serialises concurrent
     // writers file-wide, so a long-running `panops-engine serve`
@@ -313,16 +310,33 @@ fn run_notes(
         .map_err(|e| (3, format!("open registry: {e}")))?;
     register_meeting_in_registry(
         &storage,
-        title,
-        started_at.to_rfc3339(),
-        audio_duration_ms,
-        language_for_meeting.unwrap_or_else(|| "auto".into()),
-        dir_path,
-        dialect_str.to_string(),
-        art.primary_file.display().to_string(),
+        RegisterInput {
+            title,
+            started_at: started_at.to_rfc3339(),
+            duration_ms: audio_duration_ms,
+            language: language_for_meeting.unwrap_or_else(|| "auto".into()),
+            dir_path,
+            dialect: dialect_str.to_string(),
+            primary_path: art.primary_file.display().to_string(),
+        },
     )?;
 
     Ok(())
+}
+
+/// Bundled input for [`register_meeting_in_registry`]. Avoids an
+/// 8-positional-arg signature (which is easy to misorder at call
+/// sites and forces `#[allow(clippy::too_many_arguments)]`). Fields
+/// map 1:1 to the underlying `MeetingDraft` + `NoteDraft` + the
+/// `ended_at` / `duration_ms` overrides.
+struct RegisterInput {
+    title: String,
+    started_at: String,
+    duration_ms: u64,
+    language: String,
+    dir_path: String,
+    dialect: String,
+    primary_path: String,
 }
 
 /// Insert a fresh meeting + its initial note row into `storage`
@@ -336,16 +350,9 @@ fn run_notes(
 /// any `Storage` impl (real `RusqliteStorage` from CLI, in-memory
 /// fake from tests, or a future shared handle from a daemon-only-
 /// writes design).
-#[allow(clippy::too_many_arguments)]
 fn register_meeting_in_registry(
     storage: &dyn Storage,
-    title: String,
-    started_at: String,
-    duration_ms: u64,
-    language: String,
-    dir_path: String,
-    dialect: String,
-    primary_path: String,
+    input: RegisterInput,
 ) -> Result<(), (u8, String)> {
     let meeting_id = uuid::Uuid::new_v4().simple().to_string();
     // Mark ended_at = started_at + duration so the registry row is
@@ -353,34 +360,34 @@ fn register_meeting_in_registry(
     // parse failure (shouldn't happen — `started_at` came from
     // chrono's own `to_rfc3339`), fall back to leaving ended_at
     // unset so the row is still queryable.
-    let ended_at = chrono::DateTime::parse_from_rfc3339(&started_at)
-        .map(|dt| (dt + chrono::Duration::milliseconds(duration_ms as i64)).to_rfc3339())
+    let ended_at = chrono::DateTime::parse_from_rfc3339(&input.started_at)
+        .map(|dt| (dt + chrono::Duration::milliseconds(input.duration_ms as i64)).to_rfc3339())
         .ok();
     // Surface read failures explicitly. If the freshly-written
     // markdown can't be read back, the operator should know
     // (permissions, antivirus quarantine, disk flap) — silently
     // storing empty content makes debugging meeting search later
     // much harder.
-    let content_md = std::fs::read_to_string(&primary_path)
-        .map_err(|e| (3, format!("read notes file {primary_path}: {e}")))?;
+    let content_md = std::fs::read_to_string(&input.primary_path)
+        .map_err(|e| (3, format!("read notes file {}: {}", input.primary_path, e)))?;
     let (meeting, _note) = storage
         .create_meeting_with_note(
             MeetingDraft {
                 id: meeting_id.clone(),
-                title,
-                started_at,
-                language,
-                dir_path,
+                title: input.title,
+                started_at: input.started_at,
+                language: input.language,
+                dir_path: input.dir_path,
             },
             NoteDraft {
                 id: uuid::Uuid::new_v4().simple().to_string(),
                 meeting_id,
-                dialect,
+                dialect: input.dialect,
                 content_md,
-                primary_path,
+                primary_path: input.primary_path,
             },
             ended_at.as_deref(),
-            Some(duration_ms),
+            Some(input.duration_ms),
         )
         .map_err(|e| (3, format!("register meeting+note: {e}")))?;
     tracing::info!(meeting = %meeting.id, "registered meeting in registry");
@@ -477,13 +484,15 @@ mod registry_tests {
         let storage = InMemoryStorage::new();
         register_meeting_in_registry(
             &storage,
-            "Test Meeting".to_string(),
-            "2026-05-05T10:00:00+00:00".to_string(),
-            60_000,
-            "en".to_string(),
-            notes_dir.to_string_lossy().into_owned(),
-            "basic".to_string(),
-            notes_md.to_string_lossy().into_owned(),
+            RegisterInput {
+                title: "Test Meeting".to_string(),
+                started_at: "2026-05-05T10:00:00+00:00".to_string(),
+                duration_ms: 60_000,
+                language: "en".to_string(),
+                dir_path: notes_dir.to_string_lossy().into_owned(),
+                dialect: "basic".to_string(),
+                primary_path: notes_md.to_string_lossy().into_owned(),
+            },
         )
         .expect("registration should succeed");
 
