@@ -5,59 +5,128 @@ use crate::diar::{DiarError, Diarizer, SpeakerTurn};
 use crate::vad::{SpeechRegion, Vad, VadError};
 use crate::{Segment, Transcript};
 
-/// A degenerate `AsrProvider` that reads `<audio>.transcript.txt` from disk
-/// and returns a single `Segment` covering the entire audio. Language is
-/// inferred from the filename prefix. Used by `panops-core`'s own test
-/// crate to validate the conformance harness end-to-end without ML.
-pub struct TranscriptFileFake;
+/// A degenerate `AsrProvider` fake. Constructed with a canned
+/// `Transcript` (typically built via `read_canned_sidecar`); each
+/// `transcribe(samples, ...)` call returns that canned transcript
+/// after recomputing `audio_duration_ms` from the samples.
+///
+/// The `<audio>.transcript.txt` sidecar pattern from slice 02 lives
+/// in `read_canned_sidecar` below — kept as a test helper but no
+/// longer the AsrProvider impl itself (the new samples-based ASR
+/// trait doesn't see file paths).
+pub struct TranscriptFileFake {
+    canned: Transcript,
+}
+
+impl Default for TranscriptFileFake {
+    fn default() -> Self {
+        Self {
+            canned: Transcript {
+                schema_version: Transcript::SCHEMA_VERSION,
+                model: "transcript-file-fake".to_string(),
+                audio_path: std::path::PathBuf::new(),
+                audio_duration_ms: 0,
+                diarized: false,
+                segments: vec![Segment {
+                    start_ms: 0,
+                    end_ms: 0,
+                    text: String::new(),
+                    language_detected: Some("en".to_string()),
+                    confidence: 1.0,
+                    is_partial: false,
+                    speaker_id: None,
+                }],
+            },
+        }
+    }
+}
+
+impl TranscriptFileFake {
+    /// Build a fake from a canned transcript. The `audio_path` field
+    /// is overwritten by the caller (the pipeline) when needed.
+    pub fn with_canned(canned: Transcript) -> Self {
+        Self { canned }
+    }
+
+    /// Convenience constructor: returns a fake whose canned transcript
+    /// is a single segment containing `text` for the given language.
+    pub fn from_text(text: &str, language: Option<&str>) -> Self {
+        Self {
+            canned: Transcript {
+                schema_version: Transcript::SCHEMA_VERSION,
+                model: "transcript-file-fake".to_string(),
+                audio_path: std::path::PathBuf::new(),
+                audio_duration_ms: 0,
+                diarized: false,
+                segments: vec![Segment {
+                    start_ms: 0,
+                    end_ms: 0,
+                    text: text.to_string(),
+                    language_detected: language.map(str::to_string),
+                    confidence: 1.0,
+                    is_partial: false,
+                    speaker_id: None,
+                }],
+            },
+        }
+    }
+}
 
 impl AsrProvider for TranscriptFileFake {
-    fn transcribe_full(
+    fn transcribe(
         &self,
-        audio_path: &Path,
+        samples: &[f32],
+        sample_rate: u32,
         _language_hint: Option<&str>,
     ) -> Result<Transcript, AsrError> {
-        if !audio_path.exists() {
-            return Err(AsrError::AudioNotFound(audio_path.to_path_buf()));
+        if sample_rate != 16_000 {
+            return Err(AsrError::InvalidAudio(format!(
+                "expected 16 kHz, got {sample_rate} Hz"
+            )));
         }
-        let transcript_path = audio_path.with_extension("transcript.txt");
-        let text = std::fs::read_to_string(&transcript_path)
-            .map_err(|e| {
-                AsrError::InvalidAudio(format!("failed reading sidecar {transcript_path:?}: {e}"))
-            })?
-            .trim()
-            .to_string();
-
-        let reader = hound::WavReader::open(audio_path)
-            .map_err(|e| AsrError::InvalidAudio(e.to_string()))?;
-        let spec = reader.spec();
-        #[allow(clippy::cast_precision_loss)]
-        let total_samples = reader.duration() as f64;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let audio_duration_ms = (total_samples * 1000.0 / f64::from(spec.sample_rate)) as u64;
-
-        let language = infer_language(audio_path);
-
-        Ok(Transcript {
-            schema_version: Transcript::SCHEMA_VERSION,
-            model: "transcript-file-fake".to_string(),
-            audio_path: audio_path.to_path_buf(),
-            audio_duration_ms,
-            diarized: false,
-            segments: vec![Segment {
-                start_ms: 0,
-                end_ms: audio_duration_ms,
-                text,
-                language_detected: language,
-                confidence: 1.0,
-                is_partial: false,
-                speaker_id: None,
-            }],
-        })
+        let audio_duration_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
+        let mut t = self.canned.clone();
+        t.audio_duration_ms = audio_duration_ms;
+        if let Some(seg) = t.segments.first_mut() {
+            seg.start_ms = 0;
+            seg.end_ms = audio_duration_ms;
+        }
+        Ok(t)
     }
 
     fn is_fake(&self) -> bool {
         true
+    }
+}
+
+/// Build a canned `Transcript` from the slice-02 sidecar pattern:
+/// reads `<audio>.transcript.txt` for the text and infers the
+/// language from the audio file stem (`en_*` / `es_*` / `mixed_*` /
+/// `multi_speaker_*`). Used by the ASR conformance harness which
+/// needs to wire a fixture-aware fake into the new samples-based
+/// trait.
+pub fn read_canned_sidecar(audio_path: &Path) -> Transcript {
+    let transcript_path = audio_path.with_extension("transcript.txt");
+    let text = std::fs::read_to_string(&transcript_path)
+        .unwrap_or_else(|e| panic!("read sidecar {transcript_path:?}: {e}"))
+        .trim()
+        .to_string();
+    let language = infer_language(audio_path);
+    Transcript {
+        schema_version: Transcript::SCHEMA_VERSION,
+        model: "transcript-file-fake".to_string(),
+        audio_path: audio_path.to_path_buf(),
+        audio_duration_ms: 0,
+        diarized: false,
+        segments: vec![Segment {
+            start_ms: 0,
+            end_ms: 0,
+            text,
+            language_detected: language,
+            confidence: 1.0,
+            is_partial: false,
+            speaker_id: None,
+        }],
     }
 }
 
@@ -481,8 +550,6 @@ impl Vad for KnownRegionsFake {
         for (i, frame) in samples.chunks(frame_size_samples).enumerate() {
             let peak = frame.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
             let frame_start_ms = (i as u64) * self.frame_ms;
-            let frame_end_ms =
-                frame_start_ms + (frame.len() as u64 * 1000) / u64::from(sample_rate);
 
             if peak >= self.threshold {
                 if current_start.is_none() {
@@ -491,7 +558,7 @@ impl Vad for KnownRegionsFake {
             } else if let Some(start) = current_start.take() {
                 regions.push(SpeechRegion {
                     start_ms: start,
-                    end_ms: frame_end_ms - (frame.len() as u64 * 1000) / u64::from(sample_rate),
+                    end_ms: frame_start_ms,
                 });
             }
         }

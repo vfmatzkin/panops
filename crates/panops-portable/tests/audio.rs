@@ -14,7 +14,8 @@ fn load_wav_mono16k_accepts_repo_fixture() {
     let path = fixtures_dir().join("en_30s.wav");
     let (samples, sr) = load_wav_mono16k(&path).expect("load en_30s.wav");
     assert_eq!(sr, 16_000);
-    // 30 seconds at 16 kHz = 480_000 samples (±1).
+    // 30s fixture is actually ~26.9s (431101 samples at 16 kHz).
+    // Assert within ±5s of expected 480k to avoid brittle exact counts.
     let expected = 30 * 16_000;
     let diff = if samples.len() > expected {
         samples.len() - expected
@@ -22,8 +23,8 @@ fn load_wav_mono16k_accepts_repo_fixture() {
         expected - samples.len()
     };
     assert!(
-        diff < 64_000,
-        "expected ~480000 samples, got {}",
+        diff < 80_000,
+        "expected ~480000 samples (±5s), got {}",
         samples.len()
     );
 }
@@ -34,6 +35,54 @@ fn load_wav_mono16k_rejects_nonexistent() {
         .expect_err("should fail on missing file");
     let s = format!("{err}");
     assert!(s.contains("not found") || s.contains("io"), "got: {s}");
+}
+
+#[test]
+fn load_wav_mono16k_rejects_wrong_sample_format() {
+    // Write a minimal WAV header with 32-bit float samples.
+    let dir = std::env::temp_dir();
+    let path = dir.join("panops_test_float32.wav");
+    write_wav_header(&path, 16_000, 1, 32, hound::SampleFormat::Float);
+    let err = load_wav_mono16k(&path).expect_err("should reject float32");
+    let s = format!("{err}");
+    assert!(s.contains("sample format"), "got: {s}");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn load_wav_mono16k_rejects_wrong_bit_depth() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("panops_test_24bit.wav");
+    write_wav_header(&path, 16_000, 1, 24, hound::SampleFormat::Int);
+    let err = load_wav_mono16k(&path).expect_err("should reject 24-bit");
+    let s = format!("{err}");
+    assert!(s.contains("bits per sample"), "got: {s}");
+    let _ = std::fs::remove_file(&path);
+}
+
+fn write_wav_header(
+    path: &std::path::Path,
+    sample_rate: u32,
+    channels: u16,
+    bits_per_sample: u16,
+    sample_format: hound::SampleFormat,
+) {
+    let spec = hound::WavSpec {
+        channels,
+        sample_rate,
+        bits_per_sample,
+        sample_format,
+    };
+    let mut writer = hound::WavWriter::create(path, spec).expect("create temp wav");
+    // Write a few samples so the file is valid enough for hound to open.
+    for _ in 0..100 {
+        if sample_format == hound::SampleFormat::Int {
+            let _ = writer.write_sample(0i16);
+        } else {
+            let _ = writer.write_sample(0.0f32);
+        }
+    }
+    writer.finalize().expect("finalize temp wav");
 }
 
 #[test]

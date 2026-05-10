@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use panops_core::asr::{AsrError, AsrProvider};
-use panops_core::conformance::fakes::MockLlm;
+use panops_core::conformance::fakes::{KnownRegionsFake, MockLlm};
 use panops_core::diar::{DiarError, Diarizer, SpeakerTurn};
 use panops_core::llm::LlmResponse;
 use panops_core::notes::dialect::MarkdownDialect;
@@ -67,15 +67,16 @@ pub fn golden_segments() -> Vec<Segment> {
 pub struct DeterministicAsr;
 
 impl AsrProvider for DeterministicAsr {
-    fn transcribe_full(
+    fn transcribe(
         &self,
-        audio_path: &Path,
+        _samples: &[f32],
+        _sample_rate: u32,
         _language_hint: Option<&str>,
     ) -> Result<Transcript, AsrError> {
         Ok(Transcript {
             schema_version: Transcript::SCHEMA_VERSION,
             model: "deterministic-asr".into(),
-            audio_path: audio_path.to_path_buf(),
+            audio_path: std::path::PathBuf::new(),
             audio_duration_ms: 60_000,
             diarized: false,
             segments: golden_segments(),
@@ -171,5 +172,6 @@ pub fn build_deterministic_notes_services(
         Arc::new(DeterministicAsr),
         Arc::new(DeterministicDiar),
         Arc::new(MarkdownExporter),
+        Arc::new(KnownRegionsFake::new()),
     )
 }

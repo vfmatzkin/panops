@@ -104,6 +104,7 @@ mod from_domain {
     use panops_core::llm::LlmError;
     use panops_core::notes::error::NotesError;
     use panops_core::storage::StorageError;
+    use panops_core::vad::VadError;
 
     impl From<AsrError> for IpcError {
         fn from(e: AsrError) -> Self {
@@ -225,6 +226,20 @@ mod from_domain {
             }
         }
     }
+
+    impl From<VadError> for IpcError {
+        fn from(e: VadError) -> Self {
+            match e {
+                VadError::InvalidAudio(m) => IpcError::InvalidInput { message: m },
+                VadError::Model(_) => IpcError::Internal {
+                    message: "vad model error".into(),
+                },
+                VadError::Io { .. } => IpcError::Internal {
+                    message: "vad io error".into(),
+                },
+            }
+        }
+    }
 }
 
 #[cfg(all(test, feature = "domain-conversions"))]
@@ -235,6 +250,7 @@ mod from_domain_tests {
     use panops_core::exporter::ExportError;
     use panops_core::llm::LlmError;
     use panops_core::notes::error::NotesError;
+    use panops_core::vad::VadError;
     use std::path::PathBuf;
 
     #[test]
@@ -467,5 +483,39 @@ mod from_domain_tests {
         };
         assert_eq!(message, "storage error");
         assert!(!message.contains("SELECT"));
+    }
+
+    #[test]
+    fn vad_invalid_audio_maps_to_invalid_input_with_message() {
+        let e: IpcError = VadError::InvalidAudio("expected 16 kHz, got 8 kHz".into()).into();
+        let IpcError::InvalidInput { message } = e else {
+            panic!("expected InvalidInput");
+        };
+        assert!(message.contains("16 kHz"), "got: {message}");
+    }
+
+    #[test]
+    fn vad_model_does_not_leak_path_or_mutex_detail() {
+        let e: IpcError = VadError::Model(
+            "/Users/fran/Library/.../models/ggml-silero-v6.2.0.bin: ggml load failed".into(),
+        )
+        .into();
+        let IpcError::Internal { message } = e else {
+            panic!("expected Internal");
+        };
+        assert_eq!(message, "vad model error");
+        assert!(!message.contains("/Users/fran"));
+        assert!(!message.contains(".bin"));
+    }
+
+    #[test]
+    fn vad_io_does_not_leak_path() {
+        let io = std::io::Error::other("/Users/fran/secret/path.wav: permission denied");
+        let e: IpcError = VadError::Io(io).into();
+        let IpcError::Internal { message } = e else {
+            panic!("expected Internal");
+        };
+        assert_eq!(message, "vad io error");
+        assert!(!message.contains("/Users/fran"));
     }
 }

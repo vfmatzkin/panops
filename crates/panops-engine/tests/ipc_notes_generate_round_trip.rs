@@ -9,7 +9,7 @@
 
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use jsonrpsee::core::client::{ClientT, Subscription, SubscriptionClientT};
@@ -28,13 +28,12 @@ async fn notes_generate_round_trip_emits_job_done() {
     let socket = dir.path().join("engine.sock");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    // Stage the audio path inside a tempdir so the pipeline's output
-    // directory (alongside the audio) doesn't pollute repo fixtures.
-    // The wav doesn't need real bytes — `DeterministicAsr` ignores
-    // file contents.
-    let audio_dir = tempdir().unwrap();
-    let audio_path = audio_dir.path().join("multi_speaker_60s.wav");
-    std::fs::write(&audio_path, b"placeholder").unwrap();
+    let audio_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("repo root above crates/panops-engine")
+        .join("tests/fixtures/audio");
+    let audio_path = audio_dir.join("multi_speaker_60s.wav");
 
     let (_storage_tmp, storage, data_dir) = tempdir_storage();
     let services = build_deterministic_notes_services(storage, data_dir);

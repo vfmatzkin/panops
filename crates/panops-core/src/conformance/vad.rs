@@ -95,8 +95,9 @@ fn returns_sorted_non_overlapping_regions<V: Vad>(adapter: &V, full: &[f32]) {
 
     let regions = adapter.detect_speech(&samples, SR).unwrap();
     assert!(
-        !regions.is_empty(),
-        "returns_sorted_non_overlapping_regions: expected >=1 region for real speech, got 0"
+        regions.len() >= 2,
+        "returns_sorted_non_overlapping_regions: expected >=2 regions for speech-silence-speech, got {}",
+        regions.len()
     );
     let mut prev_end = 0_u64;
     for (i, r) in regions.iter().enumerate() {

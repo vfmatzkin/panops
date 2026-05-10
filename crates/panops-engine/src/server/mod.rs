@@ -38,6 +38,7 @@ use panops_core::diar::Diarizer;
 use panops_core::exporter::NotesExporter;
 use panops_core::llm::LlmProvider;
 use panops_core::storage::Storage;
+use panops_core::vad::Vad;
 use tokio::sync::watch;
 
 use crate::server::handlers::{IpcImpl, IpcServer};
@@ -49,6 +50,8 @@ pub(super) struct HeavyAdapters {
     pub(super) asr: Arc<dyn AsrProvider + Send + Sync>,
     pub(super) diar: Arc<dyn Diarizer + Send + Sync>,
     pub(super) exporter: Arc<dyn NotesExporter + Send + Sync>,
+    #[allow(dead_code)] // wired in Task 13 (VAD orchestration in run_notes_pipeline)
+    pub(super) vad: Arc<dyn Vad>,
 }
 
 /// Wiring point for the IPC server. Two construction paths.
@@ -93,12 +96,14 @@ impl EngineServices {
         asr: Arc<dyn AsrProvider + Send + Sync>,
         diar: Arc<dyn Diarizer + Send + Sync>,
         exporter: Arc<dyn NotesExporter + Send + Sync>,
+        vad: Arc<dyn Vad>,
     ) -> Self {
         let heavy = Arc::new(OnceLock::new());
         let _ = heavy.set(Ok(HeavyAdapters {
             asr,
             diar,
             exporter,
+            vad,
         }));
         Self {
             llm,
@@ -270,20 +275,25 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 fn init_heavy_adapters() -> Result<HeavyAdapters, String> {
     use panops_portable::markdown_exporter::MarkdownExporter;
     use panops_portable::model::{
-        DEFAULT_MODEL_NAME, default_model_path, ensure_diar_models, ensure_model,
+        DEFAULT_MODEL_NAME, default_model_path, default_vad_model_path, ensure_diar_models,
+        ensure_model, ensure_vad_model,
     };
-    use panops_portable::{SherpaDiarizer, WhisperRsAsr};
+    use panops_portable::{SherpaDiarizer, WhisperRsAsr, WhisperVad};
 
     let model_path = default_model_path().map_err(|e| e.to_string())?;
     let model_path = ensure_model(DEFAULT_MODEL_NAME, &model_path).map_err(|e| e.to_string())?;
     let asr = WhisperRsAsr::new(model_path).map_err(|e| e.to_string())?;
     let (seg, emb) = ensure_diar_models().map_err(|e| e.to_string())?;
     let diar = SherpaDiarizer::new(seg, emb).map_err(|e| e.to_string())?;
+    let vad_path = default_vad_model_path().map_err(|e| e.to_string())?;
+    let vad_path = ensure_vad_model(&vad_path).map_err(|e| e.to_string())?;
+    let vad = WhisperVad::new(&vad_path).map_err(|e| e.to_string())?;
 
     Ok(HeavyAdapters {
         asr: Arc::new(asr),
         diar: Arc::new(diar),
         exporter: Arc::new(MarkdownExporter),
+        vad: Arc::new(vad),
     })
 }
 

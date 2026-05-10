@@ -8,7 +8,7 @@ use std::sync::Arc;
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::rpc_params;
 use panops_core::conformance::fakes::{
-    FakeNotesExporter, KnownTurnsFake, MockLlm, TranscriptFileFake,
+    FakeNotesExporter, KnownRegionsFake, KnownTurnsFake, MockLlm, TranscriptFileFake,
 };
 use panops_engine::server::{EngineServices, run_serve_in_process};
 use panops_protocol::Meeting;
@@ -29,9 +29,10 @@ async fn set_language_updates_row() {
         Arc::new(MockLlm::default()),
         storage.clone(),
         data_dir,
-        Arc::new(TranscriptFileFake),
+        Arc::new(TranscriptFileFake::default()),
         Arc::new(KnownTurnsFake),
         Arc::new(FakeNotesExporter),
+        Arc::new(KnownRegionsFake::new()),
     );
 
     let server_socket = socket.clone();
