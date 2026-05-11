@@ -491,6 +491,44 @@ pub(super) fn run_notes_pipeline(
         transcript.segments = merge_speaker_turns(transcript.segments, &turns);
         transcript.diarized = true;
     }
+    // Slice 06: write into the canonical `meetings/<uuid>/` layout
+    // (resolved above). The on-disk `screenshots/` subdir was already
+    // created during meeting.start (or during auto-create above) so
+    // we only need to make sure the dir itself exists for the
+    // existing-meeting path.
+    let out_dir = canonical_out_dir;
+    if !out_dir.exists() {
+        std::fs::create_dir_all(&out_dir).map_err(|e| {
+            tracing::error!(
+                error = %e,
+                path = ?out_dir,
+                "notes.generate failed to create output directory"
+            );
+            IpcError::Internal {
+                message: "failed to prepare output directory".into(),
+            }
+        })?;
+    }
+
+    // Drop the transcript JSON before LLM generation so a downstream
+    // LLM failure (missing API key, ollama down, prompt too long)
+    // doesn't wipe the only proof that ASR + diarization completed.
+    // Best-effort: a write failure logs but doesn't block the pipeline.
+    match serde_json::to_string_pretty(&transcript) {
+        Ok(json) => {
+            let transcript_path = out_dir.join("transcript.json");
+            if let Err(e) = std::fs::write(&transcript_path, json) {
+                tracing::warn!(
+                    error = %e,
+                    path = ?transcript_path,
+                    "notes.generate: write transcript.json failed; continuing"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "notes.generate: serialize transcript.json failed");
+        }
+    }
 
     let dialect = match params.dialect {
         Some(NotesDialect::Basic) => MarkdownDialect::Basic,
@@ -515,25 +553,6 @@ pub(super) fn run_notes_pipeline(
     };
     let notes = generator.generate(input).map_err(IpcError::from)?;
     let exporter = heavy.exporter.clone();
-
-    // Slice 06: write into the canonical `meetings/<uuid>/` layout
-    // (resolved above). The on-disk `screenshots/` subdir was already
-    // created during meeting.start (or during auto-create above) so
-    // we only need to make sure the dir itself exists for the
-    // existing-meeting path.
-    let out_dir = canonical_out_dir;
-    if !out_dir.exists() {
-        std::fs::create_dir_all(&out_dir).map_err(|e| {
-            tracing::error!(
-                error = %e,
-                path = ?out_dir,
-                "notes.generate failed to create output directory"
-            );
-            IpcError::Internal {
-                message: "failed to prepare output directory".into(),
-            }
-        })?;
-    }
 
     let artifact = exporter.export(&notes, &out_dir).map_err(|e| {
         // Domain-to-wire mapping lives in `panops-protocol` (gated by

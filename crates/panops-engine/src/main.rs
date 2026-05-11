@@ -221,6 +221,28 @@ fn run_notes(
         transcript.segments = merge_speaker_turns(transcript.segments, &turns);
         transcript.diarized = true;
     }
+    let transcript_json = serde_json::to_string_pretty(&transcript)
+        .map_err(|e| (3, format!("serialize transcript: {e}")))?;
+
+    // Resolve and create the output directory now (before LLM) so we
+    // can drop the transcript even if LLM generation fails downstream.
+    // The transcript is the cheaper artifact to preserve — LLM gen
+    // failures (missing API key, ollama not running) shouldn't wipe
+    // the only proof that ASR + diarization completed.
+    let out_dir = out.clone().unwrap_or_else(|| {
+        let stem = audio
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "notes".to_string());
+        PathBuf::from(format!("./{stem}-notes"))
+    });
+    if !out_dir.exists() {
+        std::fs::create_dir_all(&out_dir).map_err(|e| (3, e.to_string()))?;
+    }
+    let transcript_path = out_dir.join("transcript.json");
+    std::fs::write(&transcript_path, &transcript_json)
+        .map_err(|e| (3, format!("write transcript.json: {e}")))?;
+    tracing::info!(file = ?transcript_path, "wrote transcript");
 
     let llm = match llm_provider.as_str() {
         "auto" => match llm_model {
@@ -266,16 +288,6 @@ fn run_notes(
     let generator = NotesGenerator { llm: &llm, dialect };
     let notes = generator.generate(input).map_err(|e| (2, e.to_string()))?;
 
-    let out_dir = out.unwrap_or_else(|| {
-        let stem = audio
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "notes".to_string());
-        PathBuf::from(format!("./{stem}-notes"))
-    });
-    if !out_dir.exists() {
-        std::fs::create_dir_all(&out_dir).map_err(|e| (3, e.to_string()))?;
-    }
     let art = MarkdownExporter
         .export(&notes, &out_dir)
         .map_err(|e| (2, e.to_string()))?;
