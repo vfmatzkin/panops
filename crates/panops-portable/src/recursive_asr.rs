@@ -105,7 +105,13 @@ pub fn transcribe_recursive(
     //       slice 08 smoke: min token-probability mean was 0.83 on
     //       Spanish-audio-transcribed-as-English).
     let confidence_trigger = worst_conf < THRESHOLD;
-    let duration_trigger = duration_ms > MAX_AUTO_SPLIT_MS;
+    // Duration trigger only applies to real adapters. Test fakes
+    // (deterministic transcript returners, canned-response fakes)
+    // would produce duplicated output across the split halves because
+    // they ignore the chunk and return the same segments every call.
+    // Confidence-based recursion still applies to fakes — `LowConfidenceAsr`
+    // and friends exercise it deliberately.
+    let duration_trigger = duration_ms > MAX_AUTO_SPLIT_MS && !asr.is_fake();
     if !confidence_trigger && !duration_trigger {
         return Ok(RegionResult {
             segments: offset_segments,
