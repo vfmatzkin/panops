@@ -165,6 +165,52 @@ impl Diarizer for KnownTurnsFake {
     }
 }
 
+/// Test fake for `recursive_asr`. Returns canned `Transcript` responses
+/// indexed by call count. Once the response list is exhausted, the last
+/// response is returned for any further calls (mirrors the "always
+/// low-confidence" MAX_DEPTH-cap test case).
+///
+/// Tests construct it via `LowConfidenceAsr::with_responses(vec![...])`.
+pub struct LowConfidenceAsr {
+    responses: Vec<Transcript>,
+    call_count: Mutex<usize>,
+}
+
+impl LowConfidenceAsr {
+    pub fn with_responses(responses: Vec<Transcript>) -> Self {
+        assert!(
+            !responses.is_empty(),
+            "LowConfidenceAsr needs at least one canned response"
+        );
+        Self {
+            responses,
+            call_count: Mutex::new(0),
+        }
+    }
+
+    pub fn call_count(&self) -> usize {
+        *self.call_count.lock().expect("call_count mutex poisoned")
+    }
+}
+
+impl AsrProvider for LowConfidenceAsr {
+    fn transcribe(
+        &self,
+        _samples: &[f32],
+        _sample_rate: u32,
+        _language_hint: Option<&str>,
+    ) -> Result<Transcript, AsrError> {
+        let mut guard = self.call_count.lock().expect("call_count mutex poisoned");
+        let idx = (*guard).min(self.responses.len() - 1);
+        *guard += 1;
+        Ok(self.responses[idx].clone())
+    }
+
+    fn is_fake(&self) -> bool {
+        true
+    }
+}
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 
