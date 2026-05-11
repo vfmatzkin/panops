@@ -447,11 +447,11 @@ pub(super) fn run_notes_pipeline(
     let mut stitched_model: Option<String> = None;
     let total_audio_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
     for region in merged.iter() {
-        let start_sample = ms_to_samples(region.start_ms, sample_rate);
-        let end_sample = ms_to_samples(region.end_ms, sample_rate);
-        let start_sample = start_sample.min(samples.len());
-        let end_sample = end_sample.min(samples.len());
-        if start_sample >= end_sample {
+        let clamped = panops_core::vad::SpeechRegion {
+            start_ms: region.start_ms.min(total_audio_ms),
+            end_ms: region.end_ms.min(total_audio_ms),
+        };
+        if clamped.start_ms >= clamped.end_ms {
             tracing::warn!(
                 start_ms = region.start_ms,
                 end_ms = region.end_ms,
@@ -459,20 +459,22 @@ pub(super) fn run_notes_pipeline(
             );
             continue;
         }
-        let chunk = &samples[start_sample..end_sample];
-        let region_t = heavy
-            .asr
-            .transcribe(chunk, sample_rate, params.language.as_deref())
-            .map_err(IpcError::from)?;
-        if stitched_model.is_none() && !region_t.segments.is_empty() {
-            stitched_model = Some(region_t.model.clone());
+        let result = panops_portable::recursive_asr::transcribe_recursive(
+            heavy.asr.as_ref(),
+            &samples,
+            sample_rate,
+            clamped,
+            params.language.as_deref(),
+            0,
+        )
+        .map_err(|e| {
+            tracing::error!(error = %e, "transcribe_recursive failed");
+            IpcError::from(e)
+        })?;
+        if stitched_model.is_none() {
+            stitched_model = result.model;
         }
-        for mut seg in region_t.segments {
-            // Offset region-local timestamps to absolute audio time.
-            seg.start_ms = (seg.start_ms + region.start_ms).min(total_audio_ms);
-            seg.end_ms = (seg.end_ms + region.start_ms).min(total_audio_ms);
-            stitched_segments.push(seg);
-        }
+        stitched_segments.extend(result.segments);
     }
 
     let final_model = stitched_model.unwrap_or_else(|| "vad-multilingual".to_string());
@@ -614,10 +616,6 @@ pub(super) fn run_notes_pipeline(
             .collect(),
         meeting_id: resolved_meeting_id,
     })
-}
-
-fn ms_to_samples(ms: u64, sample_rate: u32) -> usize {
-    ((ms * u64::from(sample_rate)) / 1000) as usize
 }
 
 /// Map `IpcError` to a JSON-RPC server error (-32000) carrying the
