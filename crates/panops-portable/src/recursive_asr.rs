@@ -30,6 +30,19 @@ pub const MIN_REGION_MS: u64 = 10_000;
 /// worst-case fan-out at 2^MAX_DEPTH = 8 leaves per top-level region.
 pub const MAX_DEPTH: u32 = 3;
 
+/// Force-split threshold: in auto-detect mode, any merged region longer
+/// than this is bisected at its midpoint even if all segments come back
+/// high-confidence. Mirrors Whisper's native ~30s decoder context — once a
+/// region exceeds it, the model commits to ONE language for the whole
+/// call (the slice 07 limitation). Slice 08 smoke showed that on
+/// bilingual hallucination (Spanish audio transcribed as English),
+/// per-token confidence stays uniformly above any usable threshold, so
+/// `Segment.confidence` cannot trigger recursion on its own for the
+/// continuous code-switch case. Duration is the only signal that reliably
+/// catches it. Cost in monolingual single-region recordings is bounded by
+/// `MAX_DEPTH` (at most ~8 sub-region calls).
+pub const MAX_AUTO_SPLIT_MS: u64 = 30_000;
+
 /// Confidence-recursive transcription. See module docstring.
 pub fn transcribe_recursive(
     asr: &dyn AsrProvider,
@@ -79,17 +92,40 @@ pub fn transcribe_recursive(
         .expect("non-empty segments guaranteed above");
     let worst_conf = raw_segments[worst_idx].confidence;
 
-    // Algorithm step 7: if even the worst is confident, accept the result.
-    if worst_conf >= THRESHOLD {
+    // Algorithm step 7: decide whether to split.
+    //
+    // Two triggers, OR'd:
+    //   (a) Worst per-segment confidence is below `THRESHOLD` — Whisper
+    //       struggled somewhere in this region.
+    //   (b) Region duration exceeds `MAX_AUTO_SPLIT_MS` AND we're in
+    //       auto-detect mode — Whisper's decoder commits to one language
+    //       on the first ~30s window, so any longer region risks losing
+    //       a mid-region language switch even when token confidence
+    //       stays uniformly high (bilingual hallucination case proven by
+    //       slice 08 smoke: min token-probability mean was 0.83 on
+    //       Spanish-audio-transcribed-as-English).
+    let confidence_trigger = worst_conf < THRESHOLD;
+    let duration_trigger = duration_ms > MAX_AUTO_SPLIT_MS;
+    if !confidence_trigger && !duration_trigger {
         return Ok(RegionResult {
             segments: offset_segments,
             model,
         });
     }
 
-    // Algorithm step 8: clamp the split point so neither half drops
-    // below MIN_REGION_MS.
-    let raw_split_abs_ms = raw_segments[worst_idx].start_ms + region.start_ms;
+    // Algorithm step 8: choose the split point.
+    //
+    // For the confidence trigger, split at the lowest-confidence
+    // segment's start — that's where Whisper actually got confused.
+    // For the duration-only trigger, split at the midpoint because the
+    // worst-segment heuristic can't be trusted when Whisper is
+    // confident in a wrong-language hallucination (token probabilities
+    // stay uniformly high across the call).
+    let raw_split_abs_ms = if confidence_trigger {
+        raw_segments[worst_idx].start_ms + region.start_ms
+    } else {
+        region.start_ms + duration_ms / 2
+    };
     let split_min = region.start_ms + MIN_REGION_MS;
     let split_max = region.end_ms.saturating_sub(MIN_REGION_MS);
     let split_abs_ms = raw_split_abs_ms.clamp(split_min, split_max);
