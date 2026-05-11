@@ -172,8 +172,12 @@ impl Diarizer for KnownTurnsFake {
 /// low-confidence" MAX_DEPTH-cap test case).
 ///
 /// Tests construct it via `LowConfidenceAsr::with_responses(vec![...])`.
+/// Optionally chain `.with_error_after(n)` to inject an
+/// `AsrError::Transcription` on call index `n` and after — used to
+/// exercise the error-propagation path through a recursive frame.
 pub struct LowConfidenceAsr {
     responses: Vec<Transcript>,
+    error_after: Option<usize>,
     call_count: Mutex<usize>,
 }
 
@@ -185,8 +189,16 @@ impl LowConfidenceAsr {
         );
         Self {
             responses,
+            error_after: None,
             call_count: Mutex::new(0),
         }
+    }
+
+    /// Inject an `AsrError::Transcription` on call index `n` and every
+    /// call after. Used by the recursive-frame error-propagation test.
+    pub fn with_error_after(mut self, n: usize) -> Self {
+        self.error_after = Some(n);
+        self
     }
 
     pub fn call_count(&self) -> usize {
@@ -202,9 +214,15 @@ impl AsrProvider for LowConfidenceAsr {
         _language_hint: Option<&str>,
     ) -> Result<Transcript, AsrError> {
         let mut guard = self.call_count.lock().expect("call_count mutex poisoned");
-        let idx = (*guard).min(self.responses.len() - 1);
+        let idx = *guard;
         *guard += 1;
-        Ok(self.responses[idx].clone())
+        if self.error_after.is_some_and(|n| idx >= n) {
+            return Err(AsrError::Transcription(format!(
+                "LowConfidenceAsr injected error at call {idx}"
+            )));
+        }
+        let resp_idx = idx.min(self.responses.len() - 1);
+        Ok(self.responses[resp_idx].clone())
     }
 
     fn is_fake(&self) -> bool {

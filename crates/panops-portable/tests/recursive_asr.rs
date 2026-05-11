@@ -48,7 +48,7 @@ fn high_confidence_region_passes_through_without_recursion() {
     )]);
 
     let result =
-        transcribe_recursive(&fake, &samples, sample_rate, region, None, 0).expect("recursive ok");
+        transcribe_recursive(&fake, &samples, sample_rate, region, None).expect("recursive ok");
 
     assert_eq!(fake.call_count(), 1, "no recursion expected");
     assert_eq!(result.segments.len(), 1);
@@ -86,7 +86,7 @@ fn low_confidence_region_splits_at_lowest_segment_and_yields_both_languages() {
     ]);
 
     let result =
-        transcribe_recursive(&fake, &samples, sample_rate, region, None, 0).expect("recursive ok");
+        transcribe_recursive(&fake, &samples, sample_rate, region, None).expect("recursive ok");
 
     assert_eq!(fake.call_count(), 3, "expected exactly one split");
     let langs: Vec<&str> = result
@@ -124,7 +124,7 @@ fn always_low_confidence_caps_at_max_depth() {
     )]);
 
     let result =
-        transcribe_recursive(&fake, &samples, sample_rate, region, None, 0).expect("recursive ok");
+        transcribe_recursive(&fake, &samples, sample_rate, region, None).expect("recursive ok");
 
     // Upper bound: full binary tree at MAX_DEPTH. The clamp guarantees
     // the floor; below-floor short-circuit prunes branches earlier.
@@ -158,7 +158,7 @@ fn region_below_minimum_floor_does_not_split() {
     )]);
 
     let result =
-        transcribe_recursive(&fake, &samples, sample_rate, region, None, 0).expect("recursive ok");
+        transcribe_recursive(&fake, &samples, sample_rate, region, None).expect("recursive ok");
 
     assert_eq!(
         fake.call_count(),
@@ -167,4 +167,42 @@ fn region_below_minimum_floor_does_not_split() {
     );
     assert_eq!(result.segments.len(), 1);
     let _ = MIN_REGION_MS; // anchors the constant in the test for grep-ability
+}
+
+#[test]
+fn asr_error_inside_recursive_frame_propagates() {
+    // Top-level call returns low-confidence segments so recursion
+    // triggers; the first recursive frame (call index 1) errors. The
+    // outer `transcribe_recursive` should bubble that error up via `?`
+    // rather than swallow it or return partial segments.
+    let sample_rate = 16_000_u32;
+    let samples = vec![0.0_f32; 30 * sample_rate as usize];
+    let region = SpeechRegion {
+        start_ms: 0,
+        end_ms: 30_000,
+    };
+
+    let fake = LowConfidenceAsr::with_responses(vec![transcript(
+        "fake-bilingual-mixed",
+        vec![
+            segment(0, 15_000, "en", 0.4),
+            segment(15_000, 30_000, "es", 0.3),
+        ],
+    )])
+    .with_error_after(1);
+
+    let result = transcribe_recursive(&fake, &samples, sample_rate, region, None);
+
+    assert!(
+        result.is_err(),
+        "error from recursive frame should propagate, got Ok({:?})",
+        result.as_ref().ok().map(|r| r.segments.len())
+    );
+    // Top-level call (0) succeeded, recursion fired, left half (1) errored.
+    // Right half (2) is never reached because `?` bubbles call 1's error.
+    assert_eq!(
+        fake.call_count(),
+        2,
+        "expected one top-level call + one failing recursive call"
+    );
 }

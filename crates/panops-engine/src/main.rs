@@ -460,10 +460,7 @@ fn transcribe_with_vad(
     let mut stitched_model: Option<String> = None;
     let total_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
     for region in merged.iter() {
-        let clamped = panops_core::vad::SpeechRegion {
-            start_ms: region.start_ms.min(total_ms),
-            end_ms: region.end_ms.min(total_ms),
-        };
+        let clamped = region.clamp_to(total_ms);
         if clamped.start_ms >= clamped.end_ms {
             tracing::warn!(
                 start_ms = region.start_ms,
@@ -478,7 +475,6 @@ fn transcribe_with_vad(
             sample_rate,
             clamped,
             language,
-            0,
         )
         .map_err(|e| {
             tracing::error!(error = %e, "transcribe_recursive failed in CLI");

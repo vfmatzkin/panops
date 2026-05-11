@@ -35,6 +35,20 @@ pub struct SpeechRegion {
     pub end_ms: u64,
 }
 
+impl SpeechRegion {
+    /// Clamp both endpoints to `ceiling_ms`. Used at every VAD → ASR
+    /// boundary (IPC handler, CLI, test helpers) so a region whose
+    /// end overshoots the actual audio duration (rounding,
+    /// `merge_adjacent_regions` expansion) can't trip a panic when
+    /// the caller slices `samples[start..end]`. Idempotent.
+    pub fn clamp_to(self, ceiling_ms: u64) -> Self {
+        Self {
+            start_ms: self.start_ms.min(ceiling_ms),
+            end_ms: self.end_ms.min(ceiling_ms),
+        }
+    }
+}
+
 /// Domain error. NEVER derive `Serialize` (per AGENTS.md: domain
 /// errors stay platform-agnostic; transport conversion lives in
 /// `panops-protocol` behind the `domain-conversions` feature).
