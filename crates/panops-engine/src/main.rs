@@ -460,11 +460,11 @@ fn transcribe_with_vad(
     let mut stitched_model: Option<String> = None;
     let total_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
     for region in merged.iter() {
-        let start_sample = ((region.start_ms * u64::from(sample_rate)) / 1000) as usize;
-        let end_sample = ((region.end_ms * u64::from(sample_rate)) / 1000) as usize;
-        let start_sample = start_sample.min(samples.len());
-        let end_sample = end_sample.min(samples.len());
-        if start_sample >= end_sample {
+        let clamped = panops_core::vad::SpeechRegion {
+            start_ms: region.start_ms.min(total_ms),
+            end_ms: region.end_ms.min(total_ms),
+        };
+        if clamped.start_ms >= clamped.end_ms {
             tracing::warn!(
                 start_ms = region.start_ms,
                 end_ms = region.end_ms,
@@ -472,19 +472,22 @@ fn transcribe_with_vad(
             );
             continue;
         }
-        let chunk = &samples[start_sample..end_sample];
-        let region_t = asr.transcribe(chunk, sample_rate, language).map_err(|e| {
-            tracing::error!(error = %e, "asr transcribe failed");
+        let result = panops_portable::recursive_asr::transcribe_recursive(
+            asr,
+            &samples,
+            sample_rate,
+            clamped,
+            language,
+            0,
+        )
+        .map_err(|e| {
+            tracing::error!(error = %e, "transcribe_recursive failed in CLI");
             (2, "transcription failed".to_string())
         })?;
-        if stitched_model.is_none() && !region_t.segments.is_empty() {
-            stitched_model = Some(region_t.model.clone());
+        if stitched_model.is_none() {
+            stitched_model = result.model;
         }
-        for mut seg in region_t.segments {
-            seg.start_ms = (seg.start_ms + region.start_ms).min(total_ms);
-            seg.end_ms = (seg.end_ms + region.start_ms).min(total_ms);
-            stitched.push(seg);
-        }
+        stitched.extend(result.segments);
     }
 
     let final_model = stitched_model.unwrap_or_else(|| "vad-multilingual".to_string());
