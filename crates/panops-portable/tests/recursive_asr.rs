@@ -101,3 +101,43 @@ fn low_confidence_region_splits_at_lowest_segment_and_yields_both_languages() {
     // Segment times are absolute (right-half got offset by 15_000ms).
     assert!(result.segments.iter().any(|s| s.start_ms == 15_000));
 }
+
+#[test]
+fn always_low_confidence_caps_at_max_depth() {
+    let sample_rate = 16_000_u32;
+    let total_ms: u64 = 160_000; // 160s — plenty to bisect MAX_DEPTH times.
+    let samples = vec![0.0_f32; (total_ms as usize / 1000) * sample_rate as usize];
+    let region = SpeechRegion {
+        start_ms: 0,
+        end_ms: total_ms,
+    };
+
+    // One canned response: a single low-confidence segment placed at
+    // 50% of whatever region we're transcribing. The fake doesn't know
+    // the region; it always returns the same transcript with local
+    // start_ms = 0, which collapses to "split at the start of this
+    // region" — the clamp inside transcribe_recursive keeps it >=
+    // MIN_REGION_MS, so we bisect repeatedly until depth cap.
+    let fake = LowConfidenceAsr::with_responses(vec![transcript(
+        "fake-always-low",
+        vec![segment(0, 30_000, "en", 0.2)],
+    )]);
+
+    let result =
+        transcribe_recursive(&fake, &samples, sample_rate, region, None, 0).expect("recursive ok");
+
+    // Upper bound: full binary tree at MAX_DEPTH. The clamp guarantees
+    // the floor; below-floor short-circuit prunes branches earlier.
+    let max_calls = (1_u32 << (MAX_DEPTH + 1)) - 1; // 2^(d+1) - 1
+    assert!(
+        fake.call_count() <= max_calls as usize,
+        "call count {} exceeded max {} (recursion not bounded)",
+        fake.call_count(),
+        max_calls
+    );
+    // The recursion did return something (depth-cap path).
+    assert!(
+        !result.segments.is_empty(),
+        "depth cap should still return segments"
+    );
+}
