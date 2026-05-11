@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Mutex;
 
 use crate::asr::{AsrError, AsrProvider};
 use crate::diar::{DiarError, Diarizer, SpeakerTurn};
@@ -212,7 +213,6 @@ impl AsrProvider for LowConfidenceAsr {
 }
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use crate::llm::{LlmError, LlmProvider, LlmRequest, LlmResponse, prompt_fingerprint};
 
