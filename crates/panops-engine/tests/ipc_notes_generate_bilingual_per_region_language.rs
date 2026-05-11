@@ -89,10 +89,7 @@ fn run_vad_pipeline(
     let total_audio_ms = (samples.len() as u64 * 1000) / u64::from(sr);
     let mut stitched_segments: Vec<panops_core::Segment> = Vec::new();
     for region in merged.iter() {
-        let clamped = panops_core::vad::SpeechRegion {
-            start_ms: region.start_ms.min(total_audio_ms),
-            end_ms: region.end_ms.min(total_audio_ms),
-        };
+        let clamped = region.clamp_to(total_audio_ms);
         if clamped.start_ms >= clamped.end_ms {
             continue;
         }
@@ -100,10 +97,9 @@ fn run_vad_pipeline(
         // as the IPC handler + CLI. Without this, the silence-gap test
         // bypasses slice-08 wiring; with it, both bilingual tests
         // exercise the production code path.
-        let result = panops_portable::recursive_asr::transcribe_recursive(
-            asr, &samples, sr, clamped, None, 0,
-        )
-        .unwrap();
+        let result =
+            panops_portable::recursive_asr::transcribe_recursive(asr, &samples, sr, clamped, None)
+                .unwrap();
         stitched_segments.extend(result.segments);
     }
     stitched_segments

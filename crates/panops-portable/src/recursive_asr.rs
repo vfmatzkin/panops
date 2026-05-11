@@ -44,7 +44,21 @@ pub const MAX_DEPTH: u32 = 3;
 pub const MAX_AUTO_SPLIT_MS: u64 = 30_000;
 
 /// Confidence-recursive transcription. See module docstring.
+///
+/// Public entry point: callers don't manage recursion depth; the
+/// private `recurse` helper does. This keeps the implementation
+/// detail (`depth: u32`) off the API surface.
 pub fn transcribe_recursive(
+    asr: &dyn AsrProvider,
+    samples: &[f32],
+    sample_rate: u32,
+    region: SpeechRegion,
+    language_hint: Option<&str>,
+) -> Result<RegionResult, AsrError> {
+    recurse(asr, samples, sample_rate, region, language_hint, 0)
+}
+
+fn recurse(
     asr: &dyn AsrProvider,
     samples: &[f32],
     sample_rate: u32,
@@ -60,6 +74,18 @@ pub fn transcribe_recursive(
     } else {
         Some(transcript.model)
     };
+
+    // Find the lowest-confidence segment BEFORE we clone into
+    // `offset_segments` — that way the data flow is "compute everything
+    // from `raw_segments` first, then derive `offset_segments`", and a
+    // future refactor changing the clone to `.into_iter()` can't
+    // accidentally invalidate the worst-idx search.
+    let worst_idx_and_conf = raw_segments
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| a.confidence.total_cmp(&b.confidence))
+        .map(|(i, s)| (i, s.confidence, s.start_ms));
+
     let offset_segments: Vec<Segment> = raw_segments
         .iter()
         .cloned()
@@ -83,14 +109,8 @@ pub fn transcribe_recursive(
         });
     }
 
-    // Algorithm step 6: locate the lowest-confidence segment.
-    let worst_idx = raw_segments
-        .iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| a.confidence.total_cmp(&b.confidence))
-        .map(|(i, _)| i)
-        .expect("non-empty segments guaranteed above");
-    let worst_conf = raw_segments[worst_idx].confidence;
+    let (_, worst_conf, worst_start_ms) =
+        worst_idx_and_conf.expect("non-empty segments guaranteed above");
 
     // Algorithm step 7: decide whether to split.
     //
@@ -128,7 +148,7 @@ pub fn transcribe_recursive(
     // confident in a wrong-language hallucination (token probabilities
     // stay uniformly high across the call).
     let raw_split_abs_ms = if confidence_trigger {
-        raw_segments[worst_idx].start_ms + region.start_ms
+        worst_start_ms + region.start_ms
     } else {
         region.start_ms + duration_ms / 2
     };
@@ -145,8 +165,8 @@ pub fn transcribe_recursive(
         end_ms: region.end_ms,
     };
 
-    let left_result = transcribe_recursive(asr, samples, sample_rate, left, None, depth + 1)?;
-    let right_result = transcribe_recursive(asr, samples, sample_rate, right, None, depth + 1)?;
+    let left_result = recurse(asr, samples, sample_rate, left, None, depth + 1)?;
+    let right_result = recurse(asr, samples, sample_rate, right, None, depth + 1)?;
 
     let mut segments = left_result.segments;
     segments.extend(right_result.segments);
