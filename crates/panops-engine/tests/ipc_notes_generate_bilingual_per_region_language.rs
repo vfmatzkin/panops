@@ -20,7 +20,6 @@
 
 use std::path::PathBuf;
 
-use panops_core::AsrProvider;
 use panops_core::Vad;
 use panops_portable::audio::merge_adjacent_regions;
 use panops_portable::model::{
@@ -87,24 +86,25 @@ fn run_vad_pipeline(
         eprintln!("  merged[{i}]: {}ms → {}ms", r.start_ms, r.end_ms);
     }
 
+    let total_audio_ms = (samples.len() as u64 * 1000) / u64::from(sr);
     let mut stitched_segments: Vec<panops_core::Segment> = Vec::new();
     for region in merged.iter() {
-        let start = ((region.start_ms * u64::from(sr)) / 1000) as usize;
-        let end = ((region.end_ms * u64::from(sr)) / 1000) as usize;
-        let end = end.min(samples.len());
-        let chunk = &samples[start..end];
-        if chunk.is_empty() {
+        let clamped = panops_core::vad::SpeechRegion {
+            start_ms: region.start_ms.min(total_audio_ms),
+            end_ms: region.end_ms.min(total_audio_ms),
+        };
+        if clamped.start_ms >= clamped.end_ms {
             continue;
         }
-        let t = asr.transcribe(chunk, sr, None).unwrap();
-        for mut seg in t.segments {
-            // Offset region-local timestamps to absolute audio time.
-            seg.start_ms =
-                (seg.start_ms + region.start_ms).min((samples.len() as u64 * 1000) / u64::from(sr));
-            seg.end_ms =
-                (seg.end_ms + region.start_ms).min((samples.len() as u64 * 1000) / u64::from(sr));
-            stitched_segments.push(seg);
-        }
+        // Slice 08: the helper now goes through the same recursion path
+        // as the IPC handler + CLI. Without this, the silence-gap test
+        // bypasses slice-08 wiring; with it, both bilingual tests
+        // exercise the production code path.
+        let result = panops_portable::recursive_asr::transcribe_recursive(
+            asr, &samples, sr, clamped, None, 0,
+        )
+        .unwrap();
+        stitched_segments.extend(result.segments);
     }
     stitched_segments
 }
@@ -166,12 +166,17 @@ fn bilingual_audio_yields_per_region_language_attribution() {
     );
 }
 
-/// Continuous bilingual speech (no silence gap) detects only the first
-/// language. This pins the known 30s auto-detect limitation: when VAD
-/// merges the entire audio into one region, Whisper uses the first ~30s
-/// for language detection and applies it to the whole transcription.
+/// Continuous-speech bilingual: en_30s.wav concatenated with es_30s.wav
+/// with no silence gap. Slice 07 left this case detecting only the
+/// first language (Whisper picks one language per `full()` call);
+/// slice 08 closes it via confidence-based recursion in
+/// `transcribe_recursive`.
+///
+/// When this test fails AND the input is unchanged, the recursion has
+/// broken — either the threshold drifted, the split point is wrong,
+/// or the merge logic was reverted.
 #[test]
-fn continuous_bilingual_detects_only_first_language() {
+fn continuous_bilingual_recursively_detects_both_languages() {
     if std::env::var("PANOPS_SKIP_HEAVY").as_deref() == Ok("1") {
         eprintln!("skipping continuous bilingual test (PANOPS_SKIP_HEAVY=1)");
         return;
@@ -210,7 +215,7 @@ fn continuous_bilingual_detects_only_first_language() {
     );
 
     assert!(
-        !langs.iter().any(|l| l == "es"),
-        "Spanish should NOT be detected in continuous bilingual (slice-08 regression baseline). When this fails, slice 08 work has landed and this baseline should flip to assert BOTH languages."
+        langs.iter().any(|l| l == "es"),
+        "Spanish not detected on continuous bilingual (recursion did not trigger or split incorrectly): {langs:?}"
     );
 }
