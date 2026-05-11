@@ -169,12 +169,18 @@ fn bilingual_audio_yields_per_region_language_attribution() {
 /// Continuous-speech bilingual: en_30s.wav concatenated with es_30s.wav
 /// with no silence gap. Slice 07 left this case detecting only the
 /// first language (Whisper picks one language per `full()` call);
-/// slice 08 closes it via confidence-based recursion in
-/// `transcribe_recursive`.
+/// slice 08 closes it via `transcribe_recursive`. The trigger that
+/// actually fires here is the duration-based force-split
+/// (`MAX_AUTO_SPLIT_MS`), NOT the confidence-based one — slice-08
+/// smoke proved per-token confidence stays uniformly high on
+/// wrong-language hallucination, so duration is the load-bearing
+/// signal for the continuous code-switch case. The confidence trigger
+/// is a safety net for genuinely confused regions.
 ///
-/// When this test fails AND the input is unchanged, the recursion has
-/// broken — either the threshold drifted, the split point is wrong,
-/// or the merge logic was reverted.
+/// When this test fails AND the input is unchanged, recursion has
+/// broken — either the duration threshold drifted, the midpoint
+/// split is wrong, or `transcribe_recursive` was disconnected from
+/// `run_vad_pipeline`.
 #[test]
 fn continuous_bilingual_recursively_detects_both_languages() {
     if std::env::var("PANOPS_SKIP_HEAVY").as_deref() == Ok("1") {

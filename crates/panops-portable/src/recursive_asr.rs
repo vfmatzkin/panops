@@ -163,10 +163,15 @@ pub fn transcribe_recursive(
 }
 
 fn slice_for_region<'a>(samples: &'a [f32], sample_rate: u32, region: &SpeechRegion) -> &'a [f32] {
-    let start = ((region.start_ms as usize) * sample_rate as usize) / 1000;
-    let end = ((region.end_ms as usize) * sample_rate as usize) / 1000;
-    let start = start.min(samples.len());
-    let end = end.min(samples.len()).max(start);
+    // Do the ms→sample-index math in u64 (saturating) and cast to
+    // usize at the end. Matches the rest of the codebase's
+    // u64-based conversions and avoids 32-bit-target truncation.
+    let sr = u64::from(sample_rate);
+    let start_u64 = region.start_ms.saturating_mul(sr).saturating_div(1_000);
+    let end_u64 = region.end_ms.saturating_mul(sr).saturating_div(1_000);
+    let len = samples.len();
+    let start = (start_u64 as usize).min(len);
+    let end = (end_u64 as usize).min(len).max(start);
     &samples[start..end]
 }
 

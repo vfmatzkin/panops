@@ -1,10 +1,24 @@
 # Slice 08 — Confidence-Recursive ASR for Continuous-Speech Bilingual Code-Switching
 
-**Status:** Locked design. Open for plan-writing.
+**Status:** Locked design with one post-implementation amendment (see below).
 **Date:** 2026-05-11
 **Author:** Franco Matzkin (with Claude as brainstorm partner)
 **Predecessor:** [slice 07 design](2026-05-09-slice-07-vad-multilingual-asr-design.md)
 **North-star tie-in:** Closes the "multilingual day 1, no language toggle" gap on continuous-speech bilingual recordings (the path slice 07 left open at D6 and Open Question #1).
+
+## Amendment — 2026-05-11 (post-implementation, mid-PR)
+
+Empirical smoke against both the synthetic 60s en+es concat AND the maintainer's real 3-min bilingual recording proved that the confidence-based trigger alone (D1, algorithm step 7) DOES NOT close the continuous code-switch case. Per-segment `Segment.confidence` (probability-space mean of `tok.token_probability()`) was uniformly above 0.5 on Spanish-audio-transcribed-as-English (min observed: 0.83). The D7-deferred `.plog` upgrade was also tested empirically and found insufficient (min log-prob mean: -0.28, well above any usable threshold). Whisper is genuinely confident at the token level when hallucinating the wrong language.
+
+A **duration-based force-split** was added alongside the confidence trigger to close the gap. New constant `MAX_AUTO_SPLIT_MS = 30_000` (mirroring Whisper's ~30s decoder context). In auto-detect mode (no language hint), any region longer than this is bisected at its midpoint regardless of per-segment confidence. The confidence trigger remains as a safety net for genuinely confused short regions.
+
+Spec deltas:
+- **D1** now reads "Hybrid trigger: confidence-based recursion + duration-based force-split for long auto-detect regions."
+- **D6** constants list adds `MAX_AUTO_SPLIT_MS = 30_000`.
+- **Algorithm step 7** now reads: split if `worst.confidence < THRESHOLD` OR `region.duration > MAX_AUTO_SPLIT_MS && language_hint.is_none()`. Confidence trigger splits at the lowest-confidence segment's start; duration trigger splits at the midpoint (because the worst-segment heuristic can't be trusted when Whisper is uniformly confident in a wrong-language transcription).
+- `transcribe_recursive` short-circuits the duration trigger for `is_fake()` adapters so deterministic test fakes (which return canned segments regardless of input) don't get duplicated across split halves.
+
+The rest of the spec stands as written. Risks #1 and #2 were prescient — see PR #115 for the smoke evidence that drove the amendment.
 
 ## Problem
 
