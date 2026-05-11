@@ -5,6 +5,7 @@ pub mod audio;
 pub mod genai_llm;
 pub mod markdown_exporter;
 pub mod model;
+pub mod recursive_asr;
 pub mod rusqlite_storage;
 
 mod sherpa_diarizer;
