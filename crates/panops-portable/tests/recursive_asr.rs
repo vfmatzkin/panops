@@ -141,3 +141,30 @@ fn always_low_confidence_caps_at_max_depth() {
         "depth cap should still return segments"
     );
 }
+
+#[test]
+fn region_below_minimum_floor_does_not_split() {
+    let sample_rate = 16_000_u32;
+    let total_ms: u64 = 15_000; // 15s < 2 * MIN_REGION_MS (20s)
+    let samples = vec![0.0_f32; (total_ms as usize / 1000) * sample_rate as usize];
+    let region = SpeechRegion {
+        start_ms: 0,
+        end_ms: total_ms,
+    };
+
+    let fake = LowConfidenceAsr::with_responses(vec![transcript(
+        "fake-low",
+        vec![segment(0, 15_000, "en", 0.2)],
+    )]);
+
+    let result =
+        transcribe_recursive(&fake, &samples, sample_rate, region, None, 0).expect("recursive ok");
+
+    assert_eq!(
+        fake.call_count(),
+        1,
+        "region below floor must not recurse even with low confidence"
+    );
+    assert_eq!(result.segments.len(), 1);
+    let _ = MIN_REGION_MS; // anchors the constant in the test for grep-ability
+}
