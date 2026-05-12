@@ -8,22 +8,34 @@ enum IpcClientError: Error {
     case rpcError(code: Int, message: String)
     case decode(String)
     case disconnected
+    case httpError(status: Int, body: String)
 }
 
-/// JSON-RPC + WebSocket client for the panops engine UDS.
-/// Task 4 implements the JSON-RPC half. Task 5 adds event subscription.
+/// JSON-RPC client for the panops engine UDS.
+///
+/// Transport: each request is a fresh HTTP POST over a one-shot
+/// `NWConnection` to the UDS. Walking-skeleton choice per slice-09
+/// design decision D3 (2026-05-12). The engine's jsonrpsee server
+/// accepts POST `/` with `application/json` body and replies with
+/// `200 OK` + JSON-RPC envelope.
+///
+/// Slice 09 does NOT implement WebSocket subscription. Job-completion
+/// detection happens via polling `meeting.get(id)` in the view model.
+/// Proper event-driven UX (hand-rolled RFC 6455 WS) is a follow-up
+/// slice. The spike at Task 3 proved the engine accepts manual WS
+/// upgrade over UDS; `NWProtocolWebSocket.Options` does not.
 actor IpcClient {
     private let endpoint: NWEndpoint
-    private var rpcConnection: NWConnection?
+    private let socketPath: URL
     private var nextId: UInt64 = 1
 
     init(socketPath: URL) {
-        // socketPath is the resolved absolute path to engine.sock
+        self.socketPath = socketPath
         self.endpoint = .unix(path: socketPath.path)
     }
 
-    /// Open the JSON-RPC connection. Retries with exponential backoff
-    /// up to 5 seconds total to absorb engine cold-start.
+    /// Probe the socket is bindable. Returns when the engine accepts
+    /// one connection (5s deadline with exponential backoff).
     func connect() async throws {
         let deadline = Date().addingTimeInterval(5)
         var delayMs: UInt64 = 100
@@ -31,7 +43,7 @@ actor IpcClient {
             do {
                 let conn = NWConnection(to: endpoint, using: .tcp)
                 try await Self.start(conn)
-                self.rpcConnection = conn
+                conn.cancel()
                 return
             } catch {
                 try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
@@ -39,23 +51,22 @@ actor IpcClient {
             }
         }
         throw IpcClientError.socketUnavailable(
-            "engine.sock not ready within 5s"
+            "engine.sock not ready within 5s at \(socketPath.path)"
         )
     }
 
-    /// Disconnect and release resources.
-    func disconnect() async {
-        rpcConnection?.cancel()
-        rpcConnection = nil
-    }
+    /// No-op for HTTP-POST transport (no persistent connection).
+    /// Kept on the API for symmetry with future WS-based transport.
+    func disconnect() async {}
 
-    /// `ipc.notes.generate` — returns the job_id; the JobDone result
-    /// arrives later via the WebSocket events (Task 5).
+    /// `ipc.notes.generate` — synchronous response is the job_id.
+    /// JobDone arrives later; slice 09 detects completion via polling
+    /// `meeting.get(meetingId)` rather than WS events.
     func notesGenerate(
         audio: URL,
+        meetingId: String,
         dialect: String? = nil,
-        language: String? = nil,
-        meetingId: String? = nil
+        language: String? = nil
     ) async throws -> String {
         let params = NotesGenerateParams(
             audio: audio.path,
@@ -73,28 +84,48 @@ actor IpcClient {
         return result.jobId
     }
 
+    /// `ipc.meeting.start` — auto-creates a meeting row and returns
+    /// the meeting_id. Slice-06 allows this without live capture; the
+    /// returned id is used for the polling loop.
+    func meetingStart() async throws -> String {
+        let result: MeetingStartResult = try await sendRequest(
+            method: "ipc.meeting.start",
+            params: EmptyParams()
+        )
+        return result.meetingId
+    }
+
+    /// `ipc.meeting.get(id)` — fetches the meeting row, including
+    /// the attached note metadata when notes.generate has completed.
+    /// Used in the polling loop for completion detection.
+    func meetingGet(id: String) async throws -> MeetingDetail {
+        return try await sendRequest(
+            method: "ipc.meeting.get",
+            params: MeetingGetParams(id: id)
+        )
+    }
+
     // MARK: - Private
 
     private func sendRequest<P: Encodable, R: Decodable>(
         method: String,
         params: P
     ) async throws -> R {
-        guard let conn = rpcConnection else {
-            throw IpcClientError.disconnected
-        }
         let id = nextId
         nextId += 1
         let envelope = JsonRpcRequest(id: id, method: method, params: params)
-        let encoder = JSONEncoder()
-        let body = try encoder.encode(envelope)
-        // Newline-delimited framing — matches jsonrpsee's stdio mode.
-        // If smoke shows the engine expects HTTP framing, revisit here.
-        var framed = body
-        framed.append(0x0A)
-        try await Self.send(conn, data: framed)
-        let respData = try await Self.receiveLine(conn)
-        let decoder = JSONDecoder()
-        let resp = try decoder.decode(JsonRpcResponse<R>.self, from: respData)
+        let body = try JSONEncoder().encode(envelope)
+        let request = Self.buildHttpRequest(body: body)
+        let conn = NWConnection(to: endpoint, using: .tcp)
+        try await Self.start(conn)
+        defer { conn.cancel() }
+        try await Self.send(conn, data: request)
+        let (status, responseBody) = try await Self.readHttpResponse(conn)
+        guard status == 200 else {
+            let bodyString = String(data: responseBody, encoding: .utf8) ?? ""
+            throw IpcClientError.httpError(status: status, body: bodyString)
+        }
+        let resp = try JSONDecoder().decode(JsonRpcResponse<R>.self, from: responseBody)
         if let err = resp.error {
             throw IpcClientError.rpcError(code: err.code, message: err.message)
         }
@@ -104,15 +135,101 @@ actor IpcClient {
         return result
     }
 
+    private static func buildHttpRequest(body: Data) -> Data {
+        let header = """
+        POST / HTTP/1.1\r
+        Host: localhost\r
+        Content-Type: application/json\r
+        Content-Length: \(body.count)\r
+        Connection: close\r
+        \r
+
+        """
+        var req = Data(header.utf8)
+        req.append(body)
+        return req
+    }
+
+    private static func readHttpResponse(_ conn: NWConnection) async throws -> (status: Int, body: Data) {
+        // Read until \r\n\r\n to separate header from body, then read
+        // body length per Content-Length. Engine sets Connection: close
+        // so we could also read until EOF, but Content-Length is cleaner.
+        var buffer = Data()
+        while true {
+            let chunk: Data = try await withCheckedThrowingContinuation { cont in
+                conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
+                    if let error = error {
+                        cont.resume(throwing: error)
+                    } else if let data = data, !data.isEmpty {
+                        cont.resume(returning: data)
+                    } else if isComplete {
+                        // EOF before headers complete — error.
+                        cont.resume(throwing: IpcClientError.disconnected)
+                    } else {
+                        cont.resume(returning: Data())
+                    }
+                }
+            }
+            buffer.append(chunk)
+            if let sepRange = buffer.range(of: Data("\r\n\r\n".utf8)) {
+                let headerData = buffer.subdata(in: buffer.startIndex..<sepRange.lowerBound)
+                let bodyStart = sepRange.upperBound
+                guard let headerText = String(data: headerData, encoding: .utf8) else {
+                    throw IpcClientError.decode("non-utf8 HTTP header")
+                }
+                let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
+                guard let statusLine = lines.first else {
+                    throw IpcClientError.decode("missing HTTP status line")
+                }
+                let parts = statusLine.split(separator: " ", maxSplits: 2)
+                guard parts.count >= 2, let status = Int(parts[1]) else {
+                    throw IpcClientError.decode("invalid HTTP status line: \(statusLine)")
+                }
+                // Find Content-Length.
+                var contentLength: Int = 0
+                for line in lines.dropFirst() {
+                    let lower = line.lowercased()
+                    if lower.hasPrefix("content-length:") {
+                        let value = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
+                        contentLength = Int(value) ?? 0
+                    }
+                }
+                var body = buffer.subdata(in: bodyStart..<buffer.endIndex)
+                while body.count < contentLength {
+                    let more: Data = try await withCheckedThrowingContinuation { cont in
+                        conn.receive(minimumIncompleteLength: 1, maximumLength: contentLength - body.count) { data, _, isComplete, error in
+                            if let error = error {
+                                cont.resume(throwing: error)
+                            } else if let data = data, !data.isEmpty {
+                                cont.resume(returning: data)
+                            } else if isComplete {
+                                cont.resume(throwing: IpcClientError.disconnected)
+                            } else {
+                                cont.resume(returning: Data())
+                            }
+                        }
+                    }
+                    body.append(more)
+                }
+                return (status, body)
+            }
+        }
+    }
+
     private static func start(_ conn: NWConnection) async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            var resumed = false
             conn.stateUpdateHandler = { state in
+                guard !resumed else { return }
                 switch state {
                 case .ready:
+                    resumed = true
                     cont.resume(returning: ())
                 case .failed(let err):
+                    resumed = true
                     cont.resume(throwing: err)
                 case .cancelled:
+                    resumed = true
                     cont.resume(throwing: IpcClientError.disconnected)
                 default:
                     break
@@ -131,30 +248,6 @@ actor IpcClient {
                     cont.resume(returning: ())
                 }
             })
-        }
-    }
-
-    private static func receiveLine(_ conn: NWConnection) async throws -> Data {
-        var buffer = Data()
-        while true {
-            let chunk: Data = try await withCheckedThrowingContinuation { cont in
-                conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
-                    if let error = error {
-                        cont.resume(throwing: error)
-                    } else if let data = data, !data.isEmpty {
-                        cont.resume(returning: data)
-                    } else if isComplete {
-                        cont.resume(throwing: IpcClientError.disconnected)
-                    } else {
-                        cont.resume(returning: Data())
-                    }
-                }
-            }
-            buffer.append(chunk)
-            if let lf = buffer.firstIndex(of: 0x0A) {
-                let line = buffer.subdata(in: buffer.startIndex..<lf)
-                return line
-            }
         }
     }
 }

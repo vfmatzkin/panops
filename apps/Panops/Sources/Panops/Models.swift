@@ -106,3 +106,44 @@ struct JsonRpcError: Decodable {
     let code: Int
     let message: String
 }
+
+/// Empty params for RPCs that take no arguments.
+struct EmptyParams: Encodable {
+    init() {}
+}
+
+/// Outgoing params for `ipc.meeting.get`.
+struct MeetingGetParams: Encodable {
+    let id: String
+}
+
+/// Response from `ipc.meeting.start` — slice-09 uses the returned
+/// meeting_id as the polling target.
+struct MeetingStartResult: Decodable {
+    let meetingId: String
+
+    enum CodingKeys: String, CodingKey {
+        case meetingId = "meeting_id"
+    }
+}
+
+/// Response from `ipc.meeting.get`. Only the fields slice 09 needs.
+/// `note` is non-nil once `notes.generate` has written a row.
+struct MeetingDetail: Decodable {
+    let id: String
+    let note: MeetingNoteRef?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case note
+    }
+}
+
+/// The note attached to a meeting once `notes.generate` completes.
+struct MeetingNoteRef: Decodable {
+    let primaryPath: String
+
+    enum CodingKeys: String, CodingKey {
+        case primaryPath = "primary_path"
+    }
+}
