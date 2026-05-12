@@ -7,6 +7,9 @@ let package = Package(
     products: [
         .executable(name: "Panops", targets: ["Panops"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/swiftlang/swift-testing.git", from: "0.12.0"),
+    ],
     targets: [
         .executableTarget(
             name: "Panops",
@@ -14,7 +17,10 @@ let package = Package(
         ),
         .testTarget(
             name: "PanopsTests",
-            dependencies: ["Panops"],
+            dependencies: [
+                "Panops",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
             path: "Tests/PanopsTests"
         ),
     ]
