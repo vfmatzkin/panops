@@ -191,6 +191,12 @@ jobs:
       - name: Force sherpa-rs-sys rebuild
         shell: bash
         run: cargo clean -p sherpa-rs-sys || true
+      - name: Build WhisperKit sidecar
+        working-directory: apps/panops-asr-mac
+        run: swift build --configuration release
+      - name: Export sidecar path
+        run: |
+          echo "PANOPS_ASR_SIDECAR_BIN=${{ github.workspace }}/apps/panops-asr-mac/.build/release/panops-asr-mac" >> "$GITHUB_ENV"
       - name: Run heavy tests
         run: cargo nextest run --workspace --locked
       - name: Doc tests
