@@ -85,20 +85,23 @@ actor IpcClient {
     }
 
     /// `ipc.meeting.start` — auto-creates a meeting row and returns
-    /// the meeting_id. Slice-06 allows this without live capture; the
-    /// returned id is used for the polling loop.
+    /// the meeting_id (a bare JSON string). Slice-06 allows this
+    /// without live capture; the returned id is used for the polling
+    /// loop.
     func meetingStart() async throws -> String {
-        let result: MeetingStartResult = try await sendRequest(
+        let result: String = try await sendRequest(
             method: "ipc.meeting.start",
             params: EmptyParams()
         )
-        return result.meetingId
+        return result
     }
 
-    /// `ipc.meeting.get(id)` — fetches the meeting row, including
-    /// the attached note metadata when notes.generate has completed.
-    /// Used in the polling loop for completion detection.
-    func meetingGet(id: String) async throws -> MeetingDetail {
+    /// `ipc.meeting.get(id)` — fetches the Meeting row. The returned
+    /// `dirPath` is where `notes.generate` will write its output.
+    /// Slice 09 polls the filesystem under `dirPath/notes.md` rather
+    /// than calling `meeting.get` repeatedly — the IPC's `Meeting`
+    /// type doesn't carry note-completion metadata.
+    func meetingGet(id: String) async throws -> Meeting {
         return try await sendRequest(
             method: "ipc.meeting.get",
             params: MeetingGetParams(id: id)
@@ -113,7 +116,7 @@ actor IpcClient {
     ) async throws -> R {
         let id = nextId
         nextId += 1
-        let envelope = JsonRpcRequest(id: id, method: method, params: params)
+        let envelope = JsonRpcRequest(id: id, method: method, param: params)
         let body = try JSONEncoder().encode(envelope)
         let request = Self.buildHttpRequest(body: body)
         let conn = NWConnection(to: endpoint, using: .tcp)

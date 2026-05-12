@@ -55,27 +55,32 @@ final class AppViewModel: ObservableObject {
     private func startPolling(meetingId: String) {
         pollingTask?.cancel()
         pollingTask = Task { [weak self] in
+            guard let self else { return }
+            // Fetch the meeting once to learn its dir_path; subsequent
+            // polls just stat the filesystem.
+            let meeting: Meeting
+            do {
+                meeting = try await self.client.meetingGet(id: meetingId)
+            } catch {
+                await MainActor.run {
+                    self.state = .error(kind: "internal", message: "meeting.get failed: \(error)")
+                }
+                return
+            }
+            let notesPath = (meeting.dirPath as NSString).appendingPathComponent("notes.md")
             let deadline = Date().addingTimeInterval(5 * 60) // 5 min ceiling
             while !Task.isCancelled, Date() < deadline {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard let self else { return }
-                do {
-                    let meeting = try await self.client.meetingGet(id: meetingId)
-                    if let note = meeting.note {
-                        await MainActor.run {
-                            self.state = .done(notesPath: note.primaryPath)
-                        }
-                        return
+                if FileManager.default.fileExists(atPath: notesPath) {
+                    await MainActor.run {
+                        self.state = .done(notesPath: notesPath)
                     }
-                } catch {
-                    // Transient errors during polling are tolerated; keep trying.
-                    // If the engine truly died, the next request will fail too
-                    // and the user will see no progress past the 5-minute ceiling.
+                    return
                 }
             }
             await MainActor.run {
-                if case .working = self?.state {
-                    self?.state = .error(kind: "timeout", message: "notes.generate did not complete within 5 minutes")
+                if case .working = self.state {
+                    self.state = .error(kind: "timeout", message: "notes.generate did not complete within 5 minutes")
                 }
             }
         }
