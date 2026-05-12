@@ -3,14 +3,19 @@
 //! over stdio. Lazy spawn on first transcribe; reused across calls
 //! to amortize the ~3-5s model load.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
 
 use panops_core::Transcript;
 use panops_core::asr::{AsrError, AsrProvider};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Reject sidecar response lines larger than 16 MiB. A 60-second
+/// transcript is tens of KB; this cap is purely a safety bound
+/// against a wedged sidecar emitting unbounded output.
+const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
 pub struct WhisperKitAsr {
     binary: PathBuf,
@@ -19,9 +24,25 @@ pub struct WhisperKitAsr {
 }
 
 struct SidecarState {
-    child: Child,
-    stdin: ChildStdin,
+    /// `Option` so `Drop` can `take()` the child + close pipes before
+    /// `kill()` / `wait()`. Always `Some` while the sidecar is alive.
+    child: Option<Child>,
+    stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
+}
+
+impl Drop for SidecarState {
+    fn drop(&mut self) {
+        // Closing stdin first lets the sidecar's readLine loop see EOF
+        // and exit cleanly. kill + wait afterward catches the wedged
+        // case so we never leak a zombie when `*slot = None` runs on
+        // an error path.
+        drop(self.stdin.take());
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -41,14 +62,33 @@ struct RpcRequest<'a> {
 
 #[derive(Deserialize)]
 struct RpcResponse {
+    #[serde(default, deserialize_with = "deserialize_jsonrpc_version")]
+    _jsonrpc: (),
+    /// `Option` so a sidecar parse-error response with `id: null`
+    /// (JSON-RPC 2.0 §4) decodes instead of failing — we still
+    /// surface it as an error because we can't pair it to a request.
     #[serde(default)]
-    #[allow(dead_code)]
-    jsonrpc: String,
-    id: u64,
+    id: Option<u64>,
     #[serde(default)]
     result: Option<Transcript>,
     #[serde(default)]
     error: Option<RpcError>,
+}
+
+/// Reject responses whose `jsonrpc` field is anything but `"2.0"`. A
+/// silent mismatch would hide framing-version drift between the engine
+/// and the sidecar.
+fn deserialize_jsonrpc_version<'de, D>(de: D) -> Result<(), D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let v = String::deserialize(de)?;
+    if v != "2.0" {
+        return Err(serde::de::Error::custom(format!(
+            "unsupported jsonrpc version: {v}"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize, Debug)]
@@ -82,8 +122,8 @@ impl WhisperKitAsr {
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
         *slot = Some(SidecarState {
-            child,
-            stdin,
+            child: Some(child),
+            stdin: Some(stdin),
             stdout: BufReader::new(stdout),
         });
         Ok(())
@@ -155,21 +195,27 @@ impl WhisperKitAsr {
         // would fail on the same dead pipe.
         let write_result = {
             let state = slot.as_mut().expect("just spawned");
-            state
-                .stdin
+            let stdin = state.stdin.as_mut().expect("stdin live while spawned");
+            stdin
                 .write_all(&body)
-                .and_then(|()| state.stdin.write_all(b"\n"))
-                .and_then(|()| state.stdin.flush())
+                .and_then(|()| stdin.write_all(b"\n"))
+                .and_then(|()| stdin.flush())
         };
         if let Err(e) = write_result {
             *slot = None;
             return Err(AsrError::Transcription(format!("stdio write: {e}")));
         }
 
-        let mut line = String::new();
+        // Bound the response read against a wedged sidecar emitting an
+        // unbounded line. `take(MAX_RESPONSE_BYTES)` + `read_until(b'\n')`
+        // gives us a strict cap; if we read the cap and the last byte
+        // isn't a newline, the line was truncated and framing is lost.
+        let mut buf: Vec<u8> = Vec::new();
         let read_result = {
             let state = slot.as_mut().expect("still spawned");
-            state.stdout.read_line(&mut line)
+            (&mut state.stdout)
+                .take(MAX_RESPONSE_BYTES)
+                .read_until(b'\n', &mut buf)
         };
         let n = match read_result {
             Ok(n) => n,
@@ -185,23 +231,57 @@ impl WhisperKitAsr {
                 "sidecar exited before responding".into(),
             ));
         }
-        let resp: RpcResponse = serde_json::from_str(line.trim_end())
-            .map_err(|e| AsrError::Transcription(format!("decode: {e}")))?;
-        // Validate JSON-RPC id pairing. A mismatch means we lost framing
-        // alignment (sidecar emitted an unsolicited line, log noise on
-        // stdout, etc.) — the call/response stream is corrupt and the
-        // sidecar must be respawned.
-        if resp.id != id {
+        if buf.last() != Some(&b'\n') {
+            // Hit the byte cap without finding a newline — framing is
+            // corrupt or the sidecar is producing pathological output.
             *slot = None;
             return Err(AsrError::Transcription(format!(
-                "JSON-RPC id mismatch: expected {id}, got {}",
-                resp.id
+                "sidecar response exceeded {MAX_RESPONSE_BYTES} bytes without newline"
             )));
         }
+        let line = std::str::from_utf8(&buf)
+            .map_err(|e| AsrError::Transcription(format!("response not utf-8: {e}")))?;
+        let resp: RpcResponse = serde_json::from_str(line.trim_end()).map_err(|e| {
+            *slot = None;
+            AsrError::Transcription(format!("decode: {e}"))
+        })?;
+        // Validate JSON-RPC id pairing. A `None` id is a parse-error
+        // response per JSON-RPC 2.0 §4; a mismatched id means we lost
+        // framing. Either way the stream is corrupt and the sidecar
+        // must be respawned.
+        match resp.id {
+            Some(rid) if rid == id => {}
+            Some(rid) => {
+                *slot = None;
+                return Err(AsrError::Transcription(format!(
+                    "JSON-RPC id mismatch: expected {id}, got {rid}"
+                )));
+            }
+            None => {
+                *slot = None;
+                let detail = resp
+                    .error
+                    .as_ref()
+                    .map(|e| format!(" (sidecar code {})", e.code))
+                    .unwrap_or_default();
+                return Err(AsrError::Transcription(format!(
+                    "sidecar returned null id{detail}"
+                )));
+            }
+        }
         if let Some(err) = resp.error {
+            // Log full sidecar error detail (model paths, CoreML state)
+            // locally; surface an opaque, code-only message over the
+            // wire so the engine's IPC `Internal` error doesn't echo
+            // sidecar internals to clients.
+            tracing::error!(
+                code = err.code,
+                message = %err.message,
+                "panops-asr-mac sidecar returned error"
+            );
             return Err(AsrError::Transcription(format!(
-                "sidecar error {}: {}",
-                err.code, err.message
+                "sidecar error (code {})",
+                err.code
             )));
         }
         resp.result
@@ -211,24 +291,12 @@ impl WhisperKitAsr {
 
 impl Drop for WhisperKitAsr {
     fn drop(&mut self) {
-        let mut slot = self
-            .state
-            .lock()
-            .expect("sidecar state mutex poisoned on drop");
-        if let Some(state) = slot.take() {
-            // Take ownership of `state` so `stdin` is dropped here,
-            // closing the sidecar's stdin. The sidecar's `while let
-            // Some(line) = readLine()` loop sees EOF and exits.
-            let SidecarState {
-                mut child,
-                stdin,
-                stdout,
-            } = state;
-            drop(stdin);
-            drop(stdout);
-            // Fallback in case the sidecar is wedged after stdin close.
-            let _ = child.kill();
-            let _ = child.wait();
+        // `SidecarState`'s own `Drop` closes stdin and reaps the child;
+        // we just need to take the slot here so it runs even if the
+        // mutex is held by no one. Poisoned mutex still gives access
+        // via `into_inner`-equivalent semantics through the guard.
+        if let Ok(mut slot) = self.state.lock() {
+            slot.take();
         }
     }
 }

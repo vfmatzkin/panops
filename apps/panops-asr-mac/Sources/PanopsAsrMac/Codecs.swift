@@ -63,15 +63,32 @@ struct JsonRpcRequest: Decodable {
 
 struct JsonRpcResponse: Encodable {
     let jsonrpc: String
-    let id: UInt64
+    /// `nil` for parse-error responses (JSON-RPC 2.0 §4: the server
+    /// could not determine the request id, so encode `null`).
+    let id: UInt64?
     let result: WireTranscript?
     let error: JsonRpcError?
 
-    init(id: UInt64, result: WireTranscript? = nil, error: JsonRpcError? = nil) {
+    init(id: UInt64?, result: WireTranscript? = nil, error: JsonRpcError? = nil) {
         self.jsonrpc = "2.0"
         self.id = id
         self.result = result
         self.error = error
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case jsonrpc, id, result, error
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(jsonrpc, forKey: .jsonrpc)
+        // Explicitly encode `null` when id is nil so JSON-RPC 2.0
+        // parse-error envelopes are spec-conformant. The default
+        // Encodable behavior would omit the key.
+        if let id { try c.encode(id, forKey: .id) } else { try c.encodeNil(forKey: .id) }
+        try c.encodeIfPresent(result, forKey: .result)
+        try c.encodeIfPresent(error, forKey: .error)
     }
 }
 
