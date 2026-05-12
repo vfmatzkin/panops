@@ -40,10 +40,10 @@ actor IpcClient {
         let deadline = Date().addingTimeInterval(5)
         var delayMs: UInt64 = 100
         while Date() < deadline {
+            let conn = NWConnection(to: endpoint, using: .tcp)
+            defer { conn.cancel() }
             do {
-                let conn = NWConnection(to: endpoint, using: .tcp)
                 try await Self.start(conn)
-                conn.cancel()
                 return
             } catch {
                 try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
@@ -180,7 +180,10 @@ actor IpcClient {
                 guard let headerText = String(data: headerData, encoding: .utf8) else {
                     throw IpcClientError.decode("non-utf8 HTTP header")
                 }
-                let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
+                // Split on CRLF using `components(separatedBy:)` (the
+                // Swift String API accepts a multi-character separator
+                // there, unlike the `Collection.split` element variant).
+                let lines = headerText.components(separatedBy: "\r\n")
                 guard let statusLine = lines.first else {
                     throw IpcClientError.decode("missing HTTP status line")
                 }

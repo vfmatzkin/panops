@@ -58,13 +58,15 @@ struct PanopsApp: App {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { [engineCopy = engine, viewModelCopy = viewModel] _ in
-            let sem = DispatchSemaphore(value: 0)
-            Task {
-                await viewModelCopy.shutdown(engine: engineCopy)
-                sem.signal()
-            }
-            _ = sem.wait(timeout: .now() + 6)
+        ) { [engineCopy = engine] _ in
+            // SIGTERM the engine synchronously. We cannot `await
+            // viewModel.shutdown(...)` here: AppViewModel is `@MainActor`
+            // and blocking main with a DispatchSemaphore to wait on the
+            // async hop deadlocks. The engine being SIGTERM'd is the
+            // important part — the IPC connection closes on socket
+            // teardown anyway, and the OS reaps the child process when
+            // the app exits.
+            engineCopy?.terminateSync()
         }
     }
 }

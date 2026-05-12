@@ -1,10 +1,28 @@
 # Slice 09 — Mac Shell Walking Skeleton
 
-**Status:** Locked design. Open for plan-writing.
+**Status:** Locked design with one post-implementation amendment (see below).
 **Date:** 2026-05-11
 **Author:** Franco Matzkin (with Claude as brainstorm partner)
 **Predecessor:** [slice 08 design](2026-05-11-slice-08-confidence-recursion-design.md)
 **North-star tie-in:** First step of Anchor A. Makes panops *usable as an app* — v0.1 acceptance criterion #1 ("open the Mac app, hit record") is unmet until this lands. Closes the perf-concern → Anchor A path by laying the ground for the WhisperKit ASR sidecar (next slice).
+
+## Amendment — 2026-05-12 (post-implementation, mid-PR)
+
+The Task 3 spike + a deeper empirical probe of the running engine invalidated the WebSocket-event-driven approach that D5 / IpcClient / ContentView in this spec describe. The implementation that shipped uses **HTTP POST for one-shot JSON-RPC requests** and **filesystem polling for job-completion detection**. The relevant deltas:
+
+- **D5 amended**: NOT hand-rolled JSON-RPC + WebSocket. Hand-rolled HTTP POST framing only. Each request opens a fresh `NWConnection` to the UDS, sends an HTTP POST envelope with the JSON-RPC body, and reads the HTTP/1.1 response (Content-Length framed). No persistent connection; no WebSocket. Rationale: `NWConnection + NWProtocolWebSocket.Options` over UDS fails its handshake (`POSIXErrorCode 53: Software caused connection abort`); the engine accepts manual HTTP upgrade-to-WS but constructing it from scratch was outside the slice budget. The engine's jsonrpsee server happily accepts HTTP POST for one-shot calls (proven via Python probe returning `405 Method Not Allowed` with body `"POST is required"`).
+
+- **D6 / D7 amended**: NSOpenPanel and three UI states unchanged. Whether `notes.generate` succeeded is detected by polling `<meeting.dir_path>/notes.md` on the filesystem every 2 seconds (5-minute ceiling), not by subscribing to `job.done` over WebSocket. Adds up to 2s of perceived latency on the Done transition; acceptable for walking-skeleton UX.
+
+- **Wire shape**: jsonrpsee uses positional params; the `JsonRpcRequest<P>` envelope wraps the param struct in a 1-element array (`"params": [<param>]`). `meeting.start` returns a bare JSON string (the meeting_id), not an object; `meeting.get` returns the `Meeting` struct from `panops-protocol`.
+
+- **Pre-create meetings**: the polling loop needs a meeting_id up-front, so the shell calls `meeting.start` (slice 06 allows this without live capture) and passes `meeting_id` into `notes.generate`. The auto-create path on `notes.generate(meeting_id: None)` is unused.
+
+- **Hand-rolled WebSocket client**: deferred to a follow-up slice. Engine accepts the manual HTTP-Upgrade path (`101 Switching Protocols` verified by Python probe); when a hand-rolled RFC 6455 client lands, the polling loop is replaced with `events.subscribe` and `job.done` matching. Filed as debt at PR-merge time.
+
+- **Test framework**: external `swift-testing` SwiftPM dependency was added (XCTest required full Xcode on the dev machine, swift-testing is Apple-official). Swift 6.x has swift-testing built in; the external package emits a deprecation warning. Cosmetic follow-up — drop the dep on Xcode-equipped machines.
+
+The rest of the spec stands. Risks #1 and #2 were prescient — the WS-over-UDS and `NWProtocolWebSocket` concerns played out exactly as flagged.
 
 ## Problem
 
