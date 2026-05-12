@@ -190,6 +190,12 @@ jobs:
         run: cargo nextest run --workspace --locked
       - name: Doc tests
         run: cargo test --workspace --locked --doc
+      - name: Build Mac shell (macos)
+        if: matrix.os == 'macos-latest'
+        working-directory: apps/Panops
+        run: |
+          swift build --configuration release
+          swift test
 
   deny:
     name: cargo-deny
