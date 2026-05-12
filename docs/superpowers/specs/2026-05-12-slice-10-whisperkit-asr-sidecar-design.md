@@ -1,10 +1,24 @@
 # Slice 10 — WhisperKit ASR Sidecar (Anchor A continuation)
 
-**Status:** Locked design. Open for plan-writing.
+**Status:** Locked design with one post-research amendment (see below).
 **Date:** 2026-05-12
 **Author:** Franco Matzkin (Claude wrote the draft autonomously while the maintainer was away; spec is open for maintainer revision in the PR.)
 **Predecessor:** [slice 09 design](2026-05-11-slice-09-mac-shell-walking-skeleton-design.md)
 **North-star tie-in:** Anchor A's second piece. Addresses the perf concern the maintainer raised mid-slice-08 ("the tool is getting slower and slower") by introducing the macOS-native WhisperKit ASR adapter. Replaces `whisper-rs` for macOS production runs; `whisper-rs` stays for CI's fast path and as the portable fallback.
+
+## Amendment — 2026-05-12 (pre-implementation, MCP research)
+
+The original draft used pseudocode for the WhisperKit Swift API that didn't match current upstream. MCP research (`f58d4a61-0e5b-4b3e-ac56-efb650078bc5`) surfaced these corrections:
+
+- **D13 (new)**: SwiftPM package URL is **`https://github.com/argmaxinc/argmax-oss-swift.git`** (the historical `argmaxinc/WhisperKit` repo was consolidated into a single OSS Swift SDK covering WhisperKit + TTSKit + SpeakerKit). Latest verified tag at write time: `0.9.0`. Verify with `gh release list --repo argmaxinc/argmax-oss-swift` before pinning.
+- **D11 (new)**: WhisperKit's constructor takes a `WhisperKitConfig` wrapper, **not** a bare model string. Correct shape: `try await WhisperKit(WhisperKitConfig(model: "<variant>"))` or `WhisperKitConfig(modelFolder: <path>)`.
+- **D5 amended**: model variant — instead of hardcoding `openai_whisper-tiny`, the sidecar calls `WhisperKit.fetchAvailableModels(from: "argmaxinc/whisperkit-coreml")` at startup and picks the smallest variant that includes `tiny` in its name. Avoids drift if the HF repo's variant naming changes. Falls back to a hardcoded string if `fetchAvailableModels` fails (offline-ish path).
+- **D12 (new)**: model cache directory is explicit at `~/Library/Application Support/panops/models/whisperkit/`. The sidecar pre-downloads via `WhisperKit.download(variant:from:)` and then constructs `WhisperKitConfig(modelFolder:)`. Avoids depending on WhisperKit's default cache directory.
+- **D14 (new)**: per-segment language is **not** exposed in `TranscriptionResult` — language is top-level on the result. Slice 07/08's recursion already operates at the orchestration layer (above the adapter), so per-region transcribe calls each get their own language via the top-level field. No adapter changes needed for the multilingual story.
+- **D15 (new)**: timing units differ — WhisperKit reports `start` / `end` in **seconds (Float)**, panops `Segment` uses `start_ms` / `end_ms` (u64). Convert at the adapter boundary (`Int(seconds * 1000.0)`).
+- **D16 (new)**: platform requirement is macOS 14.0+ AND Xcode 16.0+ (CLT alone is not enough — WhisperKit ships CoreML model assets). The maintainer's machine has Swift 6.3.1 (Xcode 16+). CI's `macos-latest` runners have full Xcode pre-installed.
+
+Three of these (model variant, per-segment language, cache directory) were flagged "spike before locking" by the MCP. The implementation plan includes an early Task that runs the sidecar in a probe mode and verifies the exact runtime behavior. If the spike disagrees with any decision, the spec gets a second amendment.
 
 ## Problem
 
