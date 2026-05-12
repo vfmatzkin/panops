@@ -1779,6 +1779,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "panops-mac"
+version = "0.1.0"
+dependencies = [
+ "hound",
+ "panops-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "panops-portable"
 version = "0.1.0"
 dependencies = [
