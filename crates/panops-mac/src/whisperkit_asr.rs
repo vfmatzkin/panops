@@ -62,7 +62,7 @@ struct RpcRequest<'a> {
 
 #[derive(Deserialize)]
 struct RpcResponse {
-    #[serde(default, deserialize_with = "deserialize_jsonrpc_version")]
+    #[serde(rename = "jsonrpc", deserialize_with = "deserialize_jsonrpc_version")]
     _jsonrpc: (),
     /// `Option` so a sidecar parse-error response with `id: null`
     /// (JSON-RPC 2.0 §4) decodes instead of failing — we still
@@ -232,12 +232,19 @@ impl WhisperKitAsr {
             ));
         }
         if buf.last() != Some(&b'\n') {
-            // Hit the byte cap without finding a newline — framing is
-            // corrupt or the sidecar is producing pathological output.
+            // No trailing newline means either (a) the sidecar died
+            // mid-line (EOF before completing the response) or (b) the
+            // line hit the `MAX_RESPONSE_BYTES` cap. Distinguish so the
+            // error message points at the right failure mode during
+            // debugging — wedged-sidecar vs framing-corrupt look very
+            // different in practice.
             *slot = None;
-            return Err(AsrError::Transcription(format!(
-                "sidecar response exceeded {MAX_RESPONSE_BYTES} bytes without newline"
-            )));
+            let msg = if (n as u64) >= MAX_RESPONSE_BYTES {
+                format!("sidecar response exceeded {MAX_RESPONSE_BYTES} bytes without newline")
+            } else {
+                format!("sidecar response truncated at {n} bytes (EOF mid-line)")
+            };
+            return Err(AsrError::Transcription(msg));
         }
         let line = std::str::from_utf8(&buf)
             .map_err(|e| AsrError::Transcription(format!("response not utf-8: {e}")))?;
