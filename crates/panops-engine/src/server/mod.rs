@@ -277,11 +277,11 @@ fn init_heavy_adapters() -> Result<HeavyAdapters, String> {
         DEFAULT_MODEL_NAME, default_model_path, default_vad_model_path, ensure_diar_models,
         ensure_model, ensure_vad_model,
     };
-    use panops_portable::{SherpaDiarizer, WhisperRsAsr, WhisperVad};
+    use panops_portable::{SherpaDiarizer, WhisperVad};
 
     let model_path = default_model_path().map_err(|e| e.to_string())?;
     let model_path = ensure_model(DEFAULT_MODEL_NAME, &model_path).map_err(|e| e.to_string())?;
-    let asr = WhisperRsAsr::new(model_path).map_err(|e| e.to_string())?;
+    let asr = crate::asr_resolver::pick_asr(model_path).map_err(|e| e.to_string())?;
     let (seg, emb) = ensure_diar_models().map_err(|e| e.to_string())?;
     let diar = SherpaDiarizer::new(seg, emb).map_err(|e| e.to_string())?;
     let vad_path = default_vad_model_path().map_err(|e| e.to_string())?;
@@ -289,7 +289,7 @@ fn init_heavy_adapters() -> Result<HeavyAdapters, String> {
     let vad = WhisperVad::new(&vad_path).map_err(|e| e.to_string())?;
 
     Ok(HeavyAdapters {
-        asr: Arc::new(asr),
+        asr,
         diar: Arc::new(diar),
         exporter: Arc::new(MarkdownExporter),
         vad: Arc::new(vad),

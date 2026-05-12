@@ -67,10 +67,20 @@ fn whisperkit_passes_english_conformance() {
     // English-only fixtures: WhisperKit base auto-detects "en" reliably.
     // Fixtures live under `tests/fixtures/audio/` (mirrors `run_suite`'s
     // internal path resolution in `panops_core::conformance::asr::run_one`).
+    //
+    // Per-fixture `wer_max` matches what `run_suite` enforces in the
+    // canonical conformance harness — no looser bar for WhisperKit on
+    // these English fixtures than for WhisperRsAsr. `None` would weaken
+    // the slice's main correctness guarantee, which defeats the point
+    // of running the harness here.
     let audio_dir = fixtures.join("audio");
-    for stem in ["en_30s", "multi_speaker_60s"] {
+    let cases: &[(&str, Option<f32>)] = &[
+        ("en_30s", Some(0.20)),
+        ("multi_speaker_60s", None), // matches canonical FIXTURES: WER unbounded for diarized fixture
+    ];
+    for (stem, wer_max) in cases {
         let audio = audio_dir.join(format!("{stem}.wav"));
         let transcript = audio_dir.join(format!("{stem}.transcript.txt"));
-        run_one_fixture(&asr, &audio, &transcript, &["en"], None);
+        run_one_fixture(&asr, &audio, &transcript, &["en"], *wer_max);
     }
 }

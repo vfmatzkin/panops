@@ -44,7 +44,6 @@ struct RpcResponse {
     #[serde(default)]
     #[allow(dead_code)]
     jsonrpc: String,
-    #[allow(dead_code)]
     id: u64,
     #[serde(default)]
     result: Option<Transcript>,
@@ -90,11 +89,19 @@ impl WhisperKitAsr {
         Ok(())
     }
 
-    fn next_id(&self) -> u64 {
-        let mut id = self.next_id.lock().expect("next_id mutex poisoned");
+    fn next_id(&self) -> Result<u64, AsrError> {
+        // Map a poisoned next_id mutex to a typed error instead of
+        // panicking on a future ASR call. The lock is held only during
+        // an integer increment, so poison is exceedingly unlikely —
+        // but per panops's "no panics in production" discipline, surface
+        // it cleanly.
+        let mut id = self
+            .next_id
+            .lock()
+            .map_err(|e| AsrError::Transcription(format!("next_id mutex poisoned: {e}")))?;
         let v = *id;
         *id += 1;
-        v
+        Ok(v)
     }
 }
 
@@ -120,11 +127,13 @@ impl WhisperKitAsr {
         sample_rate: u32,
         language_hint: Option<&str>,
     ) -> Result<Transcript, AsrError> {
-        let mut slot = self.state.lock().expect("sidecar state mutex poisoned");
+        let mut slot = self
+            .state
+            .lock()
+            .map_err(|e| AsrError::Transcription(format!("sidecar state mutex poisoned: {e}")))?;
         self.ensure_spawned(&mut slot)?;
-        let state = slot.as_mut().expect("just spawned");
 
-        let id = self.next_id();
+        let id = self.next_id()?;
         let req = RpcRequest {
             jsonrpc: "2.0",
             id,
@@ -139,18 +148,36 @@ impl WhisperKitAsr {
         };
         let body = serde_json::to_vec(&req)
             .map_err(|e| AsrError::Transcription(format!("encode: {e}")))?;
-        state
-            .stdin
-            .write_all(&body)
-            .and_then(|()| state.stdin.write_all(b"\n"))
-            .and_then(|()| state.stdin.flush())
-            .map_err(|e| AsrError::Transcription(format!("stdio write: {e}")))?;
+
+        // Clear the sidecar state on any stdio failure so the next call
+        // respawns cleanly. A BrokenPipe (sidecar died mid-write) without
+        // this would leave the slot populated and every subsequent call
+        // would fail on the same dead pipe.
+        let write_result = {
+            let state = slot.as_mut().expect("just spawned");
+            state
+                .stdin
+                .write_all(&body)
+                .and_then(|()| state.stdin.write_all(b"\n"))
+                .and_then(|()| state.stdin.flush())
+        };
+        if let Err(e) = write_result {
+            *slot = None;
+            return Err(AsrError::Transcription(format!("stdio write: {e}")));
+        }
 
         let mut line = String::new();
-        let n = state
-            .stdout
-            .read_line(&mut line)
-            .map_err(|e| AsrError::Transcription(format!("stdio read: {e}")))?;
+        let read_result = {
+            let state = slot.as_mut().expect("still spawned");
+            state.stdout.read_line(&mut line)
+        };
+        let n = match read_result {
+            Ok(n) => n,
+            Err(e) => {
+                *slot = None;
+                return Err(AsrError::Transcription(format!("stdio read: {e}")));
+            }
+        };
         if n == 0 {
             // Sidecar exited; drop the state so the next call respawns.
             *slot = None;
@@ -160,6 +187,17 @@ impl WhisperKitAsr {
         }
         let resp: RpcResponse = serde_json::from_str(line.trim_end())
             .map_err(|e| AsrError::Transcription(format!("decode: {e}")))?;
+        // Validate JSON-RPC id pairing. A mismatch means we lost framing
+        // alignment (sidecar emitted an unsolicited line, log noise on
+        // stdout, etc.) — the call/response stream is corrupt and the
+        // sidecar must be respawned.
+        if resp.id != id {
+            *slot = None;
+            return Err(AsrError::Transcription(format!(
+                "JSON-RPC id mismatch: expected {id}, got {}",
+                resp.id
+            )));
+        }
         if let Some(err) = resp.error {
             return Err(AsrError::Transcription(format!(
                 "sidecar error {}: {}",
@@ -243,7 +281,7 @@ mod tests {
     #[test]
     fn next_id_monotonic() {
         let asr = WhisperKitAsr::new(PathBuf::from("/nonexistent"));
-        let ids: Vec<u64> = (0..5).map(|_| asr.next_id()).collect();
+        let ids: Vec<u64> = (0..5).map(|_| asr.next_id().expect("next_id")).collect();
         assert_eq!(ids, vec![1, 2, 3, 4, 5]);
     }
 }
