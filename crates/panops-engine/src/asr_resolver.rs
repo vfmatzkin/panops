@@ -37,9 +37,12 @@ fn sidecar_binary() -> Option<std::path::PathBuf> {
     use std::os::unix::fs::PermissionsExt;
 
     let bin = std::env::var("PANOPS_ASR_SIDECAR_BIN").ok()?;
-    // Canonicalize before the metadata check so a symlink can't be
-    // swapped between validation and `Command::spawn` (TOCTOU). The
-    // resolved path is what we hand to `Command::new` below.
+    // Canonicalize before the metadata check to narrow the symlink-swap
+    // window between validation and `Command::spawn`. Note this is
+    // best-effort UX (clean fallback to whisper-rs on bad input), not
+    // a security boundary — a sufficiently fast swap *after* canonicalize
+    // can still race the spawn. The path is local-only and operator-set,
+    // so the threat model accepts this.
     let path = std::fs::canonicalize(bin).ok()?;
     let meta = std::fs::metadata(&path).ok()?;
     if !meta.is_file() {
