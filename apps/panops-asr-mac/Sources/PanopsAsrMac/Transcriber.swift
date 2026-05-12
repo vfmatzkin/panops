@@ -28,22 +28,27 @@ actor Transcriber {
         self.whisperKit = whisperKit
     }
 
-    /// Build a singleton Transcriber. Picks the smallest variant
-    /// containing "tiny" from upstream HF; falls back to a hardcoded
-    /// string if the list fetch fails (offline-ish path).
+    /// Build a singleton Transcriber. Picks `openai_whisper-base`
+    /// (multilingual, ~150 MB) by default — tiny's Spanish recall is
+    /// too low to pass the AsrProvider conformance suite on `es_30s.wav`.
+    /// Override via env var `PANOPS_WHISPERKIT_MODEL`. Falls back to a
+    /// hardcoded string if `fetchAvailableModels` fails (offline path).
     static func makeShared() async throws -> Transcriber {
+        let preferred = ProcessInfo.processInfo.environment["PANOPS_WHISPERKIT_MODEL"]
+            ?? "openai_whisper-base"
         let chosen: String
         do {
             let available = try await WhisperKit.fetchAvailableModels(
                 from: "argmaxinc/whisperkit-coreml"
             )
-            chosen = available.first(where: { $0.lowercased().contains("tiny") })
-                ?? "openai_whisper-tiny"
+            chosen = available.first(where: { $0 == preferred })
+                ?? available.first(where: { $0.contains(preferred) })
+                ?? preferred
         } catch {
             FileHandle.standardError.write(Data(
-                "Transcriber.makeShared: fetchAvailableModels failed (\(error)); falling back to openai_whisper-tiny\n".utf8
+                "Transcriber.makeShared: fetchAvailableModels failed (\(error)); using \(preferred)\n".utf8
             ))
-            chosen = "openai_whisper-tiny"
+            chosen = preferred
         }
         FileHandle.standardError.write(Data(
             "Transcriber.makeShared: loading variant \(chosen)\n".utf8
@@ -59,13 +64,23 @@ actor Transcriber {
         )
         var segments: [WireSegment] = []
         var lastEndMs: UInt64 = 0
+        var prevEnd: UInt64 = 0
         for r in results {
             // `language` is on the result, not per-segment — fan out
             // the top-level language across this result's segments.
             let resultLanguage = r.language
             for s in r.segments {
-                let startMs = UInt64(max(0, s.start * 1000.0))
-                let endMs = UInt64(max(0, s.end * 1000.0))
+                let rawStartMs = UInt64(max(0, s.start * 1000.0))
+                let rawEndMs = UInt64(max(0, s.end * 1000.0))
+                // WhisperKit's segment timestamps can have 1-ms rounding
+                // overlaps with the previous segment. The panops conformance
+                // suite (and downstream stitching in slice 07/08) requires
+                // strictly non-overlapping segments. Bump `start_ms` up to
+                // `prev_end_ms` to enforce monotonic timestamps without
+                // dropping any audio coverage.
+                let startMs = max(rawStartMs, prevEnd)
+                let endMs = max(startMs, rawEndMs)
+                prevEnd = endMs
                 lastEndMs = max(lastEndMs, endMs)
                 segments.append(WireSegment(
                     startMs: startMs,
