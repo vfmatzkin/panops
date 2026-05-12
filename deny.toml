@@ -25,6 +25,9 @@ allow = [
     # bzip2-1.0.6: permissive BSD-like license from the original bzip2 library.
     # Pulled in by libbz2-rs-sys (pure-Rust bzip2 impl) via our bzip2 dep.
     "bzip2-1.0.6",
+    # Zlib: permissive, OSI- and FSF-approved. Pulled in transitively
+    # by rusqlite 0.39's updated dependency chain.
+    "Zlib",
 ]
 confidence-threshold = 0.9
 exceptions = []
