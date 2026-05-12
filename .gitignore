@@ -30,6 +30,7 @@ Cargo.lock.bak
 DerivedData/
 *.xcworkspace/xcuserdata/
 .swiftpm/
+apps/*/.build/
 
 # ----- macOS -----
 .DS_Store
