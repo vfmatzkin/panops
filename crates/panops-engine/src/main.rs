@@ -17,7 +17,6 @@ use panops_core::notes::pipeline::NotesGenerator;
 use panops_core::storage::{MeetingDraft, NoteDraft, Storage};
 use panops_core::vad::Vad;
 use panops_portable::SherpaDiarizer;
-use panops_portable::WhisperRsAsr;
 use panops_portable::genai_llm::GenaiLlm;
 use panops_portable::markdown_exporter::MarkdownExporter;
 use panops_portable::model::{
@@ -522,7 +521,7 @@ fn transcribe(
     };
     let model_path =
         ensure_model(DEFAULT_MODEL_NAME, &model_path).map_err(|e| (3, e.to_string()))?;
-    let asr = WhisperRsAsr::new(model_path).map_err(|e| (3, e.to_string()))?;
+    let asr = panops_engine::asr_resolver::pick_asr(model_path).map_err(|e| (3, e.to_string()))?;
 
     let vad_path =
         panops_portable::model::default_vad_model_path().map_err(|e| (3, e.to_string()))?;
@@ -530,7 +529,7 @@ fn transcribe(
         panops_portable::model::ensure_vad_model(&vad_path).map_err(|e| (3, e.to_string()))?;
     let vad = panops_portable::WhisperVad::new(&vad_path).map_err(|e| (3, e.to_string()))?;
 
-    transcribe_with_vad(audio, &asr, &vad, language)
+    transcribe_with_vad(audio, &*asr, &vad, language)
 }
 
 fn diarize(audio: &std::path::Path) -> Result<Vec<panops_core::diar::SpeakerTurn>, (u8, String)> {
