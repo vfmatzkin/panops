@@ -46,10 +46,25 @@ final class AppViewModel: ObservableObject {
             state = .working(meetingId: meetingId, audioName: audio.lastPathComponent)
             startPolling(meetingId: meetingId)
         } catch let IpcClientError.rpcError(_, message) {
+            // RPC errors from the engine carry a curated, wire-safe
+            // message (slice 05 hardening); pass them through.
             state = .error(kind: "rpc_error", message: message)
         } catch {
-            state = .error(kind: "internal", message: "\(error)")
+            // Internal client errors may contain socket paths, NWError
+            // details, etc. — not safe for the UI. Log the full detail
+            // to stderr (Console.app) and show an opaque label.
+            Self.logFullError("notes.generate", error)
+            state = .error(kind: "internal", message: "Could not reach the engine.")
         }
+    }
+
+    /// Log the full error to stderr (matches slice-05/07 wire-side
+    /// sanitization pattern). Engine logs interleave with these via
+    /// the shared FileHandle.standardError pipe.
+    /// Non-isolated so detached tasks (polling loop) can call it.
+    nonisolated static func logFullError(_ op: String, _ error: any Error) {
+        let message = "panops-shell: \(op) failed: \(error)\n"
+        FileHandle.standardError.write(Data(message.utf8))
     }
 
     private func startPolling(meetingId: String) {
@@ -63,8 +78,9 @@ final class AppViewModel: ObservableObject {
             do {
                 meeting = try await client.meetingGet(id: meetingId)
             } catch {
+                Self.logFullError("meeting.get", error)
                 await MainActor.run {
-                    self?.state = .error(kind: "internal", message: "meeting.get failed: \(error)")
+                    self?.state = .error(kind: "internal", message: "Lost contact with the engine.")
                 }
                 return
             }
@@ -89,7 +105,32 @@ final class AppViewModel: ObservableObject {
     }
 
     func reveal(_ path: String) {
-        let url = URL(fileURLWithPath: path)
+        // Defense in depth: the engine's `meeting.get` returns a
+        // `dir_path` that should always live under panops's data dir
+        // (~/Library/Application Support/panops/meetings/<uuid>/).
+        // Validate before handing to NSWorkspace so a corrupted /
+        // misconfigured engine response can't open Finder at an
+        // arbitrary filesystem location.
+        let panopsRoot = FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/panops/")
+            .standardizedFileURL
+            .path
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard url.path.hasPrefix(panopsRoot) else {
+            Self.logFullError(
+                "reveal",
+                NSError(
+                    domain: "PanopsShell",
+                    code: 1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "refusing to reveal path outside panops data dir: \(path)"
+                    ]
+                )
+            )
+            return
+        }
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 

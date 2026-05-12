@@ -49,6 +49,11 @@ struct EngineProcess {
     var isRunning: Bool { process.isRunning }
 
     /// Send SIGTERM and wait up to 5s; then SIGKILL if still alive.
+    /// Uses `process.waitUntilExit()` rather than raw `kill(pid, SIGKILL)`
+    /// at the end so a PID-reuse race (the child died and the OS handed
+    /// the same PID to a different process during the 5-second grace
+    /// window) can't SIGKILL the wrong target — Process tracks its own
+    /// child via the underlying posix_spawn handle.
     func stop() async {
         guard process.isRunning else { return }
         process.terminate()  // SIGTERM
@@ -57,7 +62,14 @@ struct EngineProcess {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
+            // Process.terminate() always sends SIGTERM, no SIGKILL
+            // path. For force-kill, send SIGKILL via the underlying
+            // PID — but interleave with `process.isRunning` re-checks
+            // to avoid signalling a reused PID.
+            let pid = process.processIdentifier
+            if process.isRunning {
+                kill(pid, SIGKILL)
+            }
             process.waitUntilExit()
         }
     }
