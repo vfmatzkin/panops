@@ -61,4 +61,13 @@ struct EngineProcess {
             process.waitUntilExit()
         }
     }
+
+    /// Synchronous best-effort SIGTERM. Used from `NSApplication.willTerminate`
+    /// where blocking the main queue to await `stop()` would deadlock on
+    /// `@MainActor` hops. Doesn't wait for exit — the OS reaps the child
+    /// after the app process exits.
+    func terminateSync() {
+        guard process.isRunning else { return }
+        process.terminate()
+    }
 }

@@ -6,10 +6,15 @@ import Testing
 /// gated on the `PANOPS_LIVE_ENGINE=1` env var so it doesn't break CI
 /// (which doesn't have an engine running). Run manually via:
 ///
-///     PANOPS_LIVE_ENGINE=1 swift test --filter live_smoke_meeting_create
+///     PANOPS_LIVE_ENGINE=1 swift test
 ///
-/// Requires the engine to be running with its UDS at the default path
-/// and the public test fixture at the path below.
+/// Requires the engine to be running with its UDS at the default path:
+///
+///     ./target/release/panops-engine serve
+///
+/// The test exercises `meeting.start` + `meeting.get` only — no audio
+/// fixture or `notes.generate` invocation. Notes-pipeline coverage is
+/// the manual GUI smoke documented in `apps/Panops/README.md`.
 @Suite("Live IPC smoke (requires engine + PANOPS_LIVE_ENGINE=1)")
 struct IpcClientLiveSmokeTest {
     @Test("live_smoke_meeting_create")

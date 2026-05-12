@@ -54,16 +54,17 @@ final class AppViewModel: ObservableObject {
 
     private func startPolling(meetingId: String) {
         pollingTask?.cancel()
-        pollingTask = Task { [weak self] in
-            guard let self else { return }
-            // Fetch the meeting once to learn its dir_path; subsequent
-            // polls just stat the filesystem.
+        let client = self.client
+        // Run the polling loop on a detached task so the 2s sleep and
+        // FileManager.fileExists checks don't occupy the @MainActor's
+        // run loop. State updates hop back to MainActor explicitly.
+        pollingTask = Task.detached { [weak self] in
             let meeting: Meeting
             do {
-                meeting = try await self.client.meetingGet(id: meetingId)
+                meeting = try await client.meetingGet(id: meetingId)
             } catch {
                 await MainActor.run {
-                    self.state = .error(kind: "internal", message: "meeting.get failed: \(error)")
+                    self?.state = .error(kind: "internal", message: "meeting.get failed: \(error)")
                 }
                 return
             }
@@ -73,12 +74,13 @@ final class AppViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if FileManager.default.fileExists(atPath: notesPath) {
                     await MainActor.run {
-                        self.state = .done(notesPath: notesPath)
+                        self?.state = .done(notesPath: notesPath)
                     }
                     return
                 }
             }
             await MainActor.run {
+                guard let self else { return }
                 if case .working = self.state {
                     self.state = .error(kind: "timeout", message: "notes.generate did not complete within 5 minutes")
                 }
