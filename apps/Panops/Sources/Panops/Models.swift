@@ -81,17 +81,19 @@ enum IpcEvent: Decodable {
 }
 
 /// Minimal JSON-RPC 2.0 envelopes (request and response).
+/// jsonrpsee uses positional params: each method takes exactly one
+/// argument, wrapped in a 1-element array on the wire.
 struct JsonRpcRequest<P: Encodable>: Encodable {
     let jsonrpc: String
     let id: UInt64
     let method: String
-    let params: P
+    let params: [P]
 
-    init(id: UInt64, method: String, params: P) {
+    init(id: UInt64, method: String, param: P) {
         self.jsonrpc = "2.0"
         self.id = id
         self.method = method
-        self.params = params
+        self.params = [param]
     }
 }
 
@@ -117,33 +119,26 @@ struct MeetingGetParams: Encodable {
     let id: String
 }
 
-/// Response from `ipc.meeting.start` — slice-09 uses the returned
-/// meeting_id as the polling target.
-struct MeetingStartResult: Decodable {
-    let meetingId: String
-
-    enum CodingKeys: String, CodingKey {
-        case meetingId = "meeting_id"
-    }
-}
-
-/// Response from `ipc.meeting.get`. Only the fields slice 09 needs.
-/// `note` is non-nil once `notes.generate` has written a row.
-struct MeetingDetail: Decodable {
+/// Response from `ipc.meeting.get`. Mirrors `panops-protocol::Meeting`.
+/// `dir_path` is where notes.md eventually lands; slice 09 polls
+/// `<dirPath>/notes.md` on disk to detect completion (the IPC's
+/// Meeting type doesn't include note-file metadata).
+struct Meeting: Decodable {
     let id: String
-    let note: MeetingNoteRef?
+    let title: String
+    let startedAt: String
+    let endedAt: String?
+    let durationMs: UInt64?
+    let language: String
+    let dirPath: String
 
     enum CodingKeys: String, CodingKey {
         case id
-        case note
-    }
-}
-
-/// The note attached to a meeting once `notes.generate` completes.
-struct MeetingNoteRef: Decodable {
-    let primaryPath: String
-
-    enum CodingKeys: String, CodingKey {
-        case primaryPath = "primary_path"
+        case title
+        case startedAt = "started_at"
+        case endedAt = "ended_at"
+        case durationMs = "duration_ms"
+        case language
+        case dirPath = "dir_path"
     }
 }

@@ -11,12 +11,12 @@ struct IpcClientCodecTests {
     }
     private let decoder = JSONDecoder()
 
-    @Test("notesGenerate request encodes params")
+    @Test("notesGenerate request encodes params as positional array")
     func notesGenerateRequest_encodesParams() throws {
         let req = JsonRpcRequest(
             id: 1,
             method: "ipc.notes.generate",
-            params: NotesGenerateParams(
+            param: NotesGenerateParams(
                 audio: "/tmp/x.wav",
                 dialect: nil,
                 language: nil,
@@ -33,6 +33,8 @@ struct IpcClientCodecTests {
         #expect(json.contains("\"audio\":\"\\/tmp\\/x.wav\""), "missing audio field: \(json)")
         #expect(json.contains("\"method\":\"ipc.notes.generate\""), "method missing: \(json)")
         #expect(json.contains("\"jsonrpc\":\"2.0\""), "jsonrpc version missing: \(json)")
+        // jsonrpsee uses positional params: the single arg is wrapped in a 1-element array.
+        #expect(json.contains("\"params\":[{"), "expected positional-array params, got: \(json)")
         // Swift's JSONEncoder omits nil optionals entirely (not encoded as null).
         #expect(!json.contains("\"language\":"), "expected language field to be omitted: \(json)")
     }
