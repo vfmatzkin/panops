@@ -53,7 +53,7 @@ jobs:
   # job above (clippy uses `--all-targets` so it compiles every test crate).
   # Wall clock target: ~3-5 min on macos-latest.
   test:
-    name: test (macos)
+    name: test (macos-latest)
     runs-on: macos-latest
     env:
       PANOPS_SKIP_HEAVY: "1"
