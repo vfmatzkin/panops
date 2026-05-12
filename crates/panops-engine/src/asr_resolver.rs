@@ -37,7 +37,10 @@ fn sidecar_binary() -> Option<std::path::PathBuf> {
     use std::os::unix::fs::PermissionsExt;
 
     let bin = std::env::var("PANOPS_ASR_SIDECAR_BIN").ok()?;
-    let path = std::path::PathBuf::from(bin);
+    // Canonicalize before the metadata check so a symlink can't be
+    // swapped between validation and `Command::spawn` (TOCTOU). The
+    // resolved path is what we hand to `Command::new` below.
+    let path = std::fs::canonicalize(bin).ok()?;
     let meta = std::fs::metadata(&path).ok()?;
     if !meta.is_file() {
         return None;
