@@ -5,6 +5,7 @@ struct PanopsApp: App {
     @StateObject private var viewModel: AppViewModel
     @State private var engine: EngineProcess?
     @State private var startupError: String?
+    @State private var willTerminateObserver: NSObjectProtocol?
 
     init() {
         let socketPath = FileManager.default
@@ -45,16 +46,25 @@ struct PanopsApp: App {
             """
             return
         } catch {
-            startupError = "\(error)"
+            AppViewModel.logFullError("engine.start", error)
+            startupError = "Could not start the engine. See Console.app for detail."
             return
         }
         do {
             try await viewModel.connect()
         } catch {
-            startupError = "IPC connect failed: \(error)"
+            AppViewModel.logFullError("ipc.connect", error)
+            startupError = "Could not connect to the engine. See Console.app for detail."
             return
         }
-        NotificationCenter.default.addObserver(
+        // Remove a prior observer if bootstrap somehow fires twice
+        // (SwiftUI lifecycle quirks or future refactors). Otherwise
+        // the stale observer would SIGTERM the old engine while the
+        // new one leaks.
+        if let prior = willTerminateObserver {
+            NotificationCenter.default.removeObserver(prior)
+        }
+        willTerminateObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main

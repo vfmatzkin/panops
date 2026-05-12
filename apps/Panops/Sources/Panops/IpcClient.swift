@@ -36,10 +36,14 @@ actor IpcClient {
 
     /// Probe the socket is bindable. Returns when the engine accepts
     /// one connection (5s deadline with exponential backoff).
+    /// Cancellation-aware: if the caller cancels (e.g. app quits while
+    /// the engine is slow to start), exits promptly via
+    /// `Task.checkCancellation()`.
     func connect() async throws {
         let deadline = Date().addingTimeInterval(5)
         var delayMs: UInt64 = 100
         while Date() < deadline {
+            try Task.checkCancellation()
             let conn = NWConnection(to: endpoint, using: .tcp)
             defer { conn.cancel() }
             do {
@@ -47,6 +51,7 @@ actor IpcClient {
                 return
             } catch {
                 try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+                try Task.checkCancellation()
                 delayMs = min(delayMs * 2, 1_500)
             }
         }
@@ -153,6 +158,12 @@ actor IpcClient {
         return req
     }
 
+    /// Maximum bytes the HTTP header section is allowed to occupy
+    /// before we give up and treat the response as malformed. The
+    /// engine's responses are tiny (typically <300 bytes including
+    /// JSON body); 8 KB is several orders of magnitude of safety.
+    private static let maxHeaderBytes = 8 * 1024
+
     private static func readHttpResponse(_ conn: NWConnection) async throws -> (status: Int, body: Data) {
         // Read until \r\n\r\n to separate header from body, then read
         // body length per Content-Length. Engine sets Connection: close
@@ -174,6 +185,12 @@ actor IpcClient {
                 }
             }
             buffer.append(chunk)
+            if buffer.count > Self.maxHeaderBytes,
+                buffer.range(of: Data("\r\n\r\n".utf8)) == nil {
+                throw IpcClientError.decode(
+                    "HTTP header exceeded \(Self.maxHeaderBytes) bytes without separator"
+                )
+            }
             if let sepRange = buffer.range(of: Data("\r\n\r\n".utf8)) {
                 let headerData = buffer.subdata(in: buffer.startIndex..<sepRange.lowerBound)
                 let bodyStart = sepRange.upperBound
