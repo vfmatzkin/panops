@@ -36,4 +36,19 @@ struct IpcClientLiveSmokeTest {
         // dir_path should be absolute under the engine's data_dir.
         #expect(meeting.dirPath.hasPrefix("/"), "dir_path should be absolute: \(meeting.dirPath)")
     }
+
+    @Test("wsConnect_returns_101_on_upgrade")
+    func wsConnectReturns101() async throws {
+        guard ProcessInfo.processInfo.environment["PANOPS_LIVE_ENGINE"] == "1" else {
+            return
+        }
+        let socketPath = FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/panops/engine.sock")
+        let client = IpcClient(socketPath: socketPath)
+        try await client.wsConnect()
+        // Success means we got HTTP 101 and the connection is stored
+        // The actual WebSocket frame handling is tested separately
+        await client.disconnect()
+    }
 }

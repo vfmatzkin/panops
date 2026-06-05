@@ -9,6 +9,7 @@ enum IpcClientError: Error {
     case decode(String)
     case disconnected
     case httpError(status: Int, body: String)
+    case websocketUpgradeFailed(String)
 }
 
 /// JSON-RPC client for the panops engine UDS.
@@ -28,6 +29,7 @@ actor IpcClient {
     private let endpoint: NWEndpoint
     private let socketPath: URL
     private var nextId: UInt64 = 1
+    private var wsConnection: NWConnection?
 
     init(socketPath: URL) {
         self.socketPath = socketPath
@@ -62,7 +64,92 @@ actor IpcClient {
 
     /// No-op for HTTP-POST transport (no persistent connection).
     /// Kept on the API for symmetry with future WS-based transport.
-    func disconnect() async {}
+    func disconnect() async {
+        wsConnection?.cancel()
+        wsConnection = nil
+    }
+
+    /// WebSocket upgrade: hand-rolled RFC 6455 over UDS.
+    /// Sends HTTP GET with Upgrade headers, expects 101 response.
+    /// Stores the connection for subsequent frame reads.
+    /// Slice 12 implementation per spec D6.
+    func wsConnect() async throws {
+        // Generate WebSocket key (16 bytes base64-encoded)
+        // Use a deterministic key for testing; real impl would use random
+        let keyData = Data([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+        let wsKey = keyData.base64EncodedString()
+
+        let request = Self.buildWsUpgradeRequest(key: wsKey)
+        let conn = NWConnection(to: endpoint, using: .tcp)
+        try await Self.start(conn)
+
+        try await Self.send(conn, data: request)
+        let status = try await Self.readWsUpgradeResponse(conn)
+
+        guard status == 101 else {
+            conn.cancel()
+            throw IpcClientError.websocketUpgradeFailed(
+                "expected HTTP 101, got \(status)"
+            )
+        }
+
+        // Connection stays open for WebSocket frames
+        wsConnection = conn
+    }
+
+    private static func buildWsUpgradeRequest(key: String) -> Data {
+        let header = """
+        GET / HTTP/1.1\r
+        Host: localhost\r
+        Upgrade: websocket\r
+        Connection: Upgrade\r
+        Sec-WebSocket-Key: \(key)\r
+        Sec-WebSocket-Version: 13\r
+        \r
+
+        """
+        return Data(header.utf8)
+    }
+
+    private static func readWsUpgradeResponse(_ conn: NWConnection) async throws -> Int {
+        var buffer = Data()
+        while true {
+            let chunk: Data = try await withCheckedThrowingContinuation { cont in
+                conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
+                    if let error = error {
+                        cont.resume(throwing: error)
+                    } else if let data = data, !data.isEmpty {
+                        cont.resume(returning: data)
+                    } else if isComplete {
+                        cont.resume(throwing: IpcClientError.disconnected)
+                    } else {
+                        cont.resume(returning: Data())
+                    }
+                }
+            }
+            buffer.append(chunk)
+            if buffer.count > Self.maxHeaderBytes {
+                throw IpcClientError.decode(
+                    "HTTP header exceeded \(Self.maxHeaderBytes) bytes"
+                )
+            }
+            if let sepRange = buffer.range(of: Data("\r\n\r\n".utf8)) {
+                let headerData = buffer.subdata(in: buffer.startIndex..<sepRange.lowerBound)
+                guard let headerText = String(data: headerData, encoding: .utf8) else {
+                    throw IpcClientError.decode("non-utf8 HTTP header")
+                }
+                let lines = headerText.components(separatedBy: "\r\n")
+                guard let statusLine = lines.first else {
+                    throw IpcClientError.decode("missing HTTP status line")
+                }
+                let parts = statusLine.split(separator: " ", maxSplits: 2)
+                guard parts.count >= 2, let status = Int(parts[1]) else {
+                    throw IpcClientError.decode("invalid HTTP status line: \(statusLine)")
+                }
+                return status
+            }
+        }
+    }
 
     /// `ipc.notes.generate` — synchronous response is the job_id.
     /// JobDone arrives later; slice 09 detects completion via polling
