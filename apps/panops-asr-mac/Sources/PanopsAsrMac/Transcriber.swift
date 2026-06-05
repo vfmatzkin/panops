@@ -20,7 +20,14 @@ private func stripSpecialTokens(_ s: String) -> String {
 }
 
 actor Transcriber {
-    private let whisperKit: WhisperKit
+    // `nonisolated(unsafe)`: WhisperKit is not Sendable, so calling its
+    // nonisolated `transcribe` from this actor would "send" actor-isolated
+    // state across isolation (a hard error under newer Swift toolchains).
+    // The sidecar's stdio loop is single-flight (one request awaited at a
+    // time), so transcribe is never invoked concurrently — the access is
+    // serialized in practice. Marking the immutable handle nonisolated is
+    // the minimal, safe fix.
+    private nonisolated(unsafe) let whisperKit: WhisperKit
     private let modelName: String
 
     private init(modelName: String, whisperKit: WhisperKit) {
