@@ -10,6 +10,81 @@ enum IpcClientError: Error {
     case disconnected
     case httpError(status: Int, body: String)
     case websocketUpgradeFailed(String)
+    case websocketFrameError(String)
+}
+
+/// Minimal WebSocket frame parser per RFC 6455.
+/// Handles text frames (opcode 0x01) with FIN=1 only.
+/// Unmaskes client-to-server frames, decodes payload as JSON.
+/// Slice 12 implementation per spec D6.
+struct WsFrameParser {
+    /// Parse a single WebSocket frame from raw bytes.
+    /// Returns decoded JSON data for text frames, nil for non-text.
+    static func parse(_ data: Data) throws -> Data? {
+        guard data.count >= 2 else {
+            throw IpcClientError.websocketFrameError("frame too short")
+        }
+
+        let fin = (data[0] & 0x80) != 0
+        let opcode = data[0] & 0x0F
+        let masked = (data[1] & 0x80) != 0
+        var payloadLen = Int(data[1] & 0x7F)
+
+        // Only handle text frames (opcode 0x01)
+        guard opcode == 0x01 else {
+            return nil // ignore binary/ping/close
+        }
+
+        // Only handle FIN=1 frames (no fragmentation)
+        guard fin else {
+            return nil // ignore fragmented frames
+        }
+
+        // Calculate header offset based on payload length encoding
+        var offset = 2
+        if payloadLen == 126 {
+            guard data.count >= 4 else {
+                throw IpcClientError.websocketFrameError("extended length missing")
+            }
+            payloadLen = Int(data[2]) << 8 | Int(data[3])
+            offset = 4
+        } else if payloadLen == 127 {
+            guard data.count >= 10 else {
+                throw IpcClientError.websocketFrameError("extended length missing")
+            }
+            // For our use case, we only need 32-bit length
+            payloadLen = Int(data[6]) << 24 | Int(data[7]) << 16 | Int(data[8]) << 8 | Int(data[9])
+            offset = 10
+        }
+
+        // Check for masking key if masked
+        let maskingKeyOffset = offset
+        if masked {
+            guard data.count >= offset + 4 + payloadLen else {
+                throw IpcClientError.websocketFrameError("frame truncated")
+            }
+            offset += 4
+        } else {
+            guard data.count >= offset + payloadLen else {
+                throw IpcClientError.websocketFrameError("frame truncated")
+            }
+        }
+
+        // Extract and unmask payload
+        let payloadStart = offset
+        let payloadData = data.subdata(in: payloadStart..<payloadStart + payloadLen)
+
+        if masked {
+            let mask = data.subdata(in: maskingKeyOffset..<maskingKeyOffset + 4)
+            var unmasked = Data(count: payloadLen)
+            for i in 0..<payloadLen {
+                unmasked[i] = payloadData[i] ^ mask[i % 4]
+            }
+            return unmasked
+        } else {
+            return payloadData
+        }
+    }
 }
 
 /// JSON-RPC client for the panops engine UDS.

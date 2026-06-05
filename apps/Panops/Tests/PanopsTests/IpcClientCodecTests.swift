@@ -96,4 +96,49 @@ struct IpcClientCodecTests {
         }
         #expect(type == "asr.partial")
     }
+
+    // MARK: - WebSocket frame parser tests
+
+    @Test("wsFrameParser_unmasked_text_frame")
+    func wsFrameParser_unmaskedTextFrame() throws {
+        // Text frame (opcode 0x01), FIN=1, unmasked, payload "Hello"
+        // Frame: 0x81 0x05 H e l l o
+        let payload = "Hello".data(using: .utf8)!
+        var frame = Data([0x81, 0x05]) // FIN=1, opcode=1, length=5
+        frame.append(payload)
+
+        let result = try WsFrameParser.parse(frame)
+        #expect(result != nil)
+        #expect(result == payload)
+    }
+
+    @Test("wsFrameParser_masked_text_frame")
+    func wsFrameParser_maskedTextFrame() throws {
+        // Text frame (opcode 0x01), FIN=1, masked
+        // Mask key: [0x01, 0x02, 0x03, 0x04]
+        // Payload "Hello" (0x48 0x65 0x6C 0x6C 0x6F) masked becomes:
+        // 0x48 ^ 0x01 = 0x49, 0x65 ^ 0x02 = 0x67, etc.
+        let maskKey = Data([0x01, 0x02, 0x03, 0x04])
+        let originalPayload = "Hello".data(using: .utf8)!
+        var maskedPayload = Data(count: originalPayload.count)
+        for i in 0..<originalPayload.count {
+            maskedPayload[i] = originalPayload[i] ^ maskKey[i % 4]
+        }
+
+        var frame = Data([0x81, 0x85]) // FIN=1, opcode=1, masked=1, length=5
+        frame.append(maskKey)
+        frame.append(maskedPayload)
+
+        let result = try WsFrameParser.parse(frame)
+        #expect(result != nil)
+        #expect(result == originalPayload)
+    }
+
+    @Test("wsFrameParser_ignores_binary_frame")
+    func wsFrameParser_ignoresBinaryFrame() throws {
+        // Binary frame (opcode 0x02), FIN=1, unmasked
+        let frame = Data([0x82, 0x02, 0xAB, 0xCD])
+        let result = try WsFrameParser.parse(frame)
+        #expect(result == nil, "binary frames should be ignored")
+    }
 }
