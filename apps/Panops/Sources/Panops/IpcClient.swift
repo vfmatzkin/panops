@@ -172,6 +172,171 @@ actor IpcClient {
         wsConnection = conn
     }
 
+    /// Subscribe to IPC events via WebSocket.
+    /// Sends `ipc.events.subscribe` and returns an AsyncStream of decoded events.
+    /// Requires wsConnect() to have been called first.
+    /// Slice 12 implementation per spec D6.
+    func subscribeEvents() async throws -> AsyncStream<IpcEvent> {
+        guard let conn = wsConnection else {
+            throw IpcClientError.websocketUpgradeFailed(
+                "wsConnect() must be called before subscribeEvents()"
+            )
+        }
+
+        // Send ipc.events.subscribe as a WebSocket text frame
+        let id = nextId
+        nextId += 1
+        let subscribeRequest = JsonRpcRequest(id: id, method: "ipc.events.subscribe", param: EmptyParams())
+        let body = try JSONEncoder().encode(subscribeRequest)
+        let frame = Self.buildWsTextFrame(body)
+        try await Self.send(conn, data: frame)
+
+        // Create AsyncStream that yields decoded events
+        return AsyncStream { continuation in
+            Task {
+                var buffer = Data()
+                while !Task.isCancelled {
+                    do {
+                        let chunk: Data = try await withCheckedThrowingContinuation { cont in
+                            conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
+                                if let error = error {
+                                    cont.resume(throwing: error)
+                                } else if let data = data, !data.isEmpty {
+                                    cont.resume(returning: data)
+                                } else if isComplete {
+                                    cont.resume(throwing: IpcClientError.disconnected)
+                                } else {
+                                    cont.resume(returning: Data())
+                                }
+                            }
+                        }
+                        buffer.append(chunk)
+
+                        // Try to parse frames from buffer
+                        // parseFrameFromBuffer returns Data? - nil for non-text or incomplete
+                        let parseResult = try Self.parseFrameFromBuffer(&buffer)
+                        if let eventData = parseResult {
+                            let event = try JSONDecoder().decode(IpcEvent.self, from: eventData)
+                            continuation.yield(event)
+                        }
+                    } catch {
+                        continuation.finish()
+                        break
+                    }
+                }
+                continuation.finish()
+            }
+        }
+    }
+
+    /// Build a WebSocket text frame with masked payload (client-to-server).
+    private static func buildWsTextFrame(_ payload: Data) -> Data {
+        // Client frames must be masked per RFC 6455
+        let maskKey: [UInt8] = [0x01, 0x02, 0x03, 0x04] // deterministic for testing
+        var frame = Data()
+
+        // FIN=1, opcode=0x01 (text)
+        frame.append(0x81)
+
+        // Masked bit + length
+        let len = payload.count
+        if len <= 125 {
+            frame.append(0x80 | UInt8(len))
+        } else if len <= 65535 {
+            frame.append(0x80 | 126)
+            frame.append(UInt8(len >> 8))
+            frame.append(UInt8(len & 0xFF))
+        } else {
+            frame.append(0x80 | 127)
+            // 8-byte length (we only need 4 bytes for reasonable payloads)
+            frame.append(contentsOf: [0, 0, 0, 0])
+            frame.append(UInt8(len >> 24))
+            frame.append(UInt8((len >> 16) & 0xFF))
+            frame.append(UInt8((len >> 8) & 0xFF))
+            frame.append(UInt8(len & 0xFF))
+        }
+
+        // Masking key
+        frame.append(contentsOf: maskKey)
+
+        // Masked payload
+        for i in 0..<payload.count {
+            frame.append(payload[i] ^ maskKey[i % 4])
+        }
+
+        return frame
+    }
+
+    /// Parse a single frame from the buffer, removing consumed bytes.
+    /// Returns the payload data for text frames, nil for non-text or incomplete.
+    private static func parseFrameFromBuffer(_ buffer: inout Data) throws -> Data? {
+        guard buffer.count >= 2 else { return nil }
+
+        let fin = (buffer[0] & 0x80) != 0
+        let opcode = buffer[0] & 0x0F
+        var payloadLen = Int(buffer[1] & 0x7F)
+
+        // Only handle text frames
+        guard opcode == 0x01 else {
+            // Skip non-text frames by parsing length and removing from buffer
+            let frameLen = Self.calculateFrameLength(buffer)
+            if frameLen > 0 && buffer.count >= frameLen {
+                buffer = Data(buffer.dropFirst(frameLen))
+                return nil // Continue parsing
+            }
+            return nil // Need more data
+        }
+
+        // Only handle FIN=1 frames
+        guard fin else { return nil }
+
+        // Calculate header size
+        var headerSize = 2
+        if payloadLen == 126 {
+            guard buffer.count >= 4 else { return nil }
+            payloadLen = Int(buffer[2]) << 8 | Int(buffer[3])
+            headerSize = 4
+        } else if payloadLen == 127 {
+            guard buffer.count >= 10 else { return nil }
+            payloadLen = Int(buffer[6]) << 24 | Int(buffer[7]) << 16 | Int(buffer[8]) << 8 | Int(buffer[9])
+            headerSize = 10
+        }
+
+        // Server frames are unmasked
+        let totalLen = headerSize + payloadLen
+        guard buffer.count >= totalLen else { return nil }
+
+        // Extract payload
+        let payload = Data(buffer.subdata(in: headerSize..<totalLen))
+        buffer = Data(buffer.dropFirst(totalLen))
+        return payload
+    }
+
+    /// Calculate total frame length for any frame type.
+    private static func calculateFrameLength(_ buffer: Data) -> Int {
+        guard buffer.count >= 2 else { return 0 }
+
+        var payloadLen = Int(buffer[1] & 0x7F)
+        var headerSize = 2
+
+        if payloadLen == 126 {
+            guard buffer.count >= 4 else { return 0 }
+            payloadLen = Int(buffer[2]) << 8 | Int(buffer[3])
+            headerSize = 4
+        } else if payloadLen == 127 {
+            guard buffer.count >= 10 else { return 0 }
+            payloadLen = Int(buffer[6]) << 24 | Int(buffer[7]) << 16 | Int(buffer[8]) << 8 | Int(buffer[9])
+            headerSize = 10
+        }
+
+        let masked = (buffer[1] & 0x80) != 0
+        if masked {
+            headerSize += 4 // masking key
+        }
+
+        return headerSize + payloadLen
+    }
+
     private static func buildWsUpgradeRequest(key: String) -> Data {
         let header = """
         GET / HTTP/1.1\r
