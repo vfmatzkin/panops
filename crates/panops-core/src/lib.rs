@@ -1,6 +1,7 @@
 //! panops-core: domain types and ports. Zero platform code.
 
 pub mod asr;
+pub mod capture;
 pub mod conformance;
 pub mod diar;
 pub mod exporter;
@@ -13,6 +14,9 @@ pub mod vad;
 pub mod wer;
 
 pub use asr::{AsrError, AsrProvider};
+pub use capture::{
+    AudioSources, Capture, CaptureConfig, CaptureError, CaptureResult, CaptureSession,
+};
 pub use diar::{DiarError, Diarizer, SpeakerTurn};
 pub use exporter::{ExportArtifact, ExportError, NotesExporter};
 pub use llm::{LlmError, LlmProvider, LlmRequest, LlmResponse};

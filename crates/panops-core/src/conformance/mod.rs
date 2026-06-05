@@ -4,6 +4,7 @@
 //! from their own integration tests.
 
 pub mod asr;
+pub mod capture;
 pub mod diar;
 pub mod exporter;
 pub mod fakes;

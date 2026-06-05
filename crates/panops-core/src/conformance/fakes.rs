@@ -659,3 +659,159 @@ mod storage_fake_tests {
         run_suite(&InMemoryStorage::new());
     }
 }
+
+// === FakeCapture ============================================
+
+use std::f32::consts::PI;
+use std::path::PathBuf;
+
+use crate::capture::{Capture, CaptureConfig, CaptureError, CaptureResult, CaptureSession};
+
+/// A fake `Capture` adapter for testing. Produces:
+/// - A synthetic 440 Hz sine wave PCM written to a WAV file via `hound`.
+/// - Pre-generated screenshot fixtures from `tests/fixtures/screenshots/`.
+///
+/// Thread-safe: sessions are tracked in an internal `Mutex<HashMap>`.
+pub struct FakeCapture {
+    sessions: Mutex<std::collections::HashMap<String, (PathBuf, u64)>>,
+}
+
+impl Default for FakeCapture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FakeCapture {
+    pub fn new() -> Self {
+        Self {
+            sessions: Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+}
+
+impl Capture for FakeCapture {
+    fn start_capture(
+        &self,
+        meeting_id: &str,
+        meeting_dir: &std::path::Path,
+        _config: &CaptureConfig,
+    ) -> Result<CaptureSession, CaptureError> {
+        let started_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| CaptureError::Capture(e.to_string()))?
+            .as_millis() as u64;
+
+        // Store session info for stop_capture.
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| CaptureError::Capture("mutex poisoned".into()))?;
+        sessions.insert(
+            meeting_id.to_string(),
+            (meeting_dir.to_path_buf(), started_at_ms),
+        );
+
+        Ok(CaptureSession {
+            meeting_id: meeting_id.to_string(),
+            started_at_ms,
+        })
+    }
+
+    fn stop_capture(&self, session: &CaptureSession) -> Result<CaptureResult, CaptureError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| CaptureError::Capture("mutex poisoned".into()))?;
+        let (meeting_dir, started_at_ms) = sessions
+            .remove(&session.meeting_id)
+            .ok_or_else(|| CaptureError::SessionNotFound(session.meeting_id.clone()))?;
+
+        // Compute duration (at least 1s for valid WAV).
+        let ended_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| CaptureError::Capture(e.to_string()))?
+            .as_millis() as u64;
+        let duration_ms = (ended_at_ms - started_at_ms).max(1000);
+
+        // Generate synthetic 440 Hz sine wave WAV at 16 kHz mono.
+        let audio_path = meeting_dir.join("audio.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&audio_path, spec)
+            .map_err(|e| CaptureError::Capture(e.to_string()))?;
+
+        // Compute number of samples for the duration.
+        let num_samples = (16_000 * duration_ms / 1000) as usize;
+        let freq = 440.0;
+        for i in 0..num_samples {
+            let t = i as f32 / 16_000.0_f32;
+            let sample = (2.0_f32 * PI * freq * t).sin();
+            let amplitude = (sample * 0.3 * i16::MAX as f32) as i16; // 30% volume
+            writer
+                .write_sample(amplitude)
+                .map_err(|e| CaptureError::Capture(e.to_string()))?;
+        }
+        writer
+            .finalize()
+            .map_err(|e| CaptureError::Capture(e.to_string()))?;
+
+        // Copy screenshot fixtures from tests/fixtures/screenshots/.
+        let screenshots_dir = meeting_dir.join("screenshots");
+        std::fs::create_dir_all(&screenshots_dir).map_err(CaptureError::Io)?;
+
+        let workspace_root = meeting_dir
+            .ancestors()
+            .find(|p| p.join("tests/fixtures/screenshots").is_dir())
+            .ok_or_else(|| CaptureError::Capture("workspace fixtures not found".into()))?;
+
+        let fixtures_screenshots = workspace_root.join("tests/fixtures/screenshots");
+        let mut screenshot_paths: Vec<PathBuf> = Vec::new();
+
+        // Copy first 3 fixture screenshots (or fewer if not available).
+        for i in 1..=3 {
+            let fixture_name = format!("{:03}.jpg", i);
+            let fixture_path = fixtures_screenshots.join(&fixture_name);
+            if fixture_path.exists() {
+                let dest_path = screenshots_dir.join(&fixture_name);
+                std::fs::copy(&fixture_path, &dest_path).map_err(CaptureError::Io)?;
+                screenshot_paths.push(dest_path);
+            }
+        }
+
+        Ok(CaptureResult {
+            audio_path,
+            screenshot_paths,
+            duration_ms,
+        })
+    }
+
+    fn is_fake(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod capture_fake_tests {
+    use super::FakeCapture;
+    use crate::conformance::capture::run_suite;
+    use std::path::PathBuf;
+
+    fn fixtures_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find(|p| p.join("tests/fixtures/screenshots").is_dir())
+            .expect("workspace root with fixtures")
+            .join("tests/fixtures")
+    }
+
+    #[test]
+    fn fake_capture_passes_conformance() {
+        let adapter = FakeCapture::new();
+        run_suite(&adapter, &fixtures_dir());
+    }
+}
