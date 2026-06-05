@@ -74,13 +74,15 @@ final class AppViewModel: ObservableObject {
         // FileManager.fileExists checks don't occupy the @MainActor's
         // run loop. State updates hop back to MainActor explicitly.
         pollingTask = Task.detached { [weak self] in
+            // Capture a weak MainActor-isolated reference for safe re-entry.
+            let mainActorRef = self
             let meeting: Meeting
             do {
                 meeting = try await client.meetingGet(id: meetingId)
             } catch {
                 Self.logFullError("meeting.get", error)
                 await MainActor.run {
-                    self?.state = .error(kind: "internal", message: "Lost contact with the engine.")
+                    mainActorRef?.state = .error(kind: "internal", message: "Lost contact with the engine.")
                 }
                 return
             }
@@ -90,15 +92,15 @@ final class AppViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if FileManager.default.fileExists(atPath: notesPath) {
                     await MainActor.run {
-                        self?.state = .done(notesPath: notesPath)
+                        mainActorRef?.state = .done(notesPath: notesPath)
                     }
                     return
                 }
             }
             await MainActor.run {
-                guard let self else { return }
-                if case .working = self.state {
-                    self.state = .error(kind: "timeout", message: "notes.generate did not complete within 5 minutes")
+                guard let mainActorRef else { return }
+                if case .working = mainActorRef.state {
+                    mainActorRef.state = .error(kind: "timeout", message: "notes.generate did not complete within 5 minutes")
                 }
             }
         }

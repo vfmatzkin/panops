@@ -241,18 +241,21 @@ actor IpcClient {
 
     private static func start(_ conn: NWConnection) async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            var resumed = false
+            final class ResumedGuard: @unchecked Sendable {
+                var value = false
+            }
+            let resumed = ResumedGuard()
             conn.stateUpdateHandler = { state in
-                guard !resumed else { return }
+                guard !resumed.value else { return }
                 switch state {
                 case .ready:
-                    resumed = true
+                    resumed.value = true
                     cont.resume(returning: ())
                 case .failed(let err):
-                    resumed = true
+                    resumed.value = true
                     cont.resume(throwing: err)
                 case .cancelled:
-                    resumed = true
+                    resumed.value = true
                     cont.resume(throwing: IpcClientError.disconnected)
                 default:
                     break
