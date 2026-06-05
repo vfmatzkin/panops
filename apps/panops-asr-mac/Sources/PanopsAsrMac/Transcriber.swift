@@ -23,10 +23,12 @@ actor Transcriber {
     // `nonisolated(unsafe)`: WhisperKit is not Sendable, so calling its
     // nonisolated `transcribe` from this actor would "send" actor-isolated
     // state across isolation (a hard error under newer Swift toolchains).
-    // The sidecar's stdio loop is single-flight (one request awaited at a
-    // time), so transcribe is never invoked concurrently — the access is
-    // serialized in practice. Marking the immutable handle nonisolated is
-    // the minimal, safe fix.
+    // Safety does NOT come from actor isolation — an actor can re-enter
+    // `transcribe` at its `await` suspension, so isolation alone would not
+    // prevent concurrent use of the handle. It comes from the caller: the
+    // sidecar's stdio loop (main.swift) reads and fully awaits one request
+    // before reading the next, so `transcribe` is single-flight in practice.
+    // Revisit (e.g. a serial executor) if that loop ever becomes concurrent.
     private nonisolated(unsafe) let whisperKit: WhisperKit
     private let modelName: String
 
