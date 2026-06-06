@@ -274,7 +274,7 @@ actor IpcClient {
         guard let replyFrameData = replyData else {
             throw IpcClientError.websocketFrameError("no reply for events.subscribe")
         }
-        let reply = try JSONDecoder().decode(JsonRpcResponse<String>.self, from: replyFrameData)
+        let reply = try JSONDecoder().decode(JsonRpcResponse<SubscriptionId>.self, from: replyFrameData)
         guard reply.id == id else {
             throw IpcClientError.websocketFrameError("wrong id in events.subscribe reply")
         }

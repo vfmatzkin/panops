@@ -123,6 +123,24 @@ struct JsonRpcError: Decodable {
     let message: String
 }
 
+/// jsonrpsee subscription id — numeric by default; accept a string too.
+/// Only its presence matters here (single subscription), so the value
+/// is decoded flexibly and not otherwise used.
+enum SubscriptionId: Decodable {
+    case number(Int)
+    case string(String)
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let n = try? c.decode(Int.self) { self = .number(n); return }
+        if let s = try? c.decode(String.self) { self = .string(s); return }
+        throw DecodingError.typeMismatch(
+            SubscriptionId.self,
+            .init(codingPath: decoder.codingPath,
+                  debugDescription: "subscription id is neither number nor string")
+        )
+    }
+}
+
 /// JSON-RPC 2.0 notification envelope for WebSocket events.
 /// Wire format: {"jsonrpc":"2.0","method":"events","params":{"subscription":<id>,"result":<Event>}}
 /// The Event payload is in params.result.
@@ -132,7 +150,8 @@ struct JsonRpcNotification: Decodable {
     let params: NotificationParams
 
     struct NotificationParams: Decodable {
-        let subscription: String
+        // `subscription` (jsonrpsee sub id) is present on the wire but unused
+        // here; omit it so its numeric type can't break event decoding.
         let result: IpcEvent
     }
 }
