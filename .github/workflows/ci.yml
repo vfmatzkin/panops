@@ -230,10 +230,15 @@ jobs:
 
   package:
     name: package (ad-hoc .app)
+    # Skip on PR validation (full release build of engine + 3 swift targets is
+    # slow); runs on merge to main, the weekly cron, and manual dispatch —
+    # mirrors heavy-test, so bundle/signing breakage is caught before release.
+    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Build + assemble + ad-hoc sign
         run: bash scripts/package.sh ci-${{ github.sha }}
       - name: Verify signature
