@@ -227,3 +227,14 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2.0.20
         with:
           command: check advisories
+
+  package:
+    name: package (ad-hoc .app)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build + assemble + ad-hoc sign
+        run: bash scripts/package.sh ci-${{ github.sha }}
+      - name: Verify signature
+        run: codesign --verify --deep --strict dist/Panops.app
