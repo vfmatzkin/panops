@@ -8,6 +8,10 @@ struct PanopsApp: App {
     @State private var willTerminateObserver: NSObjectProtocol?
 
     init() {
+        // Activate app on launch so swift run brings window to front
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
         let socketPath = FileManager.default
             .homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/panops/engine.sock")
