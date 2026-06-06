@@ -75,25 +75,34 @@ final class AppViewModel: ObservableObject {
             state = .working(meetingId: meetingId, audioName: audio.lastPathComponent)
 
             if wsOk {
-                // Register callback for job completion (event-driven, no polling)
+                // Register callback for job completion (event-driven). Keep the
+                // polling guard active too: if the WebSocket stream ends before
+                // a terminal event arrives, the UI must not stay working forever.
                 await eventStream.registerCallback(jobId: jobId, handler: { [weak self] event in
                     Task { @MainActor in
                         switch event {
                         case .jobDone(_, let result):
-                            self?.state = .done(notesPath: result.primaryFile)
-                            // Refresh meetings list to show the new meeting
-                            Task { await self?.refreshMeetings() }
+                            self?.finishGenerationDone(
+                                meetingId: result.meetingId,
+                                jobId: jobId,
+                                notesPath: result.primaryFile
+                            )
                         case .jobError(_, let payload):
-                            self?.state = .error(kind: payload.kind, message: payload.message)
+                            self?.finishGenerationError(
+                                meetingId: meetingId,
+                                jobId: jobId,
+                                kind: payload.kind,
+                                message: payload.message
+                            )
                         case .unknown:
                             break
                         }
                     }
                 })
-            } else {
-                // WebSocket failed — fall back to filesystem polling
-                startPolling(meetingId: meetingId)
             }
+            // Filesystem polling is also the WebSocket safety net. It is
+            // cancelled by the terminal WebSocket callback when one arrives.
+            startPolling(meetingId: meetingId, jobId: wsOk ? jobId : nil)
         } catch let IpcClientError.rpcError(_, message) {
             state = .error(kind: "rpc_error", message: message)
         } catch {
@@ -170,8 +179,30 @@ final class AppViewModel: ObservableObject {
         FileHandle.standardError.write(Data(message.utf8))
     }
 
-    private func startPolling(meetingId: String) {
-        // Fallback polling if WebSocket isn't available
+    private func finishGenerationDone(meetingId: String, jobId: String? = nil, notesPath: String) {
+        guard case .working(let currentMeetingId, _) = state, currentMeetingId == meetingId else { return }
+        pollingTask?.cancel()
+        pollingTask = nil
+        if let jobId {
+            Task { await eventStream.unregisterCallback(jobId: jobId) }
+        }
+        state = .done(notesPath: notesPath)
+        Task { await refreshMeetings() }
+    }
+
+    private func finishGenerationError(meetingId: String, jobId: String? = nil, kind: String, message: String) {
+        guard case .working(let currentMeetingId, _) = state, currentMeetingId == meetingId else { return }
+        pollingTask?.cancel()
+        pollingTask = nil
+        if let jobId {
+            Task { await eventStream.unregisterCallback(jobId: jobId) }
+        }
+        state = .error(kind: kind, message: message)
+    }
+
+    private func startPolling(meetingId: String, jobId: String? = nil) {
+        // Fallback polling if WebSocket isn't available, and safety-net polling
+        // if WebSocket disconnects before a terminal event is delivered.
         pollingTask?.cancel()
         let client = self.client
         pollingTask = Task.detached { [weak self] in
@@ -182,7 +213,12 @@ final class AppViewModel: ObservableObject {
             } catch {
                 Self.logFullError("meeting.get", error)
                 await MainActor.run {
-                    mainActorRef?.state = .error(kind: "internal", message: "Lost contact with the engine.")
+                    mainActorRef?.finishGenerationError(
+                        meetingId: meetingId,
+                        jobId: jobId,
+                        kind: "internal",
+                        message: "Lost contact with the engine."
+                    )
                 }
                 return
             }
@@ -192,16 +228,22 @@ final class AppViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if FileManager.default.fileExists(atPath: notesPath) {
                     await MainActor.run {
-                        mainActorRef?.state = .done(notesPath: notesPath)
+                        mainActorRef?.finishGenerationDone(
+                            meetingId: meetingId,
+                            jobId: jobId,
+                            notesPath: notesPath
+                        )
                     }
                     return
                 }
             }
             await MainActor.run {
-                guard let mainActorRef else { return }
-                if case .working = mainActorRef.state {
-                    mainActorRef.state = .error(kind: "timeout", message: "notes.generate did not complete within \(Int(Self.pollingDeadlineSeconds / 60)) minutes")
-                }
+                mainActorRef?.finishGenerationError(
+                    meetingId: meetingId,
+                    jobId: jobId,
+                    kind: "timeout",
+                    message: "notes.generate did not complete within \(Int(Self.pollingDeadlineSeconds / 60)) minutes"
+                )
             }
         }
     }
