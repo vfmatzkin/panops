@@ -291,7 +291,7 @@ actor IpcClient {
         // Copy buffer data before entering the closure to avoid data race
         let initialBufferData = Data(replyBuffer)
         return AsyncStream { continuation in
-            Task {
+            let streamTask = Task {
                 var buffer = initialBufferData  // continue with any remaining data
                 while !Task.isCancelled {
                     do {
@@ -310,6 +310,9 @@ actor IpcClient {
                     }
                 }
                 continuation.finish()
+            }
+            continuation.onTermination = { _ in
+                streamTask.cancel()
             }
         }
     }
