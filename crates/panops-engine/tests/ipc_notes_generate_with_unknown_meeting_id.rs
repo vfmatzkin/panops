@@ -84,6 +84,11 @@ async fn notes_generate_with_unknown_meeting_id_returns_input_not_found() {
         },
         Event::JobDone(d) => panic!("expected JobError, got JobDone: {:?}", d.result),
         Event::Unknown(v) => panic!("expected JobError, got Unknown: {v}"),
+        // Slice 11 adds Screenshot and RecordingProgress events; ignore them
+        // in this notes pipeline test.
+        Event::Screenshot(_) | Event::RecordingProgress(_) => {
+            panic!("expected JobError, got Screenshot/Progress event")
+        }
     }
 
     // No meeting was created (the lookup failed before any side effects).

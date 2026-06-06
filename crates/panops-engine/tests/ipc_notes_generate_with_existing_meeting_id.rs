@@ -84,6 +84,11 @@ async fn notes_generate_with_existing_meeting_id_attaches_note() {
         Event::JobDone(d) => d.result.meeting_id,
         Event::JobError(e) => panic!("expected JobDone, got JobError: {:?}", e.error),
         Event::Unknown(v) => panic!("expected JobDone, got Unknown: {v}"),
+        // Slice 11 adds Screenshot and RecordingProgress events; ignore them
+        // in this notes pipeline test.
+        Event::Screenshot(_) | Event::RecordingProgress(_) => {
+            panic!("expected JobDone, got Screenshot/Progress event")
+        }
     };
 
     assert_eq!(

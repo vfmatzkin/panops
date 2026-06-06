@@ -7,9 +7,9 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Type-tagged so the same `events` subscription multiplexes job lifecycle.
-/// Future event kinds (`asr.partial`, `screenshot`, ...) extend this enum;
-/// clients running an older `panops-protocol` deserialise the new tag as
-/// `Event::Unknown(<original JSON>)` and keep the subscription alive.
+/// Future event kinds extend this enum; clients running an older
+/// `panops-protocol` deserialise the new tag as `Event::Unknown(<original
+/// JSON>)` and keep the subscription alive.
 ///
 /// The `Deserialize` impl is hand-written because serde's `#[serde(other)]`
 /// only accepts unit variants — it can't represent a tuple variant that
@@ -23,6 +23,12 @@ pub enum Event {
     JobDone(JobDoneEvent),
     #[serde(rename = "job.error")]
     JobError(JobErrorEvent),
+    /// Screenshot captured during recording (slice 11).
+    #[serde(rename = "screenshot")]
+    Screenshot(ScreenshotEvent),
+    /// Recording progress update (slice 11).
+    #[serde(rename = "recording.progress")]
+    RecordingProgress(RecordingProgressEvent),
     /// Forward-compat fallback: a future engine emits an event type this
     /// build doesn't know about. The original JSON object is kept so the
     /// caller can still inspect it (e.g. log + skip) without tearing down
@@ -45,6 +51,12 @@ impl<'de> Deserialize<'de> for Event {
             "job.error" => serde_json::from_value::<JobErrorEvent>(value)
                 .map(Event::JobError)
                 .map_err(serde::de::Error::custom),
+            "screenshot" => serde_json::from_value::<ScreenshotEvent>(value)
+                .map(Event::Screenshot)
+                .map_err(serde::de::Error::custom),
+            "recording.progress" => serde_json::from_value::<RecordingProgressEvent>(value)
+                .map(Event::RecordingProgress)
+                .map_err(serde::de::Error::custom),
             _ => Ok(Event::Unknown(value)),
         }
     }
@@ -60,6 +72,24 @@ pub struct JobDoneEvent {
 pub struct JobErrorEvent {
     pub job_id: String,
     pub error: crate::IpcError,
+}
+
+/// Screenshot captured during a recording session. Emitted via WebSocket
+/// each time the capture sidecar detects a screen change and writes a JPEG.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScreenshotEvent {
+    pub meeting_id: String,
+    pub timestamp_ms: u64,
+    pub path: String,
+}
+
+/// Recording progress update. Emitted periodically during active capture
+/// to inform clients of audio bytes captured and elapsed duration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecordingProgressEvent {
+    pub meeting_id: String,
+    pub bytes_captured: u64,
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -145,6 +175,55 @@ pub struct MeetingConfig {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+}
+
+// === Recording IPC types (slice 11) ===
+
+/// Audio source selection for `recording.start`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioSourcesWire {
+    SystemOnly,
+    MicOnly,
+    SystemAndMic,
+}
+
+fn default_screenshot_interval() -> u64 {
+    500
+}
+
+fn default_screenshot_threshold() -> f32 {
+    0.15
+}
+
+/// Params for `ipc.recording.start`. Starts a live capture session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecordingStartParams {
+    pub meeting_id: String,
+    #[serde(default = "default_screenshot_interval")]
+    pub screenshot_interval_ms: u64,
+    #[serde(default = "default_screenshot_threshold")]
+    pub screenshot_threshold: f32,
+}
+
+/// Result of `ipc.recording.start`. Confirms the recording session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecordingAccepted {
+    pub recording_id: String,
+}
+
+/// Params for `ipc.recording.stop`. Stops the active recording.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecordingStopParams {
+    pub recording_id: String,
+}
+
+/// Result of `ipc.recording.stop`. Returns paths to captured artifacts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecordingStopped {
+    pub audio_path: String,
+    pub screenshot_paths: Vec<String>,
+    pub duration_ms: u64,
 }
 
 #[cfg(test)]
@@ -346,5 +425,102 @@ mod tests {
         let back: MeetingSummary =
             serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
         assert_eq!(back, m);
+    }
+
+    // === Recording IPC type tests (slice 11) ===
+
+    #[test]
+    fn recording_start_params_round_trips() {
+        let p = RecordingStartParams {
+            meeting_id: "m1".into(),
+            screenshot_interval_ms: 500,
+            screenshot_threshold: 0.15,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: RecordingStartParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn recording_start_params_accepts_minimal() {
+        let json = r#"{"meeting_id":"m1"}"#;
+        let p: RecordingStartParams = serde_json::from_str(json).unwrap();
+        assert_eq!(p.meeting_id, "m1");
+        assert_eq!(p.screenshot_interval_ms, 500); // default
+        assert_eq!(p.screenshot_threshold, 0.15); // default
+    }
+
+    #[test]
+    fn recording_accepted_round_trips() {
+        let r = RecordingAccepted {
+            recording_id: "rec123".into(),
+        };
+        let back =
+            serde_json::from_str::<RecordingAccepted>(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn recording_stop_params_round_trips() {
+        let p = RecordingStopParams {
+            recording_id: "rec123".into(),
+        };
+        let back = serde_json::from_str::<RecordingStopParams>(&serde_json::to_string(&p).unwrap())
+            .unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn recording_stopped_round_trips() {
+        let r = RecordingStopped {
+            audio_path: "/tmp/audio.wav".into(),
+            screenshot_paths: vec!["/tmp/screenshots/001.jpg".into()],
+            duration_ms: 60_000,
+        };
+        let back =
+            serde_json::from_str::<RecordingStopped>(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn screenshot_event_round_trips_with_type_tag() {
+        let e = Event::Screenshot(ScreenshotEvent {
+            meeting_id: "m1".into(),
+            timestamp_ms: 12345,
+            path: "/tmp/screenshots/001.jpg".into(),
+        });
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains(r#""type":"screenshot""#));
+        let back: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, e);
+    }
+
+    #[test]
+    fn recording_progress_event_round_trips_with_type_tag() {
+        let e = Event::RecordingProgress(RecordingProgressEvent {
+            meeting_id: "m1".into(),
+            bytes_captured: 1024,
+            duration_ms: 5000,
+        });
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains(r#""type":"recording.progress""#));
+        let back: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, e);
+    }
+
+    #[test]
+    fn audio_sources_wire_serializes_as_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&AudioSourcesWire::SystemOnly).unwrap(),
+            r#""system_only""#
+        );
+        assert_eq!(
+            serde_json::to_string(&AudioSourcesWire::MicOnly).unwrap(),
+            r#""mic_only""#
+        );
+        assert_eq!(
+            serde_json::to_string(&AudioSourcesWire::SystemAndMic).unwrap(),
+            r#""system_and_mic""#
+        );
     }
 }

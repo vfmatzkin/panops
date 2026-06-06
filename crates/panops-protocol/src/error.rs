@@ -240,6 +240,35 @@ mod from_domain {
             }
         }
     }
+
+    impl From<panops_core::capture::CaptureError> for IpcError {
+        fn from(e: panops_core::capture::CaptureError) -> Self {
+            match e {
+                panops_core::capture::CaptureError::PermissionDenied(msg) => {
+                    IpcError::InvalidInput {
+                        message: format!("permission denied: {msg}"),
+                    }
+                }
+                panops_core::capture::CaptureError::Capture(msg) => {
+                    IpcError::Internal { message: msg }
+                }
+                panops_core::capture::CaptureError::Io(io) => IpcError::Internal {
+                    message: io.to_string(),
+                },
+                panops_core::capture::CaptureError::Sidecar(msg) => {
+                    IpcError::Internal { message: msg }
+                }
+                panops_core::capture::CaptureError::SessionNotFound(id) => {
+                    IpcError::InputNotFound {
+                        path: format!("session/{id}"),
+                    }
+                }
+                panops_core::capture::CaptureError::InvalidConfig(msg) => {
+                    IpcError::InvalidInput { message: msg }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(all(test, feature = "domain-conversions"))]
@@ -517,5 +546,35 @@ mod from_domain_tests {
         };
         assert_eq!(message, "vad io error");
         assert!(!message.contains("/Users/fran"));
+    }
+
+    #[test]
+    fn capture_permission_denied_maps_to_invalid_input() {
+        let e: IpcError =
+            panops_core::capture::CaptureError::PermissionDenied("microphone".into()).into();
+        let IpcError::InvalidInput { message } = e else {
+            panic!("expected InvalidInput");
+        };
+        assert!(message.contains("permission denied"), "got: {message}");
+    }
+
+    #[test]
+    fn capture_session_not_found_maps_to_input_not_found() {
+        let e: IpcError =
+            panops_core::capture::CaptureError::SessionNotFound("abc123".into()).into();
+        let IpcError::InputNotFound { path } = e else {
+            panic!("expected InputNotFound");
+        };
+        assert!(path.contains("session"), "got: {path}");
+        assert!(path.contains("abc123"), "got: {path}");
+    }
+
+    #[test]
+    fn capture_capture_maps_to_internal() {
+        let e: IpcError = panops_core::capture::CaptureError::Capture("device busy".into()).into();
+        let IpcError::Internal { message } = e else {
+            panic!("expected Internal");
+        };
+        assert_eq!(message, "device busy");
     }
 }
