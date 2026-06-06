@@ -128,7 +128,11 @@ fn main() -> ExitCode {
             language,
             data_dir.clone(),
         ),
-        Some(Cmd::Serve { socket }) => panops_engine::server::run_serve(socket, data_dir),
+        Some(Cmd::Serve { socket }) => panops_engine::server::run_serve(
+            socket,
+            data_dir,
+            panops_engine::llm_resolver::sidecar_binary_from_env(),
+        ),
     };
     match res {
         Ok(()) => ExitCode::SUCCESS,

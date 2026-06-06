@@ -161,7 +161,11 @@ impl EngineServices {
 }
 
 /// CLI entry point — owns both tokio runtimes and the signal handler.
-pub fn run_serve(socket: Option<PathBuf>, data_dir: PathBuf) -> Result<(), (u8, String)> {
+pub fn run_serve(
+    socket: Option<PathBuf>,
+    data_dir: PathBuf,
+    llm_sidecar_path: Option<PathBuf>,
+) -> Result<(), (u8, String)> {
     let path = match socket {
         Some(p) => p,
         None => socket::default_socket_path().map_err(|e| (3, e))?,
@@ -201,7 +205,7 @@ pub fn run_serve(socket: Option<PathBuf>, data_dir: PathBuf) -> Result<(), (u8, 
         // with the accept loop, so the socket binds within the 5s
         // budget and `notes.generate` is gated with
         // `ProviderUnavailable` until the trio is ready.
-        let llm = build_llm(llm_handle);
+        let llm = crate::llm_resolver::pick_llm(llm_handle, llm_sidecar_path);
         let (services, heavy_lock) = EngineServices::pending(llm, storage, data_dir);
         spawn_heavy_init(heavy_lock);
         run_serve_in_process(&path, services, None).await
@@ -223,31 +227,6 @@ pub fn run_serve(socket: Option<PathBuf>, data_dir: PathBuf) -> Result<(), (u8, 
         }
     };
     std::process::exit(i32::from(exit_code));
-}
-
-/// LLM adapter for `serve` mode. Picks a model based on environment
-/// (mirrors `GenaiLlm::auto`'s precedence) and wires it to Runtime B
-/// via `with_handle`. We don't delegate to `GenaiLlm::auto` directly
-/// because `auto` uses the lazy shared CLI runtime — `serve` mode
-/// must route outbound HTTP through Runtime B, not the CLI runtime.
-/// Provider precedence stays in sync with `GenaiLlm::auto`'s order
-/// (ANTHROPIC_API_KEY → OPENAI_API_KEY → OLLAMA_HOST → default).
-/// Both should collapse when `panops-portable::genai_llm` grows an
-/// `auto_with_handle` helper.
-fn build_llm(handle: tokio::runtime::Handle) -> Arc<dyn LlmProvider + Send + Sync> {
-    use panops_portable::genai_llm::GenaiLlm;
-    let model = if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-        "claude-haiku-4-5-20251001"
-    } else if std::env::var("OPENAI_API_KEY").is_ok() {
-        "gpt-4o-mini"
-    } else if std::env::var("OLLAMA_HOST").is_ok() {
-        "gemma3:4b"
-    } else {
-        // Last-resort default. Matches `GenaiLlm::auto` so the IPC
-        // server is no more restrictive than the CLI's auto mode.
-        "gemma3:4b"
-    };
-    Arc::new(GenaiLlm::with_handle(model, handle))
 }
 
 /// Spawn the heavy-adapter init task. Runs on tokio's blocking pool

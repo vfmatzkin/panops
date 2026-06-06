@@ -2,4 +2,5 @@
 //! the server in-process. The binary entry point lives in `main.rs`.
 pub mod asr_resolver;
 pub mod capture_resolver;
+pub mod llm_resolver;
 pub mod server;
