@@ -52,3 +52,6 @@ apps/*/.build/
 *.log
 scratch/
 tmp/
+
+# ----- Local review tooling (not shipped) -----
+.ai-review/
