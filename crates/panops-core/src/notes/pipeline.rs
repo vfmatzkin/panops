@@ -222,7 +222,7 @@ impl NotesGenerator<'_> {
             // over-context prompt.
             match self.merge_chunk_summaries(chunk_summaries, language) {
                 Ok(v) => {
-                    let draft = SectionDraft::from_json(time_range_ms, segs.clone(), v);
+                    let draft = SectionDraft::from_json(time_range_ms, v);
                     match verifier::verify_section_attribution(
                         &draft.narrative_md,
                         &draft.action_items,
@@ -339,7 +339,7 @@ impl NotesGenerator<'_> {
         let req = build_section_narrative_prompt(&segs, self.dialect, language);
         match self.llm.complete(req) {
             Ok(LlmResponse::Json(v)) => {
-                let draft = SectionDraft::from_json(time_range_ms, segs.clone(), v);
+                let draft = SectionDraft::from_json(time_range_ms, v);
                 match verifier::verify_section_attribution(
                     &draft.narrative_md,
                     &draft.action_items,
@@ -381,7 +381,7 @@ struct SectionDraft {
 }
 
 impl SectionDraft {
-    fn from_json(time_range_ms: (u64, u64), _segs: Vec<Segment>, v: serde_json::Value) -> Self {
+    fn from_json(time_range_ms: (u64, u64), v: serde_json::Value) -> Self {
         let title = v
             .get("title")
             .and_then(|s| s.as_str())
