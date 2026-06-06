@@ -81,6 +81,11 @@ async fn notes_generate_round_trip_emits_job_done() {
         Event::JobDone(d) => PathBuf::from(d.result.primary_file),
         Event::JobError(e) => panic!("expected JobDone, got JobError: {:?}", e.error),
         Event::Unknown(v) => panic!("expected JobDone, got Unknown: {v}"),
+        // Slice 11 adds Screenshot and RecordingProgress events; ignore them
+        // in this notes pipeline test.
+        Event::Screenshot(_) | Event::RecordingProgress(_) => {
+            panic!("expected JobDone, got Screenshot/Progress event")
+        }
     };
     assert!(
         primary_file.exists(),
