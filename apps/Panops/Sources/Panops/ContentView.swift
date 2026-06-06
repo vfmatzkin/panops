@@ -21,6 +21,13 @@ final class AppViewModel: ObservableObject {
     private let eventStream: EventStreamActor
     private var wsSubscriptionTask: Task<Void, Never>?
     nonisolated private static let pollingDeadlineSeconds: TimeInterval = 5 * 60
+    nonisolated private static let wsSetupTimeoutNanoseconds: UInt64 = 3_000_000_000
+
+    private enum WsSetupResult: Sendable {
+        case succeeded
+        case failed
+        case timedOut
+    }
 
     init(client: IpcClient) {
         self.client = client
@@ -113,22 +120,73 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Ensure WebSocket subscription is active. Lazy per spec decision.
-    /// Returns true if WebSocket connected successfully, false on failure.
+    /// Returns true if WebSocket connected successfully, false on failure or
+    /// timeout so the caller can start filesystem polling instead of hanging.
     private func ensureWsSubscription() async -> Bool {
         // Only subscribe once
         guard wsSubscriptionTask == nil else { return true }
-        do {
-            try await client.wsConnect()
-            try await eventStream.subscribe(client: client)
+
+        switch await Self.runWsSetupWithTimeout(client: client, eventStream: eventStream) {
+        case .succeeded:
             wsSubscriptionTask = Task {
                 // EventStreamActor.subscribe handles the stream internally
             }
             return true
-        } catch {
-            Self.logFullError("ws.subscribe", error)
+        case .failed:
             // WebSocket failure is non-fatal; caller falls back to polling
             return false
+        case .timedOut:
+            Self.logFullError(
+                "ws.subscribe",
+                IpcClientError.websocketUpgradeFailed("WebSocket setup timed out")
+            )
+            // WebSocket stall is non-fatal; caller falls back to polling
+            return false
         }
+    }
+
+    /// Race WebSocket setup against a short timer. This intentionally uses
+    /// unstructured tasks rather than a task group because a stalled Network
+    /// continuation may ignore cancellation; the timeout must still let the UI
+    /// fall through to polling.
+    nonisolated private static func runWsSetupWithTimeout(
+        client: IpcClient,
+        eventStream: EventStreamActor
+    ) async -> WsSetupResult {
+        let stream = AsyncStream<WsSetupResult> { continuation in
+            let setupTask = Task {
+                do {
+                    try await client.wsConnect()
+                    try Task.checkCancellation()
+                    try await eventStream.subscribe(client: client)
+                    continuation.yield(.succeeded)
+                } catch {
+                    Self.logFullError("ws.subscribe", error)
+                    continuation.yield(.failed)
+                }
+                continuation.finish()
+            }
+
+            let timeoutTask = Task {
+                try? await Task.sleep(nanoseconds: Self.wsSetupTimeoutNanoseconds)
+                guard !Task.isCancelled else { return }
+                setupTask.cancel()
+                await eventStream.stop()
+                await client.disconnect()
+                continuation.yield(.timedOut)
+                continuation.finish()
+            }
+
+            continuation.onTermination = { @Sendable _ in
+                setupTask.cancel()
+                timeoutTask.cancel()
+            }
+        }
+
+        for await result in stream {
+            return result
+        }
+        return .timedOut
     }
 
     /// Fetch meeting list from engine. Called on app launch and refresh.
