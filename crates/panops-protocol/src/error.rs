@@ -252,8 +252,10 @@ mod from_domain {
                 panops_core::capture::CaptureError::Capture(msg) => {
                     IpcError::Internal { message: msg }
                 }
-                panops_core::capture::CaptureError::Io(io) => IpcError::Internal {
-                    message: io.to_string(),
+                // Wire stays opaque for Io errors — paths never reach the client.
+                // Full detail logged at call site where tracing is available.
+                panops_core::capture::CaptureError::Io(_) => IpcError::Internal {
+                    message: "capture io error".into(),
                 },
                 panops_core::capture::CaptureError::Sidecar(msg) => {
                     IpcError::Internal { message: msg }
@@ -293,12 +295,14 @@ mod from_domain {
                         path: format!("speaker/{id}"),
                     }
                 }
-                panops_core::meeting_store::MeetingStoreError::Io(io) => IpcError::Internal {
-                    message: io.to_string(),
+                // Wire stays opaque for Io/Sql errors — paths/SQL never reach client.
+                // Full detail logged at call site where tracing is available.
+                panops_core::meeting_store::MeetingStoreError::Io(_) => IpcError::Internal {
+                    message: "meeting store io error".into(),
                 },
-                panops_core::meeting_store::MeetingStoreError::Sql { message } => {
-                    IpcError::Internal { message }
-                }
+                panops_core::meeting_store::MeetingStoreError::Sql { .. } => IpcError::Internal {
+                    message: "meeting store error".into(),
+                },
             }
         }
     }
@@ -609,5 +613,62 @@ mod from_domain_tests {
             panic!("expected Internal");
         };
         assert_eq!(message, "device busy");
+    }
+
+    #[test]
+    fn capture_invalid_config_maps_to_invalid_input() {
+        let e: IpcError =
+            panops_core::capture::CaptureError::InvalidConfig("negative threshold".into()).into();
+        let IpcError::InvalidInput { message } = e else {
+            panic!("expected InvalidInput");
+        };
+        assert!(message.contains("negative threshold"), "got: {message}");
+    }
+
+    #[test]
+    fn capture_io_does_not_leak_path() {
+        let io =
+            std::io::Error::other("/Users/fran/Library/Application Support/panops/write failed");
+        let e: IpcError = panops_core::capture::CaptureError::Io(io).into();
+        let IpcError::Internal { message } = e else {
+            panic!("expected Internal");
+        };
+        assert_eq!(message, "capture io error");
+        assert!(!message.contains("/Users/fran"), "path leaked: {message}");
+    }
+
+    #[test]
+    fn capture_sidecar_maps_to_internal() {
+        let e: IpcError =
+            panops_core::capture::CaptureError::Sidecar("process exited with code 1".into()).into();
+        let IpcError::Internal { message } = e else {
+            panic!("expected Internal");
+        };
+        assert!(message.contains("process exited"), "got: {message}");
+    }
+
+    #[test]
+    fn meeting_store_io_does_not_leak_path() {
+        let io = std::io::Error::other("/Users/fran/Library/Application Support/panops/meeting.db");
+        let e: IpcError = panops_core::meeting_store::MeetingStoreError::Io(io).into();
+        let IpcError::Internal { message } = e else {
+            panic!("expected Internal");
+        };
+        assert_eq!(message, "meeting store io error");
+        assert!(!message.contains("/Users/fran"), "path leaked: {message}");
+    }
+
+    #[test]
+    fn meeting_store_sql_does_not_leak_query() {
+        let e: IpcError = panops_core::meeting_store::MeetingStoreError::Sql {
+            message: "near 'SELECT': syntax error at line 42".into(),
+        }
+        .into();
+        let IpcError::Internal { message } = e else {
+            panic!("expected Internal");
+        };
+        assert_eq!(message, "meeting store error");
+        assert!(!message.contains("SELECT"), "SQL leaked: {message}");
+        assert!(!message.contains("42"), "line leaked: {message}");
     }
 }
