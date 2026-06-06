@@ -12,12 +12,17 @@ final class AppViewModel: ObservableObject {
     }
 
     @Published var state: State = .idle(audio: nil)
+    @Published var selectedMeetingId: String?
+    @Published var meetings: [MeetingSummary] = []
 
     private let client: IpcClient
     private var pollingTask: Task<Void, Never>?
+    private let eventStream: EventStreamActor
+    private var wsSubscriptionTask: Task<Void, Never>?
 
     init(client: IpcClient) {
         self.client = client
+        self.eventStream = EventStreamActor()
     }
 
     func connect() async throws {
@@ -58,40 +63,71 @@ final class AppViewModel: ObservableObject {
     func generate() async {
         guard case .idle(let audio?) = state else { return }
         do {
+            // Ensure WebSocket subscription is active (lazy)
+            await ensureWsSubscription()
+
             let meetingId = try await client.meetingStart()
-            _ = try await client.notesGenerate(audio: audio, meetingId: meetingId)
+            let jobId = try await client.notesGenerate(audio: audio, meetingId: meetingId)
             state = .working(meetingId: meetingId, audioName: audio.lastPathComponent)
-            startPolling(meetingId: meetingId)
+
+            // Register callback for job completion (event-driven, no polling)
+            await eventStream.registerCallback(jobId: jobId, handler: { [weak self] event in
+                Task { @MainActor in
+                    switch event {
+                    case .jobDone(_, let result):
+                        self?.state = .done(notesPath: result.primaryFile)
+                    case .jobError(_, let payload):
+                        self?.state = .error(kind: payload.kind, message: payload.message)
+                    case .unknown:
+                        break
+                    }
+                }
+            })
         } catch let IpcClientError.rpcError(_, message) {
-            // RPC errors from the engine carry a curated, wire-safe
-            // message (slice 05 hardening); pass them through.
             state = .error(kind: "rpc_error", message: message)
         } catch {
-            // Internal client errors may contain socket paths, NWError
-            // details, etc. — not safe for the UI. Log the full detail
-            // to stderr (Console.app) and show an opaque label.
             Self.logFullError("notes.generate", error)
             state = .error(kind: "internal", message: "Could not reach the engine.")
         }
     }
 
-    /// Log the full error to stderr (matches slice-05/07 wire-side
-    /// sanitization pattern). Engine logs interleave with these via
-    /// the shared FileHandle.standardError pipe.
-    /// Non-isolated so detached tasks (polling loop) can call it.
+    /// Ensure WebSocket subscription is active. Lazy per spec decision.
+    private func ensureWsSubscription() async {
+        // Only subscribe once
+        guard wsSubscriptionTask == nil else { return }
+        do {
+            try await client.wsConnect()
+            try await eventStream.subscribe(client: client)
+            wsSubscriptionTask = Task {
+                // EventStreamActor.subscribe handles the stream internally
+            }
+        } catch {
+            Self.logFullError("ws.subscribe", error)
+            // WebSocket failure is non-fatal; fall back to polling
+        }
+    }
+
+    /// Fetch meeting list from engine. Called on app launch and refresh.
+    func refreshMeetings() async {
+        do {
+            meetings = try await client.meetingList()
+        } catch {
+            Self.logFullError("meeting.list", error)
+            // Keep existing meetings on error
+        }
+    }
+
+    /// Log the full error to stderr.
     nonisolated static func logFullError(_ op: String, _ error: any Error) {
         let message = "panops-shell: \(op) failed: \(error)\n"
         FileHandle.standardError.write(Data(message.utf8))
     }
 
     private func startPolling(meetingId: String) {
+        // Fallback polling if WebSocket isn't available
         pollingTask?.cancel()
         let client = self.client
-        // Run the polling loop on a detached task so the 2s sleep and
-        // FileManager.fileExists checks don't occupy the @MainActor's
-        // run loop. State updates hop back to MainActor explicitly.
         pollingTask = Task.detached { [weak self] in
-            // Capture a weak MainActor-isolated reference for safe re-entry.
             let mainActorRef = self
             let meeting: Meeting
             do {
@@ -104,7 +140,7 @@ final class AppViewModel: ObservableObject {
                 return
             }
             let notesPath = (meeting.dirPath as NSString).appendingPathComponent("notes.md")
-            let deadline = Date().addingTimeInterval(5 * 60) // 5 min ceiling
+            let deadline = Date().addingTimeInterval(5 * 60)
             while !Task.isCancelled, Date() < deadline {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if FileManager.default.fileExists(atPath: notesPath) {
@@ -124,12 +160,6 @@ final class AppViewModel: ObservableObject {
     }
 
     func reveal(_ path: String) {
-        // Defense in depth: the engine's `meeting.get` returns a
-        // `dir_path` that should always live under panops's data dir
-        // (~/Library/Application Support/panops/meetings/<uuid>/).
-        // Validate before handing to NSWorkspace so a corrupted /
-        // misconfigured engine response can't open Finder at an
-        // arbitrary filesystem location.
         let panopsRoot = FileManager.default
             .homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/panops/")
@@ -137,17 +167,7 @@ final class AppViewModel: ObservableObject {
             .path
         let url = URL(fileURLWithPath: path).standardizedFileURL
         guard url.path.hasPrefix(panopsRoot) else {
-            Self.logFullError(
-                "reveal",
-                NSError(
-                    domain: "PanopsShell",
-                    code: 1,
-                    userInfo: [
-                        NSLocalizedDescriptionKey:
-                            "refusing to reveal path outside panops data dir: \(path)"
-                    ]
-                )
-            )
+            Self.logFullError("reveal", NSError(domain: "PanopsShell", code: 1, userInfo: [NSLocalizedDescriptionKey: "refusing to reveal path outside panops data dir: \(path)"]))
             return
         }
         NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -160,6 +180,8 @@ final class AppViewModel: ObservableObject {
 
     func shutdown(engine: EngineProcess?) async {
         pollingTask?.cancel()
+        wsSubscriptionTask?.cancel()
+        await eventStream.stop()
         await client.disconnect()
         await engine?.stop()
     }
@@ -188,6 +210,9 @@ struct ContentView: View {
         }
         .padding()
         .frame(minWidth: 520, minHeight: 320)
+        .task {
+            await vm.refreshMeetings()
+        }
     }
 
     @ViewBuilder
