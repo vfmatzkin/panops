@@ -66,30 +66,34 @@ async fn notes_generate_with_unknown_meeting_id_returns_input_not_found() {
     .await
     .expect("notes.generate accepts the request even for unknown id");
 
-    let event = tokio::time::timeout(Duration::from_secs(60), subscription.next())
-        .await
-        .expect("event within 60s")
-        .expect("subscription open")
-        .expect("payload deserialises");
-
-    match event {
-        Event::JobError(e) => match e.error {
-            IpcError::InputNotFound { path } => {
-                assert!(
-                    path.contains("meeting"),
-                    "expected meeting in path, got: {path}"
-                );
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let event = subscription
+                .next()
+                .await
+                .expect("subscription open")
+                .expect("payload deserialises");
+            match event {
+                Event::JobError(e) => match e.error {
+                    IpcError::InputNotFound { path } => {
+                        assert!(
+                            path.contains("meeting"),
+                            "expected meeting in path, got: {path}"
+                        );
+                        return;
+                    }
+                    other => panic!("expected InputNotFound, got {other:?}"),
+                },
+                Event::JobDone(d) => panic!("expected JobError, got JobDone: {:?}", d.result),
+                Event::Unknown(v) => panic!("expected JobError, got Unknown: {v}"),
+                // Slice 11 adds Screenshot and RecordingProgress events; ignore them
+                // in this notes pipeline test (they may arrive from concurrent tests).
+                Event::Screenshot(_) | Event::RecordingProgress(_) => continue,
             }
-            other => panic!("expected InputNotFound, got {other:?}"),
-        },
-        Event::JobDone(d) => panic!("expected JobError, got JobDone: {:?}", d.result),
-        Event::Unknown(v) => panic!("expected JobError, got Unknown: {v}"),
-        // Slice 11 adds Screenshot and RecordingProgress events; ignore them
-        // in this notes pipeline test.
-        Event::Screenshot(_) | Event::RecordingProgress(_) => {
-            panic!("expected JobError, got Screenshot/Progress event")
         }
-    }
+    })
+    .await
+    .expect("event within 60s");
 
     // No meeting was created (the lookup failed before any side effects).
     let list = storage.list_meetings().unwrap();

@@ -72,34 +72,37 @@ async fn notes_generate_emits_job_error_with_input_not_found_kind() {
     .await
     .expect("call notes.generate");
 
-    let event = tokio::time::timeout(Duration::from_secs(10), subscription.next())
-        .await
-        .expect("event arrived within 10s")
-        .expect("subscription not closed")
-        .expect("event payload deserialised");
+    let err = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let ev = subscription
+                .next()
+                .await
+                .expect("subscription open")
+                .expect("payload deserialises");
+            match ev {
+                Event::JobError(err) => return err,
+                Event::JobDone(d) => panic!("expected JobError, got JobDone: {:?}", d),
+                Event::Unknown(v) => panic!("expected JobError, got Unknown: {v}"),
+                // Slice 11 adds Screenshot and RecordingProgress events; ignore them
+                // in this notes pipeline test (they may arrive from concurrent tests).
+                Event::Screenshot(_) | Event::RecordingProgress(_) => continue,
+            }
+        }
+    })
+    .await
+    .expect("event arrived within 10s");
 
-    match event {
-        Event::JobError(err) => {
-            assert!(
-                matches!(err.error, IpcError::InputNotFound { .. }),
-                "expected InputNotFound, got {:?}",
-                err.error
-            );
-            // Wire-level check: serialised payload carries `kind: "input_not_found"`.
-            let json = serde_json::to_value(&err.error).unwrap();
-            assert_eq!(
-                json.get("kind").and_then(|v| v.as_str()),
-                Some("input_not_found")
-            );
-        }
-        Event::JobDone(d) => panic!("expected JobError, got JobDone: {:?}", d),
-        Event::Unknown(v) => panic!("expected JobError, got Unknown: {v}"),
-        // Slice 11 adds Screenshot and RecordingProgress events; ignore them
-        // in this notes pipeline test.
-        Event::Screenshot(_) | Event::RecordingProgress(_) => {
-            panic!("expected JobError, got Screenshot/Progress event")
-        }
-    }
+    assert!(
+        matches!(err.error, IpcError::InputNotFound { .. }),
+        "expected InputNotFound, got {:?}",
+        err.error
+    );
+    // Wire-level check: serialised payload carries `kind: "input_not_found"`.
+    let json = serde_json::to_value(&err.error).unwrap();
+    assert_eq!(
+        json.get("kind").and_then(|v| v.as_str()),
+        Some("input_not_found")
+    );
 
     let _ = shutdown_tx.send(true);
     let _ = server.await;

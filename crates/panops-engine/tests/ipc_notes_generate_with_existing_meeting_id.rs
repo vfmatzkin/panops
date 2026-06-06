@@ -74,22 +74,25 @@ async fn notes_generate_with_existing_meeting_id_attaches_note() {
     .await
     .expect("notes.generate");
 
-    let event = tokio::time::timeout(Duration::from_secs(60), subscription.next())
-        .await
-        .expect("event within 60s")
-        .expect("subscription open")
-        .expect("payload deserialises");
-
-    let result_meeting_id = match event {
-        Event::JobDone(d) => d.result.meeting_id,
-        Event::JobError(e) => panic!("expected JobDone, got JobError: {:?}", e.error),
-        Event::Unknown(v) => panic!("expected JobDone, got Unknown: {v}"),
-        // Slice 11 adds Screenshot and RecordingProgress events; ignore them
-        // in this notes pipeline test.
-        Event::Screenshot(_) | Event::RecordingProgress(_) => {
-            panic!("expected JobDone, got Screenshot/Progress event")
+    let result_meeting_id = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let event = subscription
+                .next()
+                .await
+                .expect("subscription open")
+                .expect("payload deserialises");
+            match event {
+                Event::JobDone(d) => return d.result.meeting_id,
+                Event::JobError(e) => panic!("expected JobDone, got JobError: {:?}", e.error),
+                Event::Unknown(v) => panic!("expected JobDone, got Unknown: {v}"),
+                // Slice 11 adds Screenshot and RecordingProgress events; ignore them
+                // in this notes pipeline test (they may arrive from concurrent tests).
+                Event::Screenshot(_) | Event::RecordingProgress(_) => continue,
+            }
         }
-    };
+    })
+    .await
+    .expect("event within 60s");
 
     assert_eq!(
         result_meeting_id, meeting_id,
