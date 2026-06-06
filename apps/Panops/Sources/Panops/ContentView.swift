@@ -187,16 +187,11 @@ final class AppViewModel: ObservableObject {
     }
 
     func reveal(_ path: String) {
-        let panopsRoot = FileManager.default
-            .homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/panops/")
-            .standardizedFileURL
-            .path
-        let url = URL(fileURLWithPath: path).standardizedFileURL
-        guard url.path.hasPrefix(panopsRoot) else {
+        guard PathValidator.isUnderPanopsDataDir(path) else {
             Self.logFullError("reveal", NSError(domain: "PanopsShell", code: 1, userInfo: [NSLocalizedDescriptionKey: "refusing to reveal path outside panops data dir: \(path)"]))
             return
         }
+        let url = URL(fileURLWithPath: path).standardizedFileURL
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
