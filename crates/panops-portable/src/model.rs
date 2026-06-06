@@ -310,7 +310,9 @@ fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Resul
             // can't fill the disk before the post-download checksum catches it.
             let limit = download_size_limit(total_bytes);
             if bytes_written > limit {
-                let _ = fs::remove_file(&tmp);
+                if let Err(e) = fs::remove_file(&tmp) {
+                    tracing::warn!(error = %e, tmp = ?tmp, "failed to remove oversized partial download");
+                }
                 return Err(AsrError::Model(format!(
                     "download exceeded size limit ({bytes_written} > {limit} bytes); aborting"
                 )));
@@ -519,6 +521,14 @@ mod tests {
         assert_eq!(percent_complete(999, 1000), Some(100));
         assert_eq!(percent_complete(120, 100), Some(100));
         assert_eq!(percent_complete(1, 0), None);
+    }
+
+    #[test]
+    fn human_bytes_formats_each_unit_branch() {
+        assert_eq!(human_bytes(500), "500 B");
+        assert_eq!(human_bytes(2048), "2.0 KiB");
+        assert_eq!(human_bytes(1_572_864), "1.5 MiB");
+        assert_eq!(human_bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
     }
 
     #[test]
