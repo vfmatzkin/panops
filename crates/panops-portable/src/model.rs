@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use directories::ProjectDirs;
 use panops_core::asr::AsrError;
@@ -137,6 +137,123 @@ fn verify_sha256(path: &Path, expected: &str) -> Result<(), AsrError> {
     Ok(())
 }
 
+const DOWNLOAD_PROGRESS_INTERVAL: Duration = Duration::from_secs(2);
+
+fn percent_complete(done: u64, total: u64) -> Option<u8> {
+    if total == 0 {
+        return None;
+    }
+    let pct = ((done.min(total) as f64 / total as f64) * 100.0).round() as u8;
+    Some(pct)
+}
+
+fn bytes_per_second(bytes: u64, elapsed: Duration) -> u64 {
+    if elapsed.is_zero() {
+        return 0;
+    }
+    (bytes as f64 / elapsed.as_secs_f64()).round() as u64
+}
+
+fn eta_secs(done: u64, total: u64, bytes_per_sec: u64) -> Option<u64> {
+    if done >= total {
+        return Some(0);
+    }
+    if total == 0 || bytes_per_sec == 0 {
+        return None;
+    }
+    let remaining = total - done;
+    Some(remaining / bytes_per_sec + u64::from(remaining % bytes_per_sec != 0))
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+
+    let bytes = bytes as f64;
+    if bytes < KIB {
+        format!("{bytes:.0} B")
+    } else if bytes < MIB {
+        format!("{:.1} KiB", bytes / KIB)
+    } else if bytes < GIB {
+        format!("{:.1} MiB", bytes / MIB)
+    } else {
+        format!("{:.1} GiB", bytes / GIB)
+    }
+}
+
+fn human_rate(bytes_per_sec: u64) -> String {
+    format!("{}/s", human_bytes(bytes_per_sec))
+}
+
+fn format_duration_secs(seconds: u64) -> String {
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
+    if minutes == 0 {
+        format!("{seconds}s")
+    } else {
+        format!("{minutes}m {seconds}s")
+    }
+}
+
+fn format_download_progress(
+    bytes_downloaded: u64,
+    total_bytes: Option<u64>,
+    bytes_per_sec: u64,
+) -> String {
+    let downloaded = human_bytes(bytes_downloaded);
+    let rate = human_rate(bytes_per_sec);
+    match total_bytes {
+        Some(total) => {
+            let total_display = human_bytes(total);
+            let percent = percent_complete(bytes_downloaded, total)
+                .map(|pct| format!("{pct}%"))
+                .unwrap_or_else(|| "unknown".to_string());
+            let eta = eta_secs(bytes_downloaded, total, bytes_per_sec)
+                .map(format_duration_secs)
+                .unwrap_or_else(|| "unknown".to_string());
+            format!("downloaded {downloaded} / {total_display} ({percent}) at {rate}, eta {eta}")
+        }
+        None => format!("downloaded {downloaded} (total unknown) at {rate}"),
+    }
+}
+
+fn emit_download_progress(
+    bytes_downloaded: u64,
+    total_bytes: Option<u64>,
+    bytes_since_last: u64,
+    elapsed_since_last: Duration,
+    complete: bool,
+) {
+    let bytes_per_sec = bytes_per_second(bytes_since_last, elapsed_since_last);
+    let percent = total_bytes.and_then(|total| percent_complete(bytes_downloaded, total));
+    let eta_secs = total_bytes.and_then(|total| eta_secs(bytes_downloaded, total, bytes_per_sec));
+    let summary = format_download_progress(bytes_downloaded, total_bytes, bytes_per_sec);
+    if complete {
+        tracing::info!(
+            bytes = bytes_downloaded,
+            total_bytes = ?total_bytes,
+            percent = ?percent,
+            bytes_per_sec,
+            rate = %human_rate(bytes_per_sec),
+            eta_secs = ?eta_secs,
+            progress = %summary,
+            "model download progress complete"
+        );
+    } else {
+        tracing::info!(
+            bytes = bytes_downloaded,
+            total_bytes = ?total_bytes,
+            percent = ?percent,
+            bytes_per_sec,
+            rate = %human_rate(bytes_per_sec),
+            eta_secs = ?eta_secs,
+            progress = %summary,
+            "model download progress"
+        );
+    }
+}
+
 fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Result<u64, AsrError> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
@@ -148,12 +265,16 @@ fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Resul
     if !resp.status().is_success() {
         return Err(AsrError::Model(format!("download HTTP {}", resp.status())));
     }
+    let total_bytes = resp.content_length();
     let tmp = dest.with_extension("partial");
     let mut bytes_written: u64 = 0;
     {
         let mut file =
             fs::File::create(&tmp).map_err(|e| AsrError::Model(format!("create {tmp:?}: {e}")))?;
         let mut reader = resp;
+        let download_started_at = Instant::now();
+        let mut last_progress_at = download_started_at;
+        let mut last_progress_bytes = 0_u64;
         let mut buf = [0_u8; 64 * 1024];
         loop {
             let n = reader
@@ -165,7 +286,28 @@ fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Resul
             file.write_all(&buf[..n])
                 .map_err(|e| AsrError::Model(format!("write {tmp:?}: {e}")))?;
             bytes_written += n as u64;
+            let now = Instant::now();
+            let elapsed = now.duration_since(last_progress_at);
+            if elapsed >= DOWNLOAD_PROGRESS_INTERVAL {
+                let bytes_since_last = bytes_written - last_progress_bytes;
+                emit_download_progress(
+                    bytes_written,
+                    total_bytes,
+                    bytes_since_last,
+                    elapsed,
+                    false,
+                );
+                last_progress_at = now;
+                last_progress_bytes = bytes_written;
+            }
         }
+        emit_download_progress(
+            bytes_written,
+            total_bytes,
+            bytes_written,
+            download_started_at.elapsed(),
+            true,
+        );
         file.sync_all()
             .map_err(|e| AsrError::Model(format!("fsync {tmp:?}: {e}")))?;
     }
@@ -330,4 +472,44 @@ pub fn ensure_vad_model(dest: &Path) -> Result<PathBuf, AsrError> {
     }
     tracing::info!(bytes = n, dest = ?dest, "vad model download complete");
     Ok(dest.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percent_complete_rounds_to_nearest_integer() {
+        assert_eq!(percent_complete(1, 3), Some(33));
+        assert_eq!(percent_complete(2, 3), Some(67));
+        assert_eq!(percent_complete(999, 1000), Some(100));
+        assert_eq!(percent_complete(120, 100), Some(100));
+        assert_eq!(percent_complete(1, 0), None);
+    }
+
+    #[test]
+    fn eta_secs_uses_ceiling_remaining_over_rate() {
+        assert_eq!(eta_secs(100, 1000, 100), Some(9));
+        assert_eq!(eta_secs(99, 1000, 100), Some(10));
+        assert_eq!(eta_secs(1000, 1000, 100), Some(0));
+        assert_eq!(eta_secs(100, 1000, 0), None);
+    }
+
+    #[test]
+    fn human_rate_formats_bytes_and_binary_units() {
+        assert_eq!(human_rate(999), "999 B/s");
+        assert_eq!(human_rate(2048), "2.0 KiB/s");
+        assert_eq!(human_rate(1_572_864), "1.5 MiB/s");
+    }
+
+    #[test]
+    fn unknown_size_progress_omits_percent_and_eta() {
+        let progress = format_download_progress(4096, None, 2048);
+
+        assert!(progress.contains("4.0 KiB"));
+        assert!(progress.contains("(total unknown)"));
+        assert!(progress.contains("2.0 KiB/s"));
+        assert!(!progress.contains('%'));
+        assert!(!progress.contains("eta"));
+    }
 }
