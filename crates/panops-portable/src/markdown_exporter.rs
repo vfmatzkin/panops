@@ -54,7 +54,7 @@ impl NotesExporter for MarkdownExporter {
 fn humanize_speaker_id(raw: &str) -> String {
     if let Some(num) = raw.strip_prefix("speaker_") {
         if let Ok(id) = num.parse::<u32>() {
-            return format!("Speaker {}", id + 1);
+            return format!("Speaker {}", id.saturating_add(1));
         }
     }
     raw.to_string()
@@ -63,32 +63,34 @@ fn humanize_speaker_id(raw: &str) -> String {
 /// Replace all `speaker_N` patterns in text with `Speaker N+1`.
 /// Used for narrative content where speaker references may appear.
 fn humanize_speakers_in_text(text: &str) -> String {
-    // Replace all `speaker_N` patterns. The pattern appears in markdown as:
-    // - `speaker_0` in prose
-    // - `**speaker_0:**` in fallback transcript dumps
-    // Use a simple regex-like replacement since we control the format.
-    let mut result = text.to_string();
-    // Find and replace each speaker_N pattern
-    let mut i = 0;
-    while i < result.len() {
-        if result[i..].starts_with("speaker_") {
-            // Find the end of the number
-            let num_start = i + 8;
-            let num_end = result[num_start..]
-                .find(|c: char| !c.is_ascii_digit())
-                .map(|pos| num_start + pos)
-                .unwrap_or(result.len());
-            if num_start < num_end {
-                if let Ok(id) = result[num_start..num_end].parse::<u32>() {
-                    let replacement = format!("Speaker {}", id + 1);
-                    result.replace_range(i..num_end, &replacement);
-                    i += replacement.len();
-                    continue;
-                }
+    // Replace each `speaker_N` with `Speaker N+1`. `match_indices` on the
+    // ASCII pattern yields only valid UTF-8 char boundaries, so this stays
+    // safe on multi-byte text (e.g. accented Spanish) — the old
+    // byte-increment scan panicked when it sliced mid-character.
+    let mut result = String::with_capacity(text.len());
+    let mut last = 0;
+    for (start, _) in text.match_indices("speaker_") {
+        if start < last {
+            continue; // inside a region already consumed
+        }
+        result.push_str(&text[last..start]);
+        let num_start = start + "speaker_".len();
+        let digits_len = text[num_start..]
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count();
+        if digits_len > 0 {
+            if let Ok(id) = text[num_start..num_start + digits_len].parse::<u32>() {
+                result.push_str(&format!("Speaker {}", id.saturating_add(1)));
+                last = num_start + digits_len;
+                continue;
             }
         }
-        i += 1;
+        // Not a valid `speaker_N`: keep the literal prefix and continue past it.
+        result.push_str("speaker_");
+        last = num_start;
     }
+    result.push_str(&text[last..]);
     result
 }
 
