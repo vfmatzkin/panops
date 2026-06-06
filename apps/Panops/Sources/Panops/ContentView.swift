@@ -166,10 +166,22 @@ final class AppViewModel: ObservableObject {
             return
         }
         do {
-            selectedMeeting = try await client.meetingGet(id: id)
+            let meeting = try await client.meetingGet(id: id)
+            guard selectedMeetingId == id else { return }
+            selectedMeeting = meeting
+            showSelectedMeetingAfterTerminalState()
         } catch {
             Self.logFullError("meeting.get", error)
             selectedMeeting = nil
+        }
+    }
+
+    private func showSelectedMeetingAfterTerminalState() {
+        switch state {
+        case .done, .error:
+            state = .idle(audio: nil)
+        case .engineNotConnected, .idle, .working:
+            break
         }
     }
 
