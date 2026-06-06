@@ -122,7 +122,7 @@ impl EngineServices {
             storage,
             data_dir,
             heavy,
-            notes_jobs: Arc::new(Semaphore::new(MAX_CONCURRENT_NOTES_JOBS)),
+            notes_jobs: Self::new_notes_jobs(),
         }
     }
 
@@ -147,9 +147,16 @@ impl EngineServices {
             storage,
             data_dir,
             heavy: heavy.clone(),
-            notes_jobs: Arc::new(Semaphore::new(MAX_CONCURRENT_NOTES_JOBS)),
+            notes_jobs: Self::new_notes_jobs(),
         };
         (services, heavy)
+    }
+
+    /// Single source of truth for the notes-job backpressure semaphore so
+    /// every constructor shares one bound — a new constructor (builder,
+    /// test factory) can't silently drift `MAX_CONCURRENT_NOTES_JOBS`.
+    fn new_notes_jobs() -> Arc<Semaphore> {
+        Arc::new(Semaphore::new(MAX_CONCURRENT_NOTES_JOBS))
     }
 }
 
