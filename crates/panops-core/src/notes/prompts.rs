@@ -27,10 +27,10 @@ pub const SECTION_CHUNK_TARGET_CHARS: usize = 4000;
 
 /// Approximate rendered transcript overhead per segment line.
 /// Line format: "[XXXX–YYYYs] speaker_N: TEXT\n".
-pub const SEGMENT_LINE_OVERHEAD: usize = 20;
+const SEGMENT_LINE_OVERHEAD: usize = 20;
 
 /// Minimum silence gap treated as a semantic chunk boundary.
-pub const SPLIT_GAP_THRESHOLD_MS: u64 = 2000;
+const SPLIT_GAP_THRESHOLD_MS: u64 = 2000;
 
 /// Compact summary of a section, fed to the frontmatter prompt.
 #[derive(Debug, Clone)]
