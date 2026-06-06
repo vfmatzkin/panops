@@ -146,6 +146,36 @@ impl LlmProvider for BulkyRecordingLlm {
     }
 }
 
+#[derive(Default)]
+struct MergeFailingLlm {
+    calls: Mutex<Vec<LlmRequest>>,
+}
+
+impl LlmProvider for MergeFailingLlm {
+    fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
+        let response = if req.user.starts_with("Section transcript") {
+            let markers = marker_list(&req.user);
+            LlmResponse::Json(serde_json::json!({
+                "title": markers.first().map_or("Chunk", String::as_str),
+                "narrative_md": markers.join(" "),
+                "key_points": markers,
+                "action_items": []
+            }))
+        } else if req.user.starts_with("Sub-chunk summaries") {
+            LlmResponse::Text("merge failed as text".into())
+        } else if req.user.starts_with("Section summaries") {
+            LlmResponse::Json(serde_json::json!({
+                "title": "Team Meeting",
+                "tags": ["meeting"]
+            }))
+        } else {
+            return Err(LlmError::Provider("unexpected prompt".into()));
+        };
+        self.calls.lock().unwrap().push(req);
+        Ok(response)
+    }
+}
+
 fn marker_list(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for token in text.split_whitespace() {
@@ -407,6 +437,45 @@ fn long_section_merges_chunk_summaries_in_bounded_rounds() {
         narrative_order.windows(2).all(|pair| pair[0] < pair[1]),
         "merged marker order should remain chronological: {narrative}"
     );
+}
+
+#[test]
+fn long_section_merge_text_response_falls_back_without_aborting() {
+    let mut segments = Vec::new();
+    for i in 0..18u64 {
+        let marker = format!("marker-fallback-{i:02}");
+        let filler = " context".repeat(90);
+        let start_ms = i * 4_000;
+        segments.push(seg(
+            start_ms,
+            start_ms + 1_000,
+            0,
+            &format!("{marker}{filler}"),
+        ));
+    }
+
+    let llm = MergeFailingLlm::default();
+    let generator = NotesGenerator {
+        llm: &llm,
+        dialect: MarkdownDialect::Basic,
+    };
+
+    let notes = generator
+        .generate(notes_input(segments, 72_000))
+        .expect("generate should not abort when merge falls back");
+
+    assert_eq!(notes.sections.len(), 1);
+    assert_eq!(notes.sections[0].title, "Section");
+    let narrative = &notes.sections[0].narrative_md;
+    assert!(
+        narrative.contains("panops: llm error: merge LLM returned text, expected json"),
+        "fallback should include merge error marker; got: {narrative}"
+    );
+    assert!(
+        narrative.contains("marker-fallback-00"),
+        "fallback should preserve original transcript content; got: {narrative}"
+    );
+    assert_eq!(notes.frontmatter.title, "Team Meeting");
 }
 
 #[test]
