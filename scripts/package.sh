@@ -27,6 +27,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>dev.panops.Panops</string>
   <key>CFBundleExecutable</key><string>Panops</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>NSMicrophoneUsageDescription</key><string>Panops records meeting audio to transcribe it on-device.</string>
@@ -41,8 +42,9 @@ codesign --force --options runtime --timestamp=none \
   --entitlements apps/Panops/Panops.entitlements -s - "$APP"
 codesign --verify --deep --strict "$APP"
 
-# 5. Tar + sha256
+# 5. Tar + sha256 (bare hash in the .sha256 file — the cask needs just the
+# digest; the human-readable line goes to stdout).
 TARBALL="$OUT/Panops-${VERSION}.tar.gz"
 tar -C "$OUT" -czf "$TARBALL" Panops.app
-shasum -a 256 "$TARBALL" | tee "$TARBALL.sha256"
-echo "built $TARBALL"
+shasum -a 256 "$TARBALL" | awk '{print $1}' > "$TARBALL.sha256"
+echo "built $TARBALL  sha256=$(cat "$TARBALL.sha256")"
