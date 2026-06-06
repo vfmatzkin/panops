@@ -732,7 +732,7 @@ impl Capture for FakeCapture {
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| CaptureError::Capture(e.to_string()))?
             .as_millis() as u64;
-        let duration_ms = (ended_at_ms - started_at_ms).max(1000);
+        let duration_ms = ended_at_ms.saturating_sub(started_at_ms).max(1000);
 
         // Generate synthetic 440 Hz sine wave WAV at 16 kHz mono.
         let audio_path = meeting_dir.join("audio.wav");
@@ -760,27 +760,24 @@ impl Capture for FakeCapture {
             .finalize()
             .map_err(|e| CaptureError::Capture(e.to_string()))?;
 
-        // Copy screenshot fixtures from tests/fixtures/screenshots/.
+        // Write self-contained synthetic screenshot placeholders. The fake
+        // must NOT depend on tests/fixtures being an ancestor of meeting_dir
+        // (the engine's per-meeting dir lives outside the workspace, so the
+        // old ancestor-walk failed there). Emit a minimal embedded JPEG
+        // (SOI + JFIF APP0 + EOI) instead — enough for the contract, which
+        // only requires the screenshot paths to exist.
         let screenshots_dir = meeting_dir.join("screenshots");
         std::fs::create_dir_all(&screenshots_dir).map_err(CaptureError::Io)?;
 
-        let workspace_root = meeting_dir
-            .ancestors()
-            .find(|p| p.join("tests/fixtures/screenshots").is_dir())
-            .ok_or_else(|| CaptureError::Capture("workspace fixtures not found".into()))?;
-
-        let fixtures_screenshots = workspace_root.join("tests/fixtures/screenshots");
+        const FAKE_JPEG: &[u8] = &[
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00,
+            0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9,
+        ];
         let mut screenshot_paths: Vec<PathBuf> = Vec::new();
-
-        // Copy first 3 fixture screenshots (or fewer if not available).
         for i in 1..=3 {
-            let fixture_name = format!("{:03}.jpg", i);
-            let fixture_path = fixtures_screenshots.join(&fixture_name);
-            if fixture_path.exists() {
-                let dest_path = screenshots_dir.join(&fixture_name);
-                std::fs::copy(&fixture_path, &dest_path).map_err(CaptureError::Io)?;
-                screenshot_paths.push(dest_path);
-            }
+            let dest_path = screenshots_dir.join(format!("{:03}.jpg", i));
+            std::fs::write(&dest_path, FAKE_JPEG).map_err(CaptureError::Io)?;
+            screenshot_paths.push(dest_path);
         }
 
         Ok(CaptureResult {
