@@ -28,7 +28,10 @@ pub fn pick_llm(
 
     #[cfg(target_os = "macos")]
     {
-        if let Some(sidecar) = sidecar_path.and_then(crate::sidecar_binary::executable_file) {
+        let resolved = sidecar_path
+            .and_then(crate::sidecar_binary::executable_file)
+            .or_else(|| crate::sidecar_binary::sibling_of_engine("panops-llm-mac"));
+        if let Some(sidecar) = resolved {
             let llm = panops_mac::FoundationLlm::new(sidecar.clone());
             match llm.probe() {
                 Ok(probe) if probe.available => {
