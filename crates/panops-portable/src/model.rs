@@ -143,7 +143,14 @@ fn verification_cache_valid(model_path: &Path, expected_sha256: &str) -> bool {
     let current_size = metadata.len();
     let (current_mtime_secs, current_mtime_nanos) = mtime_parts(current_mtime);
 
-    // Size and mtime must match.
+    // Trust file metadata (size + mtime) as a proxy for "unchanged since we
+    // last verified its sha256". This is a STARTUP-PERF optimization, not a
+    // security boundary: the multi-GB model is re-hashed on first acquisition
+    // (download integrity is fully verified there), and the model dir is the
+    // user's own local Application Support dir. A local actor who replaces the
+    // file preserving both size AND mtime would bypass re-verification — that's
+    // out of scope (same local-operator-trust posture as the sidecar-bin path).
+    // Any size/mtime change (the normal case for a real replacement) re-verifies.
     if marker.size != current_size {
         return false;
     }
