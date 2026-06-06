@@ -146,6 +146,17 @@ const DOWNLOAD_SIZE_GRACE: u64 = 1024 * 1024; // 1 MiB
 /// stream. Comfortably above the largest registered model.
 const MAX_MODEL_DOWNLOAD_BYTES: u64 = 6 * 1024 * 1024 * 1024; // 6 GiB
 
+/// Byte limit for an in-progress download. Always clamped to the hard ceiling,
+/// so an attacker-controlled `Content-Length` (even `u64::MAX`) can't raise it.
+fn download_size_limit(total_bytes: Option<u64>) -> u64 {
+    match total_bytes {
+        Some(t) => t
+            .saturating_add(DOWNLOAD_SIZE_GRACE)
+            .min(MAX_MODEL_DOWNLOAD_BYTES),
+        None => MAX_MODEL_DOWNLOAD_BYTES,
+    }
+}
+
 fn percent_complete(done: u64, total: u64) -> Option<u8> {
     if total == 0 {
         return None;
@@ -265,6 +276,15 @@ fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Resul
         return Err(AsrError::Model(format!("download HTTP {}", resp.status())));
     }
     let total_bytes = resp.content_length();
+    // Fail fast on a known-oversized Content-Length (don't stream gigabytes
+    // first); the in-loop guard handles servers that under-report then overrun.
+    if let Some(total) = total_bytes {
+        if total > MAX_MODEL_DOWNLOAD_BYTES {
+            return Err(AsrError::Model(format!(
+                "server Content-Length {total} exceeds max {MAX_MODEL_DOWNLOAD_BYTES} bytes; aborting"
+            )));
+        }
+    }
     let tmp = dest.with_extension("partial");
     let mut bytes_written: u64 = 0;
     {
@@ -288,9 +308,7 @@ fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Resul
             // Bound the download: cap at Content-Length + grace, or a hard
             // ceiling when the size is unknown, so a compromised/MITM host
             // can't fill the disk before the post-download checksum catches it.
-            let limit = total_bytes
-                .map(|t| t.saturating_add(DOWNLOAD_SIZE_GRACE))
-                .unwrap_or(MAX_MODEL_DOWNLOAD_BYTES);
+            let limit = download_size_limit(total_bytes);
             if bytes_written > limit {
                 let _ = fs::remove_file(&tmp);
                 return Err(AsrError::Model(format!(
@@ -501,6 +519,21 @@ mod tests {
         assert_eq!(percent_complete(999, 1000), Some(100));
         assert_eq!(percent_complete(120, 100), Some(100));
         assert_eq!(percent_complete(1, 0), None);
+    }
+
+    #[test]
+    fn download_size_limit_always_clamps_to_hard_ceiling() {
+        assert_eq!(download_size_limit(None), MAX_MODEL_DOWNLOAD_BYTES);
+        assert_eq!(download_size_limit(Some(1000)), 1000 + DOWNLOAD_SIZE_GRACE);
+        // Attacker-controlled huge / u64::MAX must NOT raise the limit.
+        assert_eq!(
+            download_size_limit(Some(u64::MAX)),
+            MAX_MODEL_DOWNLOAD_BYTES
+        );
+        assert_eq!(
+            download_size_limit(Some(MAX_MODEL_DOWNLOAD_BYTES * 2)),
+            MAX_MODEL_DOWNLOAD_BYTES
+        );
     }
 
     #[test]
