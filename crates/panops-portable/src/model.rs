@@ -229,29 +229,21 @@ fn emit_download_progress(
     let percent = total_bytes.and_then(|total| percent_complete(bytes_downloaded, total));
     let eta_secs = total_bytes.and_then(|total| eta_secs(bytes_downloaded, total, bytes_per_sec));
     let summary = format_download_progress(bytes_downloaded, total_bytes, bytes_per_sec);
-    if complete {
-        tracing::info!(
-            bytes = bytes_downloaded,
-            total_bytes = ?total_bytes,
-            percent = ?percent,
-            bytes_per_sec,
-            rate = %human_rate(bytes_per_sec),
-            eta_secs = ?eta_secs,
-            progress = %summary,
-            "model download progress complete"
-        );
+    let msg = if complete {
+        "model download progress complete"
     } else {
-        tracing::info!(
-            bytes = bytes_downloaded,
-            total_bytes = ?total_bytes,
-            percent = ?percent,
-            bytes_per_sec,
-            rate = %human_rate(bytes_per_sec),
-            eta_secs = ?eta_secs,
-            progress = %summary,
-            "model download progress"
-        );
-    }
+        "model download progress"
+    };
+    tracing::info!(
+        bytes = bytes_downloaded,
+        total_bytes = ?total_bytes,
+        percent = ?percent,
+        bytes_per_sec,
+        rate = %human_rate(bytes_per_sec),
+        eta_secs = ?eta_secs,
+        progress = %summary,
+        "{msg}"
+    );
 }
 
 fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Result<u64, AsrError> {
@@ -287,7 +279,9 @@ fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Resul
                 .map_err(|e| AsrError::Model(format!("write {tmp:?}: {e}")))?;
             bytes_written += n as u64;
             let now = Instant::now();
-            let elapsed = now.duration_since(last_progress_at);
+            // saturating: never panic if the monotonic clock appears to go
+            // backwards (VM/container clock adjustments).
+            let elapsed = now.saturating_duration_since(last_progress_at);
             if elapsed >= DOWNLOAD_PROGRESS_INTERVAL {
                 let bytes_since_last = bytes_written - last_progress_bytes;
                 emit_download_progress(
@@ -301,11 +295,14 @@ fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Resul
                 last_progress_bytes = bytes_written;
             }
         }
+        // Final line reports the OVERALL AVERAGE rate (cumulative bytes ÷ total
+        // elapsed), the meaningful completion metric — distinct from the periodic
+        // interval rates. saturating to avoid a non-monotonic-clock panic.
         emit_download_progress(
             bytes_written,
             total_bytes,
             bytes_written,
-            download_started_at.elapsed(),
+            Instant::now().saturating_duration_since(download_started_at),
             true,
         );
         file.sync_all()
@@ -485,6 +482,13 @@ mod tests {
         assert_eq!(percent_complete(999, 1000), Some(100));
         assert_eq!(percent_complete(120, 100), Some(100));
         assert_eq!(percent_complete(1, 0), None);
+    }
+
+    #[test]
+    fn bytes_per_second_handles_zero_elapsed_and_normal() {
+        assert_eq!(bytes_per_second(1000, Duration::ZERO), 0);
+        assert_eq!(bytes_per_second(1000, Duration::from_secs(2)), 500);
+        assert_eq!(bytes_per_second(0, Duration::from_secs(5)), 0);
     }
 
     #[test]
