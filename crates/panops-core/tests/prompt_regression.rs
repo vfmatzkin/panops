@@ -141,7 +141,7 @@ fn check_or_regenerate_golden(
 
 #[test]
 fn section_narrative_prompt_goldens() {
-    let regen = std::env::var("PANOPS_REGEN_PROMPT_GOLDENS").is_ok();
+    let regen = std::env::var("PANOPS_REGEN_PROMPT_GOLDENS").as_deref() == Ok("1");
     let goldens_dir = workspace_root().join("tests/fixtures/prompts");
     std::fs::create_dir_all(&goldens_dir).unwrap();
 
@@ -162,7 +162,7 @@ fn section_narrative_prompt_goldens() {
 
 #[test]
 fn frontmatter_prompt_golden() {
-    let regen = std::env::var("PANOPS_REGEN_PROMPT_GOLDENS").is_ok();
+    let regen = std::env::var("PANOPS_REGEN_PROMPT_GOLDENS").as_deref() == Ok("1");
     let goldens_dir = workspace_root().join("tests/fixtures/prompts");
     std::fs::create_dir_all(&goldens_dir).unwrap();
 
@@ -176,7 +176,7 @@ fn frontmatter_prompt_golden() {
 
 #[test]
 fn merge_section_prompt_goldens() {
-    let regen = std::env::var("PANOPS_REGEN_PROMPT_GOLDENS").is_ok();
+    let regen = std::env::var("PANOPS_REGEN_PROMPT_GOLDENS").as_deref() == Ok("1");
     let goldens_dir = workspace_root().join("tests/fixtures/prompts");
     std::fs::create_dir_all(&goldens_dir).unwrap();
 
