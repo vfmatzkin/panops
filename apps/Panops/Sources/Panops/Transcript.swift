@@ -3,7 +3,7 @@ import Foundation
 /// Transcript JSON shape matching the engine's output.
 /// See spec appendix: handlers.rs writes transcript.json with this shape.
 struct Transcript: Codable {
-    let schemaVersion: String
+    let schemaVersion: Int
     let model: String
     let audioPath: String?
     let audioDurationMs: UInt64?
