@@ -334,6 +334,15 @@ final class AppViewModel: ObservableObject {
         wsSubscriptionTask?.cancel()
         wsSubscriptionTask = nil
         Task { await eventStream.stop() }
+        selectedMeetingId = nil
+        selectedMeeting = nil
+        state = .idle(audio: nil)
+    }
+
+    /// Return from a browsed meeting detail to the audio-file generation flow.
+    func startNewGenerationFlow() {
+        selectedMeetingId = nil
+        selectedMeeting = nil
         state = .idle(audio: nil)
     }
 
@@ -368,6 +377,14 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 720, minHeight: 480)
+        .toolbar {
+            if vm.selectedMeeting != nil {
+                Button("New") {
+                    vm.startNewGenerationFlow()
+                }
+                .help("Start a new notes-generation flow")
+            }
+        }
         .task {
             await vm.refreshMeetings()
         }
