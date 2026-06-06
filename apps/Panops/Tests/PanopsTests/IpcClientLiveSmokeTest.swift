@@ -83,47 +83,68 @@ struct IpcClientLiveSmokeTest {
         let jobId = try await client.notesGenerate(audio: audioPath, meetingId: meetingId)
         #expect(!jobId.isEmpty, "notes.generate should return a job_id")
 
-        // Wait for job.done or job.error with a short timeout (30s for short audio)
-        var receivedEvent: IpcEvent?
-        let timeout = Date().addingTimeInterval(30)
+        // Wait for job.done or job.error with a hard timeout (30s for short audio).
+        // The timeout races the stream read so a silent event stream fails
+        // deterministically instead of suspending forever.
+        let receivedEvent = await waitForTerminalEvent(
+            jobId: jobId,
+            in: eventStream,
+            timeoutSeconds: 30
+        )
 
-        for await event in eventStream {
-            switch event {
-            case .jobDone(let jId, _):
-                if jId == jobId {
-                    receivedEvent = event
-                    break
-                }
-            case .jobError(let jId, _):
-                if jId == jobId {
-                    receivedEvent = event
-                    break
-                }
-            case .unknown:
-                break
-            }
-            if receivedEvent != nil || Date() > timeout {
-                break
-            }
-        }
-
-        // Assert we received a job completion event for our job_id
-        #expect(receivedEvent != nil, "expected job.done or job.error for job_id \(jobId) within 30s")
-        if let event = receivedEvent {
-            switch event {
-            case .jobDone(let jId, let result):
-                #expect(jId == jobId, "job.done job_id mismatch")
-                #expect(result.meetingId == meetingId, "job.done meeting_id mismatch")
-            case .jobError(let jId, let payload):
-                #expect(jId == jobId, "job.error job_id mismatch")
-                // job.error is acceptable (e.g., ASR model unavailable)
-                // Log but don't fail - we're testing event delivery, not pipeline success
-                print("job.error received: \(payload.kind) - \(payload.message)")
-            case .unknown:
-                Issue.record("unexpected unknown event")
-            }
+        switch receivedEvent {
+        case .done(let jId, let resultMeetingId):
+            #expect(jId == jobId, "job.done job_id mismatch")
+            #expect(resultMeetingId == meetingId, "job.done meeting_id mismatch")
+        case .error(let jId, let kind, let message):
+            #expect(jId == jobId, "job.error job_id mismatch")
+            // job.error is acceptable (e.g., ASR model unavailable)
+            // Log but don't fail - we're testing event delivery, not pipeline success
+            print("job.error received: \(kind) - \(message)")
+        case .streamEnded:
+            Issue.record("event stream ended before job.done/job.error for job_id \(jobId)")
+        case .timedOut:
+            Issue.record("expected job.done or job.error for job_id \(jobId) within 30s")
         }
 
         await client.disconnect()
+    }
+
+    private enum TerminalEvent: Sendable {
+        case done(jobId: String, meetingId: String)
+        case error(jobId: String, kind: String, message: String)
+        case streamEnded
+        case timedOut
+    }
+
+    private func waitForTerminalEvent(
+        jobId: String,
+        in eventStream: AsyncStream<IpcEvent>,
+        timeoutSeconds: UInt64
+    ) async -> TerminalEvent {
+        await withTaskGroup(of: TerminalEvent.self) { group in
+            group.addTask {
+                for await event in eventStream {
+                    switch event {
+                    case .jobDone(let jId, let result) where jId == jobId:
+                        return .done(jobId: jId, meetingId: result.meetingId)
+                    case .jobError(let jId, let payload) where jId == jobId:
+                        return .error(jobId: jId, kind: payload.kind, message: payload.message)
+                    case .jobDone, .jobError, .unknown:
+                        break
+                    }
+                }
+                return .streamEnded
+            }
+
+            group.addTask {
+                try? await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
+                return .timedOut
+            }
+
+            let result = await group.next() ?? .streamEnded
+            group.cancelAll()
+            return result
+        }
     }
 }
