@@ -23,6 +23,7 @@ use panops_core::merge::merge_speaker_turns;
 use panops_core::notes::dialect::MarkdownDialect;
 use panops_core::notes::input::{MeetingMetadata, NotesInput};
 use panops_core::notes::pipeline::NotesGenerator;
+use panops_core::notes::raw_transcript::write_raw_transcript;
 use panops_protocol::{
     AudioSourcesWire, Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, Meeting,
     MeetingConfig, MeetingSummary, NotesDialect, NotesGenerateParams, NotesGenerateResult,
@@ -664,6 +665,18 @@ pub(super) fn run_notes_pipeline(
         Err(e) => {
             tracing::warn!(error = %e, "notes.generate: serialize transcript.json failed");
         }
+    }
+
+    // Additive raw-transcript sidecar (transcript.txt): a human-readable,
+    // grep-friendly view of the raw Whisper segments alongside notes.md, so the
+    // LLM synthesis can be compared against the source. Best-effort, mirroring
+    // the transcript.json write above — a failure logs but never aborts.
+    match write_raw_transcript(&transcript.segments, &out_dir) {
+        Ok(p) => tracing::info!(file = ?p, "notes.generate: wrote raw transcript sidecar"),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "notes.generate: write transcript.txt failed; continuing"
+        ),
     }
 
     let dialect = match params.dialect {
