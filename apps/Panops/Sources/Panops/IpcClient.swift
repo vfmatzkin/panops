@@ -173,8 +173,9 @@ actor IpcClient {
     }
 
     /// Subscribe to IPC events via WebSocket.
-    /// Sends `ipc.events.subscribe` and returns an AsyncStream of decoded events.
-    /// Requires wsConnect() to have been called first.
+    /// Wire flow: client sends events.subscribe (no params) → server replies with subscriptionId
+    /// → events arrive as notifications {method:"events", params:{subscription, result}}
+    /// The Event payload is params.result, NOT the whole frame.
     /// Slice 12 implementation per spec D6.
     func subscribeEvents() async throws -> AsyncStream<IpcEvent> {
         guard let conn = wsConnection else {
@@ -183,42 +184,50 @@ actor IpcClient {
             )
         }
 
-        // Send ipc.events.subscribe as a WebSocket text frame
+        // Send ipc.events.subscribe with no params (namespace prefix per jsonrpsee)
         let id = nextId
         nextId += 1
-        let subscribeRequest = JsonRpcRequest(id: id, method: "ipc.events.subscribe", param: EmptyParams())
+        let subscribeRequest = JsonRpcRequestNoParams(id: id, method: "ipc.events.subscribe")
         let body = try JSONEncoder().encode(subscribeRequest)
         let frame = Self.buildWsTextFrame(body)
         try await Self.send(conn, data: frame)
 
-        // Create AsyncStream that yields decoded events
+        // Read the subscription-id result reply (first frame after subscribe)
+        var replyBuffer = Data()
+        let replyData = try await Self.readWsFrame(conn, buffer: &replyBuffer)
+        guard let replyFrameData = replyData else {
+            throw IpcClientError.websocketFrameError("no reply for events.subscribe")
+        }
+        let reply = try JSONDecoder().decode(JsonRpcResponse<String>.self, from: replyFrameData)
+        guard reply.id == id else {
+            throw IpcClientError.websocketFrameError("wrong id in events.subscribe reply")
+        }
+        if let err = reply.error {
+            throw IpcClientError.rpcError(code: err.code, message: err.message)
+        }
+        guard reply.result != nil else {
+            throw IpcClientError.websocketFrameError("events.subscribe reply missing result")
+        }
+        // The subscriptionId in reply.result is echoed in each notification's
+        // params.subscription field; we don't need to track it directly.
+
+        // Create AsyncStream that yields decoded events from notifications
+        // Copy buffer data before entering the closure to avoid data race
+        let initialBufferData = Data(replyBuffer)
         return AsyncStream { continuation in
             Task {
-                var buffer = Data()
+                var buffer = initialBufferData  // continue with any remaining data
                 while !Task.isCancelled {
                     do {
-                        let chunk: Data = try await withCheckedThrowingContinuation { cont in
-                            conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
-                                if let error = error {
-                                    cont.resume(throwing: error)
-                                } else if let data = data, !data.isEmpty {
-                                    cont.resume(returning: data)
-                                } else if isComplete {
-                                    cont.resume(throwing: IpcClientError.disconnected)
-                                } else {
-                                    cont.resume(returning: Data())
-                                }
-                            }
+                        let frameData = try await Self.readWsFrame(conn, buffer: &buffer)
+                        guard let eventData = frameData else {
+                            // Non-text frame or incomplete, continue
+                            continue
                         }
-                        buffer.append(chunk)
-
-                        // Try to parse frames from buffer
-                        // parseFrameFromBuffer returns Data? - nil for non-text or incomplete
-                        let parseResult = try Self.parseFrameFromBuffer(&buffer)
-                        if let eventData = parseResult {
-                            let event = try JSONDecoder().decode(IpcEvent.self, from: eventData)
-                            continuation.yield(event)
-                        }
+                        // Decode notification envelope and extract params.result
+                        let notification = try JSONDecoder().decode(JsonRpcNotification.self, from: eventData)
+                        // The Event payload is in params.result
+                        continuation.yield(notification.params.result)
                     } catch {
                         continuation.finish()
                         break
@@ -227,6 +236,41 @@ actor IpcClient {
                 continuation.finish()
             }
         }
+    }
+
+    /// Read a single WebSocket frame from the connection.
+    /// Returns payload Data for text frames (opcode 0x01), nil for non-text.
+    /// Accumulates fragmented frames (FIN=0) until FIN=1.
+    private static func readWsFrame(_ conn: NWConnection, buffer: inout Data) async throws -> Data? {
+        // Accumulate incoming data until we have a complete frame
+        while buffer.count < 2 {
+            let chunk: Data = try await withCheckedThrowingContinuation { cont in
+                conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
+                    if let error = error {
+                        cont.resume(throwing: error)
+                    } else if let data = data, !data.isEmpty {
+                        cont.resume(returning: data)
+                    } else if isComplete {
+                        cont.resume(throwing: IpcClientError.disconnected)
+                    } else {
+                        cont.resume(returning: Data())
+                    }
+                }
+            }
+            buffer.append(chunk)
+        }
+
+        // Use WsFrameParser for proper frame handling (including fragmentation)
+        let result = try WsFrameParser.parse(buffer)
+        if result != nil {
+            // Successfully parsed a complete frame - remove it from buffer
+            // Calculate consumed bytes based on frame structure
+            let consumed = Self.calculateFrameLength(buffer)
+            if consumed > 0 && buffer.count >= consumed {
+                buffer = Data(buffer.dropFirst(consumed))
+            }
+        }
+        return result
     }
 
     /// Build a WebSocket text frame with masked payload (client-to-server).
@@ -421,9 +465,8 @@ actor IpcClient {
     /// without live capture; the returned id is used for the polling
     /// loop.
     func meetingStart() async throws -> String {
-        let result: String = try await sendRequest(
-            method: "ipc.meeting.start",
-            params: EmptyParams()
+        let result: String = try await sendRequestNoParams(
+            method: "ipc.meeting.start"
         )
         return result
     }
@@ -443,9 +486,8 @@ actor IpcClient {
     /// `ipc.meeting.list` — fetches all meeting summaries.
     /// Slice 12: sidebar needs meeting list for navigation.
     func meetingList() async throws -> [MeetingSummary] {
-        return try await sendRequest(
-            method: "ipc.meeting.list",
-            params: EmptyParams()
+        return try await sendRequestNoParams(
+            method: "ipc.meeting.list"
         )
     }
 
@@ -458,6 +500,34 @@ actor IpcClient {
         let id = nextId
         nextId += 1
         let envelope = JsonRpcRequest(id: id, method: method, param: params)
+        let body = try JSONEncoder().encode(envelope)
+        let request = Self.buildHttpRequest(body: body)
+        let conn = NWConnection(to: endpoint, using: .tcp)
+        try await Self.start(conn)
+        defer { conn.cancel() }
+        try await Self.send(conn, data: request)
+        let (status, responseBody) = try await Self.readHttpResponse(conn)
+        guard status == 200 else {
+            let bodyString = String(data: responseBody, encoding: .utf8) ?? ""
+            throw IpcClientError.httpError(status: status, body: bodyString)
+        }
+        let resp = try JSONDecoder().decode(JsonRpcResponse<R>.self, from: responseBody)
+        if let err = resp.error {
+            throw IpcClientError.rpcError(code: err.code, message: err.message)
+        }
+        guard let result = resp.result else {
+            throw IpcClientError.decode("response missing both result and error")
+        }
+        return result
+    }
+
+    /// Send request for methods that take no parameters.
+    private func sendRequestNoParams<R: Decodable>(
+        method: String
+    ) async throws -> R {
+        let id = nextId
+        nextId += 1
+        let envelope = JsonRpcRequestNoParams(id: id, method: method)
         let body = try JSONEncoder().encode(envelope)
         let request = Self.buildHttpRequest(body: body)
         let conn = NWConnection(to: endpoint, using: .tcp)
