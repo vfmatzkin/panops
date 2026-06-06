@@ -140,6 +140,16 @@ pub fn estimate_transcript_chars(segments: &[Segment]) -> usize {
     segments.iter().map(|s| s.text.len() + 20).sum()
 }
 
+/// Estimate the input size contribution of one chunk-summary JSON value.
+///
+/// This intentionally uses serialized JSON length as a cheap, conservative-ish
+/// proxy for the text `build_merge_section_prompt` will render. The rendered
+/// prompt adds labels/instructions around these fields, so callers should still
+/// reserve prompt headroom or verify the final prompt size before sending it.
+pub fn estimate_chunk_summary_chars(summary: &serde_json::Value) -> usize {
+    serde_json::to_string(summary).map_or(0, |s| s.len())
+}
+
 /// Split segments into ordered sub-chunks, each respecting segment boundaries.
 /// Returns non-empty chunks where each chunk's rendered transcript is close to
 /// `target_chars` but never exceeds `max_chars`. The last chunk may be smaller.

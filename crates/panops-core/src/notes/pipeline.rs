@@ -25,11 +25,12 @@ use crate::notes::ir::{ActionItem, NotesFrontmatter, NotesSection, Screenshot, S
 use crate::notes::prompts::{
     SECTION_CHUNK_TARGET_CHARS, SECTION_CHUNK_THRESHOLD_CHARS, SectionSummary,
     build_frontmatter_prompt, build_merge_section_prompt, build_section_narrative_prompt,
-    estimate_transcript_chars, split_segments_for_chunking,
+    estimate_chunk_summary_chars, estimate_transcript_chars, split_segments_for_chunking,
 };
 use crate::notes::screenshot_anchoring::anchor_screenshots;
 use crate::notes::topic_segmentation::{TopicSegmentationConfig, segment_topics};
 use crate::notes::verifier;
+use serde_json::Value;
 
 pub struct NotesGenerator<'a> {
     pub llm: &'a (dyn LlmProvider + 'a),
@@ -216,10 +217,11 @@ impl NotesGenerator<'_> {
                 }
             }
 
-            // Merge chunk summaries into final section
-            let merge_req = build_merge_section_prompt(&chunk_summaries, self.dialect, language);
-            match self.llm.complete(merge_req) {
-                Ok(LlmResponse::Json(v)) => {
+            // Merge chunk summaries into final section. The merge itself is
+            // bounded so many sub-chunks cannot recreate the original
+            // over-context prompt.
+            match self.merge_chunk_summaries(chunk_summaries, language) {
+                Ok(v) => {
                     let draft = SectionDraft::from_json(time_range_ms, segs.clone(), v);
                     match verifier::verify_section_attribution(
                         &draft.narrative_md,
@@ -242,20 +244,88 @@ impl NotesGenerator<'_> {
                         }
                     }
                 }
-                Ok(LlmResponse::Text(_)) => SectionDraft::fallback(
-                    time_range_ms,
-                    segs,
-                    "merge LLM returned text, expected json",
-                    self.dialect,
-                ),
-                Err(e) => SectionDraft::fallback(
-                    time_range_ms,
-                    segs,
-                    &format!("merge LLM call failed: {e}"),
-                    self.dialect,
-                ),
+                Err(err) => SectionDraft::fallback(time_range_ms, segs, &err, self.dialect),
             }
         }
+    }
+
+    fn merge_chunk_summaries(
+        &self,
+        mut summaries: Vec<Value>,
+        language: &str,
+    ) -> Result<Value, String> {
+        if summaries.is_empty() {
+            return Err("merge LLM call failed: no chunk summaries".to_string());
+        }
+
+        while summaries.len() > 1 {
+            let before_estimate = summaries
+                .iter()
+                .map(estimate_chunk_summary_chars)
+                .sum::<usize>();
+            let mut next_round = Vec::new();
+            let mut index = 0;
+
+            while index < summaries.len() {
+                let mut batch = Vec::new();
+                let mut batch_estimate = 0usize;
+
+                while index < summaries.len() {
+                    let next = summaries[index].clone();
+                    let next_estimate = estimate_chunk_summary_chars(&next);
+
+                    if !batch.is_empty() {
+                        let candidate_estimate = batch_estimate.saturating_add(next_estimate);
+                        if candidate_estimate > SECTION_CHUNK_THRESHOLD_CHARS {
+                            break;
+                        }
+
+                        let mut candidate_batch = batch.clone();
+                        candidate_batch.push(next.clone());
+                        let candidate_req =
+                            build_merge_section_prompt(&candidate_batch, self.dialect, language);
+                        if candidate_req.user.len() > SECTION_CHUNK_THRESHOLD_CHARS {
+                            break;
+                        }
+                    }
+
+                    batch.push(next);
+                    batch_estimate = batch_estimate.saturating_add(next_estimate);
+                    index += 1;
+                }
+
+                let merge_req = build_merge_section_prompt(&batch, self.dialect, language);
+                if merge_req.user.len() > SECTION_CHUNK_THRESHOLD_CHARS {
+                    tracing::warn!(
+                        input_chars = merge_req.user.len(),
+                        threshold = SECTION_CHUNK_THRESHOLD_CHARS,
+                        "single chunk summary exceeds merge context threshold"
+                    );
+                }
+
+                match self.llm.complete(merge_req) {
+                    Ok(LlmResponse::Json(v)) => next_round.push(v),
+                    Ok(LlmResponse::Text(_)) => {
+                        return Err("merge LLM returned text, expected json".to_string());
+                    }
+                    Err(e) => return Err(format!("merge LLM call failed: {e}")),
+                }
+            }
+
+            let after_estimate = next_round
+                .iter()
+                .map(estimate_chunk_summary_chars)
+                .sum::<usize>();
+            if next_round.len() == summaries.len() && after_estimate >= before_estimate {
+                return Err(
+                    "merge LLM call failed: chunk summaries cannot be reduced within context threshold"
+                        .to_string(),
+                );
+            }
+            summaries = next_round;
+        }
+
+        Ok(summaries.remove(0))
     }
 
     /// Single-section LLM call (original path, unchanged).
