@@ -7,6 +7,9 @@ import Foundation
 /// Slice 12 implementation per spec D7.
 actor EventStreamActor {
     private var subscription: AsyncStream<IpcEvent>?
+    /// Handle to the event-routing loop so `stop()` can cancel it; without this
+    /// the spawned Task outlives `stop()` and keeps routing until the stream ends.
+    private var loopTask: Task<Void, Never>?
     private var callbacks: [String: @Sendable (IpcEvent) -> Void] = [:]
     /// Buffer of recent job.done/job.error events, stored in insertion order.
     /// Bounded to prevent unbounded growth if callbacks are never registered.
@@ -18,7 +21,8 @@ actor EventStreamActor {
     func subscribe(client: IpcClient) async throws {
         let stream = try await client.subscribeEvents()
         subscription = stream
-        Task {
+        loopTask?.cancel()
+        loopTask = Task {
             for await event in stream {
                 route(event: event)
             }
@@ -47,6 +51,8 @@ actor EventStreamActor {
 
     /// Stop the subscription and clear all callbacks.
     func stop() {
+        loopTask?.cancel()
+        loopTask = nil
         subscription = nil
         callbacks.removeAll()
         eventBuffer.removeAll()
