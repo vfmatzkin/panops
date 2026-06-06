@@ -86,49 +86,46 @@ struct MeetingDetailView: View {
 
         let dirPath = meeting.dirPath
 
-        // Load transcript.json
-        let transcriptPath = (dirPath as NSString).appendingPathComponent("transcript.json")
-        if PathValidator.isPath(transcriptPath, under: dirPath),
-           FileManager.default.fileExists(atPath: transcriptPath) {
-            if let data = FileManager.default.contents(atPath: transcriptPath) {
-                do {
-                    transcript = try JSONDecoder().decode(Transcript.self, from: data)
-                } catch {
-                    // Keep nil on decode error
-                }
-            }
-        }
+        // Read + JSON-decode off the MainActor: transcript.json can be large for
+        // long meetings, and a sync read+decode on the main thread hitches the UI
+        // on every meeting selection (same hazard as ThumbnailView.loadImage).
+        let loaded = await Task.detached(priority: .utility) { () -> (Transcript?, String?, [URL]?) in
+            var t: Transcript?
+            var notes: String?
+            var shots: [URL]?
 
-        // Load notes.md
-        let notesPath = (dirPath as NSString).appendingPathComponent("notes.md")
-        if PathValidator.isPath(notesPath, under: dirPath),
-           FileManager.default.fileExists(atPath: notesPath) {
-            do {
-                notesContent = try String(contentsOfFile: notesPath, encoding: .utf8)
-            } catch {
-                // Keep nil on error
+            let transcriptPath = (dirPath as NSString).appendingPathComponent("transcript.json")
+            if PathValidator.isPath(transcriptPath, under: dirPath),
+               FileManager.default.fileExists(atPath: transcriptPath),
+               let data = FileManager.default.contents(atPath: transcriptPath) {
+                t = try? JSONDecoder().decode(Transcript.self, from: data)
             }
-        }
 
-        // Enumerate screenshots/ directory
-        let screenshotsPath = (dirPath as NSString).appendingPathComponent("screenshots")
-        if PathValidator.isPath(screenshotsPath, under: dirPath),
-           FileManager.default.fileExists(atPath: screenshotsPath) {
-            do {
-                let contents = try FileManager.default.contentsOfDirectory(atPath: screenshotsPath)
-                screenshots = contents
+            let notesPath = (dirPath as NSString).appendingPathComponent("notes.md")
+            if PathValidator.isPath(notesPath, under: dirPath),
+               FileManager.default.fileExists(atPath: notesPath) {
+                notes = try? String(contentsOfFile: notesPath, encoding: .utf8)
+            }
+
+            let screenshotsPath = (dirPath as NSString).appendingPathComponent("screenshots")
+            if PathValidator.isPath(screenshotsPath, under: dirPath),
+               FileManager.default.fileExists(atPath: screenshotsPath),
+               let contents = try? FileManager.default.contentsOfDirectory(atPath: screenshotsPath) {
+                shots = contents
                     .filter { $0.hasSuffix(".png") || $0.hasSuffix(".jpg") || $0.hasSuffix(".jpeg") }
-                    .compactMap { filename in
+                    .compactMap { filename -> URL? in
                         let path = (screenshotsPath as NSString).appendingPathComponent(filename)
                         guard PathValidator.isPath(path, under: dirPath) else { return nil }
                         return URL(fileURLWithPath: path)
                     }
                     .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            } catch {
-                // Keep nil on error
             }
-        }
+            return (t, notes, shots)
+        }.value
 
+        transcript = loaded.0
+        notesContent = loaded.1
+        screenshots = loaded.2
         isLoading = false
     }
 
