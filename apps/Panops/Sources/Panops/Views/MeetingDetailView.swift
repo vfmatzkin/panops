@@ -123,6 +123,11 @@ struct MeetingDetailView: View {
             return (t, notes, shots)
         }.value
 
+        // The .task(id:) cancels on meeting switch, but the detached read still
+        // returns — bail so a slow load for the previous meeting can't overwrite
+        // the newly-selected one's detail.
+        guard !Task.isCancelled else { return }
+
         transcript = loaded.0
         notesContent = loaded.1
         screenshots = loaded.2

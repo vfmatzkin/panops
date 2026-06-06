@@ -62,12 +62,13 @@ struct ThumbnailView: View {
     }
 
     private func loadImage() async {
-        // Decode off the MainActor: NSImage(contentsOf:) does a synchronous
-        // disk read + decode, which would hitch the UI per visible thumbnail.
+        // Read bytes off the MainActor (sync disk read would hitch the UI per
+        // thumbnail), then build NSImage on-main — NSImage isn't Sendable, so
+        // only the Sendable Data crosses the actor boundary.
         let url = self.url
-        let loaded = await Task.detached(priority: .utility) {
-            NSImage(contentsOf: url)
+        let data = await Task.detached(priority: .utility) {
+            try? Data(contentsOf: url)
         }.value
-        image = loaded
+        image = data.flatMap { NSImage(data: $0) }
     }
 }
