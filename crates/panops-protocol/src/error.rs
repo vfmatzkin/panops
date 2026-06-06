@@ -269,6 +269,39 @@ mod from_domain {
             }
         }
     }
+
+    impl From<panops_core::meeting_store::MeetingStoreError> for IpcError {
+        fn from(e: panops_core::meeting_store::MeetingStoreError) -> Self {
+            match e {
+                panops_core::meeting_store::MeetingStoreError::MeetingNotFound { meeting_id } => {
+                    IpcError::InputNotFound {
+                        path: format!("meeting/{meeting_id}"),
+                    }
+                }
+                panops_core::meeting_store::MeetingStoreError::SegmentNotFound { id } => {
+                    IpcError::InputNotFound {
+                        path: format!("segment/{id}"),
+                    }
+                }
+                panops_core::meeting_store::MeetingStoreError::ScreenshotNotFound { id } => {
+                    IpcError::InputNotFound {
+                        path: format!("screenshot/{id}"),
+                    }
+                }
+                panops_core::meeting_store::MeetingStoreError::SpeakerNotFound { id } => {
+                    IpcError::InputNotFound {
+                        path: format!("speaker/{id}"),
+                    }
+                }
+                panops_core::meeting_store::MeetingStoreError::Io(io) => IpcError::Internal {
+                    message: io.to_string(),
+                },
+                panops_core::meeting_store::MeetingStoreError::Sql { message } => {
+                    IpcError::Internal { message }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(all(test, feature = "domain-conversions"))]

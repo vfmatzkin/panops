@@ -9,5 +9,6 @@ pub mod diar;
 pub mod exporter;
 pub mod fakes;
 pub mod llm;
+pub mod meeting_store;
 pub mod storage;
 pub mod vad;
