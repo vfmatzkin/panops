@@ -138,6 +138,13 @@ fn verify_sha256(path: &Path, expected: &str) -> Result<(), AsrError> {
 }
 
 const DOWNLOAD_PROGRESS_INTERVAL: Duration = Duration::from_secs(2);
+/// Tolerance over the server's Content-Length before aborting an over-large
+/// download (a compromised/MITM host could otherwise fill the disk before the
+/// post-download checksum runs).
+const DOWNLOAD_SIZE_GRACE: u64 = 1024 * 1024; // 1 MiB
+/// Hard ceiling when the server sends no Content-Length — bounds an unbounded
+/// stream. Comfortably above the largest registered model.
+const MAX_MODEL_DOWNLOAD_BYTES: u64 = 6 * 1024 * 1024 * 1024; // 6 GiB
 
 fn percent_complete(done: u64, total: u64) -> Option<u8> {
     if total == 0 {
@@ -278,6 +285,18 @@ fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Resul
             file.write_all(&buf[..n])
                 .map_err(|e| AsrError::Model(format!("write {tmp:?}: {e}")))?;
             bytes_written += n as u64;
+            // Bound the download: cap at Content-Length + grace, or a hard
+            // ceiling when the size is unknown, so a compromised/MITM host
+            // can't fill the disk before the post-download checksum catches it.
+            let limit = total_bytes
+                .map(|t| t.saturating_add(DOWNLOAD_SIZE_GRACE))
+                .unwrap_or(MAX_MODEL_DOWNLOAD_BYTES);
+            if bytes_written > limit {
+                let _ = fs::remove_file(&tmp);
+                return Err(AsrError::Model(format!(
+                    "download exceeded size limit ({bytes_written} > {limit} bytes); aborting"
+                )));
+            }
             let now = Instant::now();
             // saturating: never panic if the monotonic clock appears to go
             // backwards (VM/container clock adjustments).
@@ -482,6 +501,14 @@ mod tests {
         assert_eq!(percent_complete(999, 1000), Some(100));
         assert_eq!(percent_complete(120, 100), Some(100));
         assert_eq!(percent_complete(1, 0), None);
+    }
+
+    #[test]
+    fn format_duration_secs_covers_zero_sub_minute_and_multi_minute() {
+        assert_eq!(format_duration_secs(0), "0s");
+        assert_eq!(format_duration_secs(45), "45s");
+        assert_eq!(format_duration_secs(65), "1m 5s");
+        assert_eq!(format_duration_secs(600), "10m 0s");
     }
 
     #[test]
