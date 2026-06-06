@@ -58,3 +58,21 @@ swift test
 ```
 
 WebSocket frame parser tests and event routing tests validate the IPC implementation.
+
+## Installation (Homebrew)
+
+Install via the custom tap:
+
+```bash
+brew install --cask vfmatzkin/panops/panops
+```
+
+The cask installs `Panops.app` to `/Applications`. Panops is ad-hoc signed (not
+Apple-notarized), so macOS Gatekeeper will block first launch. Clear the quarantine
+flag once:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Panops.app
+```
+
+Or right-click the app → Open, then confirm in System Settings → Privacy & Security.
