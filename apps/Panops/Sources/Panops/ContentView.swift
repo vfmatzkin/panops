@@ -256,7 +256,7 @@ struct ContentView: View {
         VStack(spacing: 24) {
             // Show selected meeting detail if available
             if let meeting = vm.selectedMeeting {
-                MeetingDetailView(meeting: meeting)
+                MeetingDetailView(meeting: meeting, recordingController: recordingController)
             } else {
                 VStack(spacing: 16) {
                     Text("Panops").font(.largeTitle)

@@ -5,16 +5,27 @@ import SwiftUI
 /// Missing files → placeholders (expected when Slice 11 data doesn't exist).
 struct MeetingDetailView: View {
     let meeting: Meeting
+    let recordingController: MockRecordingController?
     @State private var transcript: Transcript?
     @State private var notesContent: String?
     @State private var screenshots: [URL]?
     @State private var isLoading = true
+
+    init(meeting: Meeting, recordingController: MockRecordingController? = nil) {
+        self.meeting = meeting
+        self.recordingController = recordingController
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             // Header with meeting info
             headerView
             Divider()
+            // Record bar (if controller provided)
+            if let controller = recordingController {
+                RecordBar(controller: controller)
+                Divider()
+            }
             // Content sections
             if isLoading {
                 ProgressView("Loading…")
