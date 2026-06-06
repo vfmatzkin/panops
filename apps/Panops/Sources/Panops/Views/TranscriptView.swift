@@ -15,8 +15,10 @@ struct TranscriptView: View {
                             Text(seg.timestampRange)
                                 .font(.system(.body, design: .monospaced))
                                 .foregroundStyle(.secondary)
-                            Text(seg.speakerLabel + ":")
-                                .fontWeight(.medium)
+                            if let speakerLabel = seg.speakerLabel {
+                                Text(speakerLabel + ":")
+                                    .fontWeight(.medium)
+                            }
                             Text(seg.text)
                                 .textSelection(.enabled)
                         }
