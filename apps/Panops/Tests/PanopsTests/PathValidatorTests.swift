@@ -4,19 +4,26 @@ import Testing
 
 @Suite("PathValidator")
 struct PathValidatorTests {
-    @Test("accepts panops data root and descendants")
-    func acceptsRootAndDescendants() {
-        let root = PathValidator.panopsDataRoot
+    @Test("accepts selected meeting dir and descendants outside app data")
+    func acceptsSelectedMeetingDirOutsideAppData() {
+        let meetingDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panops-registered-meeting-\(UUID().uuidString)")
+            .standardizedFileURL
+            .path
 
-        #expect(PathValidator.isUnderPanopsDataDir(root))
-        #expect(PathValidator.isUnderPanopsDataDir(root + "/meetings/meeting-1/notes.md"))
+        #expect(PathValidator.isPath(meetingDir, under: meetingDir))
+        #expect(PathValidator.isPath(meetingDir + "/transcript.json", under: meetingDir))
+        #expect(PathValidator.isPath(meetingDir + "/screenshots/frame-001.png", under: meetingDir))
     }
 
-    @Test("rejects sibling with panops prefix")
-    func rejectsSiblingWithPanopsPrefix() {
-        let root = PathValidator.panopsDataRoot
-        let maliciousSibling = root + "-malicious/meetings/meeting-1/notes.md"
+    @Test("rejects sibling with selected meeting dir prefix")
+    func rejectsSiblingWithSelectedMeetingDirPrefix() {
+        let meetingDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panops-registered-meeting-\(UUID().uuidString)")
+            .standardizedFileURL
+            .path
+        let maliciousSibling = meetingDir + "-evil/screenshots/frame-001.png"
 
-        #expect(!PathValidator.isUnderPanopsDataDir(maliciousSibling))
+        #expect(!PathValidator.isPath(maliciousSibling, under: meetingDir))
     }
 }
