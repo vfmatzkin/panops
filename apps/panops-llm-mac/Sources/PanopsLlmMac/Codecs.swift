@@ -168,7 +168,12 @@ enum FoundationModelCodecs {
         do {
             return try JSONDecoder().decode(JSONValue.self, from: data)
         } catch {
-            throw CodecError.invalidGeneratedJSON(error.localizedDescription)
+            // Log decode details locally (stderr) only; keep the wire-facing
+            // error opaque so generated-content schema internals don't leak
+            // up the IPC chain to the engine/app.
+            FileHandle.standardError.write(
+                Data("panops-llm-mac: generated JSON decode failed: \(error)\n".utf8))
+            throw CodecError.invalidGeneratedJSON("could not decode generated content as JSON")
         }
     }
 
