@@ -20,20 +20,14 @@ pub fn pick_asr(
 ) -> Result<Arc<dyn AsrProvider + Send + Sync>, AsrError> {
     #[cfg(target_os = "macos")]
     {
-        if let Some(sidecar) = sidecar_binary() {
-            tracing::info!(
-                sidecar = %sidecar.display(),
-                "selecting WhisperKit ASR sidecar"
-            );
+        let sidecar = std::env::var_os("PANOPS_ASR_SIDECAR_BIN")
+            .and_then(|v| crate::sidecar_binary::executable_file(std::path::PathBuf::from(v)))
+            .or_else(|| crate::sidecar_binary::sibling_of_engine("panops-asr-mac"));
+        if let Some(sidecar) = sidecar {
+            tracing::info!(sidecar = %sidecar.display(), "selecting WhisperKit ASR sidecar");
             return Ok(Arc::new(panops_mac::WhisperKitAsr::new(sidecar)));
         }
     }
     let inner = WhisperRsAsr::new(model_path)?;
     Ok(Arc::new(inner))
-}
-
-#[cfg(target_os = "macos")]
-fn sidecar_binary() -> Option<std::path::PathBuf> {
-    let bin = std::env::var("PANOPS_ASR_SIDECAR_BIN").ok()?;
-    crate::sidecar_binary::executable_file(std::path::PathBuf::from(bin))
 }
