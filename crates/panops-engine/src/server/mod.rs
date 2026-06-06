@@ -21,10 +21,11 @@ mod events;
 mod handlers;
 mod socket;
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use futures_util::FutureExt;
 use jsonrpsee::Methods;
@@ -363,6 +364,7 @@ pub async fn run_serve_in_process(
     let ipc_impl = IpcImpl {
         services: services_arc,
         events_tx,
+        sessions: Arc::new(Mutex::new(HashMap::new())),
     };
     let methods: Methods = ipc_impl.into_rpc().into();
 

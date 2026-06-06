@@ -180,11 +180,12 @@ pub struct MeetingConfig {
 // === Recording IPC types (slice 11) ===
 
 /// Audio source selection for `recording.start`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioSourcesWire {
     SystemOnly,
     MicOnly,
+    #[default]
     SystemAndMic,
 }
 
@@ -200,6 +201,9 @@ fn default_screenshot_threshold() -> f32 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RecordingStartParams {
     pub meeting_id: String,
+    /// Audio sources to capture. Defaults to SystemAndMic.
+    #[serde(default)]
+    pub audio_sources: AudioSourcesWire,
     #[serde(default = "default_screenshot_interval")]
     pub screenshot_interval_ms: u64,
     #[serde(default = "default_screenshot_threshold")]
@@ -433,6 +437,7 @@ mod tests {
     fn recording_start_params_round_trips() {
         let p = RecordingStartParams {
             meeting_id: "m1".into(),
+            audio_sources: AudioSourcesWire::SystemAndMic,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
         };
@@ -446,6 +451,7 @@ mod tests {
         let json = r#"{"meeting_id":"m1"}"#;
         let p: RecordingStartParams = serde_json::from_str(json).unwrap();
         assert_eq!(p.meeting_id, "m1");
+        assert_eq!(p.audio_sources, AudioSourcesWire::SystemAndMic); // default
         assert_eq!(p.screenshot_interval_ms, 500); // default
         assert_eq!(p.screenshot_threshold, 0.15); // default
     }
