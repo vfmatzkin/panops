@@ -47,6 +47,22 @@ struct JobDoneResult: Decodable {
 struct JobErrorPayload: Decodable {
     let kind: String
     let message: String
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case message
+    }
+
+    init(kind: String, message: String) {
+        self.kind = kind
+        self.message = message
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decode(String.self, forKey: .kind)
+        message = try c.decodeIfPresent(String.self, forKey: .message) ?? ""
+    }
 }
 
 /// Tagged union over the event types we consume.
