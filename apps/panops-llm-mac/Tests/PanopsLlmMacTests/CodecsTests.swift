@@ -95,6 +95,34 @@ struct CodecsTests {
         ]))
     }
 
+    @Test func nestedAnyOfWithNonObjectBranchesRoundTrip() throws {
+        let schema = try json(#"""
+        {
+          "type": "object",
+          "required": ["choice"],
+          "properties": {
+            "choice": {
+              "anyOf": [
+                {"type": "string"},
+                {
+                  "oneOf": [
+                    {"type": "integer"},
+                    {"type": "boolean"}
+                  ]
+                }
+              ]
+            }
+          }
+        }
+        """#)
+        let generationSchema = try FoundationModelCodecs.generationSchema(from: schema)
+        #expect(!generationSchema.debugDescription.isEmpty)
+
+        try assertGeneratedContent(#"{"choice":true}"#, equals: .object([
+            "choice": .bool(true),
+        ]))
+    }
+
     private func json(_ raw: String) throws -> JSONValue {
         try JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))
     }
@@ -202,6 +230,34 @@ final class CodecsTests: XCTestCase {
         ]))
     }
 
+    func testNestedAnyOfWithNonObjectBranchesRoundTrip() throws {
+        let schema = try json(#"""
+        {
+          "type": "object",
+          "required": ["choice"],
+          "properties": {
+            "choice": {
+              "anyOf": [
+                {"type": "string"},
+                {
+                  "oneOf": [
+                    {"type": "integer"},
+                    {"type": "boolean"}
+                  ]
+                }
+              ]
+            }
+          }
+        }
+        """#)
+        let generationSchema = try FoundationModelCodecs.generationSchema(from: schema)
+        XCTAssertFalse(generationSchema.debugDescription.isEmpty)
+
+        try assertGeneratedContent(#"{"choice":true}"#, equals: .object([
+            "choice": .bool(true),
+        ]))
+    }
+
     private func json(_ raw: String) throws -> JSONValue {
         try JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))
     }
@@ -218,11 +274,11 @@ import FoundationModels
 @testable import PanopsLlmMac
 
 // Command Line Tools on this host exposes FoundationModels but no XCTest or
-// Swift Testing modules. Run the same codec checks through a module initializer
-// so `swift test` is still a meaningful gate under this CLT-only toolchain.
+// Swift Testing modules. A tiny C constructor in PanopsLlmMacTestsBootstrap
+// calls `panops_codecs_self_test_run`, so `swift test` is still a meaningful
+// gate under this CLT-only toolchain instead of building zero tests.
 @available(macOS 26.0, *)
-private let _panopsCodecsSelfTest: Void = {
-    do {
+private func runCodecsSelfTest() throws {
         try assertSchema(#"""
         {
           "type": "object",
@@ -292,10 +348,30 @@ private let _panopsCodecsSelfTest: Void = {
         try assertGeneratedContent(#"{"title":"Anchor A"}"#, equals: .object([
             "title": .string("Anchor A"),
         ]))
-    } catch {
-        fatalError("PanopsLlmMac codec self-test failed: \(error)")
-    }
-}()
+
+        try assertSchema(#"""
+        {
+          "type": "object",
+          "required": ["choice"],
+          "properties": {
+            "choice": {
+              "anyOf": [
+                {"type": "string"},
+                {
+                  "oneOf": [
+                    {"type": "integer"},
+                    {"type": "boolean"}
+                  ]
+                }
+              ]
+            }
+          }
+        }
+        """#)
+        try assertGeneratedContent(#"{"choice":true}"#, equals: .object([
+            "choice": .bool(true),
+        ]))
+}
 
 @available(macOS 26.0, *)
 private func assertSchema(_ raw: String) throws {
@@ -311,3 +387,16 @@ private func assertGeneratedContent(_ rawJSON: String, equals expected: JSONValu
     precondition(actual == expected, "expected \(expected), got \(actual)")
 }
 #endif
+
+@_cdecl("panops_codecs_self_test_run")
+public func panopsCodecsSelfTestRun() {
+#if !canImport(Testing) && !canImport(XCTest)
+    if #available(macOS 26.0, *) {
+        do {
+            try runCodecsSelfTest()
+        } catch {
+            fatalError("PanopsLlmMac codec self-test failed: \(error)")
+        }
+    }
+#endif
+}

@@ -39,15 +39,22 @@ guard #available(macOS 26.0, *) else {
     FileHandle.standardError.write(Data("FoundationModels requires macOS 26.0; probe will report unavailable\n".utf8))
     while let line = readLine(strippingNewline: true) {
         if line.isEmpty { continue }
-        let request = try? decoder.decode(JsonRpcRequest.self, from: Data(line.utf8))
-        if request?.method == "probe" || request?.method == "llm.probe" {
+        let request: JsonRpcRequest
+        do {
+            request = try decoder.decode(JsonRpcRequest.self, from: Data(line.utf8))
+        } catch {
+            FileHandle.standardError.write(Data("parse error: \(error)\n".utf8))
+            emit(errorResponse(id: nil, code: -32700, message: "parse error"))
+            continue
+        }
+        if request.method == "probe" || request.method == "llm.probe" {
             let result = try JSONValue.fromEncodable(ProbeResult(
                 available: false,
                 reason: "macos_26_required"
             ))
-            emit(JsonRpcResponse(id: request?.id, result: result))
+            emit(JsonRpcResponse(id: request.id, result: result))
         } else {
-            emit(errorResponse(id: request?.id, code: -32000, message: "FoundationModels unavailable"))
+            emit(errorResponse(id: request.id, code: -32000, message: "FoundationModels unavailable"))
         }
     }
     exit(0)

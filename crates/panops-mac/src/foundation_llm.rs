@@ -3,10 +3,13 @@
 //! stdio. Lazy spawn on first probe/complete; reused across calls to
 //! amortize FoundationModels session setup.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, ErrorKind, Write};
+use std::os::fd::AsRawFd;
+use std::os::raw::{c_int, c_short};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use panops_core::llm::{LlmError, LlmProvider, LlmRequest, LlmResponse};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -15,6 +18,30 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// is expected to be small; this is a safety bound against a wedged
 /// sidecar emitting an unbounded line.
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+/// Startup probes run before the IPC socket binds; keep this short so a
+/// wedged sidecar cannot prevent `serve` from starting and falling back.
+const PROBE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Completion can legitimately take longer, but still must be bounded so a
+/// wedged model/sidecar does not poison the adapter forever.
+const COMPLETE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
+
+const F_GETFL: c_int = 3;
+const F_SETFL: c_int = 4;
+const O_NONBLOCK: c_int = 0x0004;
+const POLLIN: c_short = 0x0001;
+const POLLNVAL: c_short = 0x0020;
+
+#[repr(C)]
+struct PollFd {
+    fd: c_int,
+    events: c_short,
+    revents: c_short,
+}
+
+unsafe extern "C" {
+    fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
+    fn poll(fds: *mut PollFd, nfds: u32, timeout: c_int) -> c_int;
+}
 
 pub struct FoundationLlm {
     binary: PathBuf,
@@ -143,9 +170,24 @@ impl FoundationLlm {
             // FoundationModels availability/errors land in Console.app.
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|e| LlmError::Provider(format!("sidecar spawn: {e}")))?;
+            .map_err(|e| {
+                tracing::warn!(
+                    binary = %self.binary.display(),
+                    error = %e,
+                    "panops-llm-mac sidecar spawn failed"
+                );
+                LlmError::Provider("sidecar spawn failed".into())
+            })?;
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
+        set_nonblocking(&stdout).map_err(|e| {
+            tracing::warn!(
+                binary = %self.binary.display(),
+                error = %e,
+                "panops-llm-mac sidecar stdout nonblocking setup failed"
+            );
+            LlmError::Provider("sidecar setup failed".into())
+        })?;
         *slot = Some(SidecarState {
             child: Some(child),
             stdin: Some(stdin),
@@ -202,19 +244,25 @@ impl FoundationLlm {
             return Err(LlmError::Provider(format!("stdio write: {e}")));
         }
 
-        // Bound the response read against a wedged sidecar emitting an
-        // unbounded line. `take(MAX_RESPONSE_BYTES)` + `read_until(b'\n')`
-        // gives us a strict cap; if we read the cap and the last byte
-        // isn't a newline, the line was truncated and framing is lost.
+        // Bound the response read by size AND by deadline. The probe path is
+        // exercised before the IPC socket binds, so timeout must surface as a
+        // provider error and let the resolver fall back instead of hanging
+        // `serve` forever.
         let mut buf: Vec<u8> = Vec::new();
+        let timeout = response_timeout(method);
         let read_result = {
             let state = slot.as_mut().expect("still spawned");
-            (&mut state.stdout)
-                .take(MAX_RESPONSE_BYTES)
-                .read_until(b'\n', &mut buf)
+            read_response_line(&mut state.stdout, &mut buf, timeout)
         };
         let n = match read_result {
             Ok(n) => n,
+            Err(e) if e.kind() == ErrorKind::TimedOut => {
+                *slot = None;
+                return Err(LlmError::Provider(format!(
+                    "sidecar response timed out after {}s",
+                    timeout.as_secs()
+                )));
+            }
             Err(e) => {
                 *slot = None;
                 return Err(LlmError::Provider(format!("stdio read: {e}")));
@@ -281,6 +329,107 @@ impl FoundationLlm {
         }
         resp.result
             .ok_or_else(|| LlmError::Provider("response missing result".into()))
+    }
+}
+
+fn response_timeout(method: &str) -> Duration {
+    if method == "probe" || method == "llm.probe" {
+        PROBE_RESPONSE_TIMEOUT
+    } else {
+        COMPLETE_RESPONSE_TIMEOUT
+    }
+}
+
+fn set_nonblocking(stdout: &ChildStdout) -> io::Result<()> {
+    let fd = stdout.as_raw_fd();
+    // SAFETY: `fd` is a live stdout pipe owned by `ChildStdout`. `fcntl` does
+    // not take ownership and only updates descriptor flags.
+    let flags = unsafe { fcntl(fd, F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: Same live fd; OR-ing O_NONBLOCK preserves the existing flags.
+    let rc = unsafe { fcntl(fd, F_SETFL, flags | O_NONBLOCK) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn read_response_line(
+    stdout: &mut BufReader<ChildStdout>,
+    buf: &mut Vec<u8>,
+    timeout: Duration,
+) -> io::Result<usize> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match stdout.fill_buf() {
+            Ok([]) if buf.is_empty() => return Ok(0),
+            Ok([]) => return Ok(buf.len()),
+            Ok(available) => {
+                let consumed = if let Some(pos) = available.iter().position(|b| *b == b'\n') {
+                    let end = pos + 1;
+                    buf.extend_from_slice(&available[..end]);
+                    end
+                } else {
+                    buf.extend_from_slice(available);
+                    available.len()
+                };
+                stdout.consume(consumed);
+                if buf.len() as u64 >= MAX_RESPONSE_BYTES {
+                    return Ok(buf.len());
+                }
+                if buf.last() == Some(&b'\n') {
+                    return Ok(buf.len());
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                wait_readable(stdout.get_ref().as_raw_fd(), deadline)?;
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn wait_readable(fd: i32, deadline: Instant) -> io::Result<()> {
+    let now = Instant::now();
+    if now >= deadline {
+        return Err(io::Error::new(
+            ErrorKind::TimedOut,
+            "sidecar response timed out",
+        ));
+    }
+    let remaining = deadline.saturating_duration_since(now);
+    let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as i32;
+    let mut fds = PollFd {
+        fd,
+        events: POLLIN,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: `fds` points to one initialized pollfd for a live pipe fd;
+        // poll does not retain the pointer after returning.
+        let rc = unsafe { poll(&mut fds, 1, timeout_ms) };
+        if rc > 0 {
+            if fds.revents & POLLNVAL != 0 {
+                return Err(io::Error::new(
+                    ErrorKind::BrokenPipe,
+                    "sidecar stdout descriptor invalid",
+                ));
+            }
+            return Ok(());
+        }
+        if rc == 0 {
+            return Err(io::Error::new(
+                ErrorKind::TimedOut,
+                "sidecar response timed out",
+            ));
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != ErrorKind::Interrupted {
+            return Err(e);
+        }
     }
 }
 

@@ -59,3 +59,13 @@ fn resolver_falls_back_when_sidecar_is_not_executable() -> TestResult {
     drop(llm);
     Ok(())
 }
+
+#[test]
+fn resolver_falls_back_when_sidecar_path_does_not_exist() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let missing = dir.path().join("missing-panops-llm-mac");
+    let rt = tokio::runtime::Runtime::new()?;
+    let llm = panops_engine::llm_resolver::pick_llm(rt.handle().clone(), Some(missing));
+    drop(llm);
+    Ok(())
+}

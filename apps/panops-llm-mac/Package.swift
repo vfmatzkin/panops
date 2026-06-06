@@ -12,10 +12,15 @@ let package = Package(
             name: "PanopsLlmMac",
             path: "Sources/PanopsLlmMac"
         ),
+        .target(
+            name: "PanopsLlmMacTestsBootstrap",
+            path: "Sources/PanopsLlmMacTestsBootstrap"
+        ),
         .testTarget(
             name: "PanopsLlmMacTests",
-            dependencies: ["PanopsLlmMac"],
-            path: "Tests/PanopsLlmMacTests"
+            dependencies: ["PanopsLlmMac", "PanopsLlmMacTestsBootstrap"],
+            path: "Tests/PanopsLlmMacTests",
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-all_load"])]
         ),
     ]
 )

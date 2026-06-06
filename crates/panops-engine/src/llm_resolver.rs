@@ -28,7 +28,7 @@ pub fn pick_llm(
 
     #[cfg(target_os = "macos")]
     {
-        if let Some(sidecar) = sidecar_path.and_then(validate_sidecar_binary) {
+        if let Some(sidecar) = sidecar_path.and_then(crate::sidecar_binary::executable_file) {
             let llm = panops_mac::FoundationLlm::new(sidecar.clone());
             match llm.probe() {
                 Ok(probe) if probe.available => {
@@ -79,27 +79,6 @@ fn genai_with_handle(handle: tokio::runtime::Handle) -> GenaiLlm {
         "gemma3:4b"
     };
     GenaiLlm::with_handle(model, handle)
-}
-
-#[cfg(target_os = "macos")]
-fn validate_sidecar_binary(path: std::path::PathBuf) -> Option<std::path::PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-
-    // Canonicalize before the metadata check to narrow the symlink-swap
-    // window between validation and `Command::spawn`. This is best-effort
-    // UX (clean fallback on bad dev input), not a security boundary.
-    let path = std::fs::canonicalize(path).ok()?;
-    let meta = std::fs::metadata(&path).ok()?;
-    if !meta.is_file() {
-        return None;
-    }
-    // Verify execute permission for owner/group/other (0o111). A regular
-    // file without exec bits would `spawn`-fail at runtime; cleaner to
-    // reject up front and fall back to GenaiLlm.
-    if meta.permissions().mode() & 0o111 == 0 {
-        return None;
-    }
-    Some(path)
 }
 
 #[cfg(test)]
