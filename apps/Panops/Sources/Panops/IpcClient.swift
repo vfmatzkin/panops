@@ -440,6 +440,15 @@ actor IpcClient {
         )
     }
 
+    /// `ipc.meeting.list` — fetches all meeting summaries.
+    /// Slice 12: sidebar needs meeting list for navigation.
+    func meetingList() async throws -> [MeetingSummary] {
+        return try await sendRequest(
+            method: "ipc.meeting.list",
+            params: EmptyParams()
+        )
+    }
+
     // MARK: - Private
 
     private func sendRequest<P: Encodable, R: Decodable>(
