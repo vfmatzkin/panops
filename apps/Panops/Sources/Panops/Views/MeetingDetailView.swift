@@ -86,15 +86,10 @@ struct MeetingDetailView: View {
 
         let dirPath = meeting.dirPath
 
-        // Validate path is under panops data directory before reading
-        guard PathValidator.isUnderPanopsDataDir(dirPath) else {
-            isLoading = false
-            return
-        }
-
         // Load transcript.json
         let transcriptPath = (dirPath as NSString).appendingPathComponent("transcript.json")
-        if FileManager.default.fileExists(atPath: transcriptPath) {
+        if PathValidator.isPath(transcriptPath, under: dirPath),
+           FileManager.default.fileExists(atPath: transcriptPath) {
             if let data = FileManager.default.contents(atPath: transcriptPath) {
                 do {
                     transcript = try JSONDecoder().decode(Transcript.self, from: data)
@@ -106,7 +101,8 @@ struct MeetingDetailView: View {
 
         // Load notes.md
         let notesPath = (dirPath as NSString).appendingPathComponent("notes.md")
-        if FileManager.default.fileExists(atPath: notesPath) {
+        if PathValidator.isPath(notesPath, under: dirPath),
+           FileManager.default.fileExists(atPath: notesPath) {
             do {
                 notesContent = try String(contentsOfFile: notesPath, encoding: .utf8)
             } catch {
@@ -116,12 +112,17 @@ struct MeetingDetailView: View {
 
         // Enumerate screenshots/ directory
         let screenshotsPath = (dirPath as NSString).appendingPathComponent("screenshots")
-        if FileManager.default.fileExists(atPath: screenshotsPath) {
+        if PathValidator.isPath(screenshotsPath, under: dirPath),
+           FileManager.default.fileExists(atPath: screenshotsPath) {
             do {
                 let contents = try FileManager.default.contentsOfDirectory(atPath: screenshotsPath)
                 screenshots = contents
                     .filter { $0.hasSuffix(".png") || $0.hasSuffix(".jpg") || $0.hasSuffix(".jpeg") }
-                    .map { URL(fileURLWithPath: (screenshotsPath as NSString).appendingPathComponent($0)) }
+                    .compactMap { filename in
+                        let path = (screenshotsPath as NSString).appendingPathComponent(filename)
+                        guard PathValidator.isPath(path, under: dirPath) else { return nil }
+                        return URL(fileURLWithPath: path)
+                    }
                     .sorted { $0.lastPathComponent < $1.lastPathComponent }
             } catch {
                 // Keep nil on error
