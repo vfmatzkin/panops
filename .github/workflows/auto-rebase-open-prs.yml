@@ -1,0 +1,73 @@
+name: auto-rebase-open-prs
+
+# After anything lands on main, rebase every open same-repo PR branch onto the
+# new main so no branch sits BEHIND and they stay cleanly mergeable (this repo
+# uses rebase-and-merge). Branches that rebase cleanly are force-pushed;
+# branches that hit conflicts are left untouched and flagged with the
+# `needs-rebase` label instead.
+#
+# NOTE on CI re-runs: pushes made with the default GITHUB_TOKEN do NOT
+# re-trigger the PR's own workflows (GitHub's loop-prevention). So after an
+# auto-rebase the branch is current but its checks may show as carried-over.
+# To make checks re-run on the rebased HEAD, add a fine-grained PAT
+# (contents:write + pull-requests:write) as the secret `REBASE_PAT`; the
+# workflow uses it automatically when present.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-rebase-open-prs
+  cancel-in-progress: false
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.REBASE_PAT || github.token }}
+
+      - name: Rebase open PR branches onto main
+        env:
+          GH_TOKEN: ${{ secrets.REBASE_PAT || github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name  "panops-rebase-bot"
+          git config user.email "panops@tzk.ar"
+          git fetch origin main --quiet
+
+          # Conflict-flag label (idempotent create).
+          gh label create needs-rebase --color FBCA04 \
+            --description "Branch hit conflicts during auto-rebase onto main" 2>/dev/null || true
+
+          # Same-repo open PRs only (can't push to fork branches).
+          gh pr list --state open --base main \
+            --json number,headRefName,headRepositoryOwner \
+            --jq '.[] | select(.headRepositoryOwner.login == "${{ github.repository_owner }}") | "\(.number)\t\(.headRefName)"' \
+          | while IFS=$'\t' read -r num br; do
+              [ -z "${num:-}" ] && continue
+              echo "::group::PR #$num ($br)"
+              git fetch origin "$br" --quiet
+              git checkout -B "$br" "origin/$br" --quiet
+              if [ "$(git rev-list --count "$br"..origin/main)" = "0" ]; then
+                echo "already up to date"
+                gh pr edit "$num" --remove-label needs-rebase 2>/dev/null || true
+              elif git rebase origin/main; then
+                git push --force-with-lease origin "$br"
+                echo "rebased + force-pushed"
+                gh pr edit "$num" --remove-label needs-rebase 2>/dev/null || true
+              else
+                git rebase --abort || true
+                echo "CONFLICT — flagging needs-rebase"
+                gh pr edit "$num" --add-label needs-rebase 2>/dev/null || true
+              fi
+              echo "::endgroup::"
+            done
