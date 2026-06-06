@@ -23,7 +23,8 @@ use panops_core::notes::input::{MeetingMetadata, NotesInput};
 use panops_core::notes::pipeline::NotesGenerator;
 use panops_protocol::{
     Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, Meeting, MeetingConfig,
-    MeetingSummary, NotesDialect, NotesGenerateParams, NotesGenerateResult,
+    MeetingSummary, NotesDialect, NotesGenerateParams, NotesGenerateResult, RecordingAccepted,
+    RecordingStartParams, RecordingStopParams, RecordingStopped,
 };
 use tokio::sync::broadcast;
 
@@ -70,6 +71,18 @@ pub(super) trait Ipc {
 
     #[method(name = "meeting.delete")]
     async fn meeting_delete(&self, params: MeetingIdParam) -> Result<(), ErrorObjectOwned>;
+
+    #[method(name = "recording.start")]
+    async fn recording_start(
+        &self,
+        params: RecordingStartParams,
+    ) -> Result<RecordingAccepted, ErrorObjectOwned>;
+
+    #[method(name = "recording.stop")]
+    async fn recording_stop(
+        &self,
+        params: RecordingStopParams,
+    ) -> Result<RecordingStopped, ErrorObjectOwned>;
 
     #[subscription(
         name = "events.subscribe" => "events",
@@ -273,6 +286,65 @@ impl IpcServer for IpcImpl {
                 );
             }
             Ok(())
+        })
+        .await
+    }
+
+    async fn recording_start(
+        &self,
+        params: RecordingStartParams,
+    ) -> Result<RecordingAccepted, ErrorObjectOwned> {
+        let capture = crate::capture_resolver::pick_capture();
+        let storage = self.services.storage.clone();
+        let _data_dir = self.services.data_dir.clone();
+        let meeting_id = params.meeting_id;
+
+        spawn_blocking_into_ipc("recording.start", move || {
+            // Verify meeting exists.
+            let m = storage.get_meeting(&meeting_id).map_err(IpcError::from)?;
+            let meeting_dir = PathBuf::from(&m.dir_path);
+
+            // Start capture.
+            let config = panops_core::capture::CaptureConfig {
+                audio_sources: panops_core::capture::AudioSources::SystemAndMic,
+                screenshot_interval_ms: params.screenshot_interval_ms,
+                screenshot_threshold: params.screenshot_threshold,
+            };
+            let _session = capture
+                .start_capture(&meeting_id, &meeting_dir, &config)
+                .map_err(IpcError::from)?;
+
+            // Return recording_id as meeting_id for now (simplified for scaffolding).
+            Ok(RecordingAccepted {
+                recording_id: meeting_id,
+            })
+        })
+        .await
+    }
+
+    async fn recording_stop(
+        &self,
+        params: RecordingStopParams,
+    ) -> Result<RecordingStopped, ErrorObjectOwned> {
+        let capture = crate::capture_resolver::pick_capture();
+        let recording_id = params.recording_id;
+
+        spawn_blocking_into_ipc("recording.stop", move || {
+            let session = panops_core::capture::CaptureSession {
+                meeting_id: recording_id.clone(),
+                started_at_ms: 0, // Placeholder; not used by FakeCapture
+            };
+            let result = capture.stop_capture(&session).map_err(IpcError::from)?;
+
+            Ok(RecordingStopped {
+                audio_path: result.audio_path.display().to_string(),
+                screenshot_paths: result
+                    .screenshot_paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect(),
+                duration_ms: result.duration_ms,
+            })
         })
         .await
     }
