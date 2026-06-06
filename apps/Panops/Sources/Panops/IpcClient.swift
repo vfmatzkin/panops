@@ -560,8 +560,13 @@ actor IpcClient {
     /// without live capture; the returned id is used for the polling
     /// loop.
     func meetingStart() async throws -> String {
-        let result: String = try await sendRequestNoParams(
-            method: "ipc.meeting.start"
+        // meeting.start takes a MeetingConfig param (optional title/language);
+        // it is NOT a no-param method. EmptyParams() encodes to {} (an
+        // all-default MeetingConfig), so the wire params decode cleanly —
+        // sending no params here yields jsonrpsee -32602 Invalid params.
+        let result: String = try await sendRequest(
+            method: "ipc.meeting.start",
+            params: EmptyParams()
         )
         return result
     }
