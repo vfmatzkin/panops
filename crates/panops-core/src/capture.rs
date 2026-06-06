@@ -1,9 +1,13 @@
-//! Capture port. Real impl: `panops_mac::ScreenCaptureKitCapture` (slice 11+).
-//! Fake: `panops_core::conformance::fakes::FakeCapture`.
+//! Capture port for audio + screenshot capture.
 //!
 //! The trait is sync; async wrapping happens at the handler layer via
 //! `tokio::task::spawn_blocking`. Matches the shape of the other ports
 //! (`AsrProvider`, `Vad`, `Storage`).
+//!
+//! Real adapter: the forthcoming macOS ScreenCaptureKit sidecar
+//! (slice 11 scaffolding; trait + fake + conformance land now,
+//! real capture gated on manual Mac smoke).
+//! Fake: `panops_core::conformance::fakes::FakeCapture`.
 
 use std::path::PathBuf;
 

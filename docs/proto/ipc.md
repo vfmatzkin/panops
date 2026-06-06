@@ -1,4 +1,4 @@
-# panops IPC protocol — slices 05 + 06
+# panops IPC protocol — slices 05 + 06 + 11
 
 ## Transport
 
@@ -18,6 +18,8 @@
 | `ipc.meeting.get` | `{ id }` | `Meeting` | Full row including `dir_path`, `language`, `ended_at`. |
 | `ipc.meeting.set_language` | `{ id, language }` | `Meeting` | Updates BCP-47 language hint. |
 | `ipc.meeting.delete` | `{ id }` | `()` | Removes registry row (FK-cascades notes), then `rm -rf meetings/<id>/`. Orphan dir on FS-error is logged, not an error. |
+| `ipc.recording.start` | `RecordingStartParams` | `RecordingAccepted` | **Slice 11.** Starts live capture for a meeting. |
+| `ipc.recording.stop` | `{ recording_id }` | `RecordingStopped` | **Slice 11.** Stops capture, returns audio + screenshot paths. |
 
 The `ipc.` namespace + `.` separator are wired via jsonrpsee `#[rpc(server, namespace = "ipc", namespace_separator = ".")]`.
 
@@ -71,6 +73,30 @@ In-progress meetings render `ended_at: null` and `duration_ms: null` on `Meeting
 
 Both fields are optional; an empty `{}` is accepted and applies defaults.
 
+### `RecordingStartParams` (slice 11)
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `meeting_id` | string | required | Existing meeting to attach recording to. |
+| `audio_sources` | `"system_only"` \| `"mic_only"` \| `"system_and_mic"` | `"system_and_mic"` | Audio capture source selection. |
+| `screenshot_interval_ms` | u64 | `500` | Screenshot sampling interval. |
+| `screenshot_threshold` | f32 | `0.15` | Vision FeaturePrint change detection threshold. |
+
+### `RecordingAccepted` (slice 11)
+
+```json
+{ "recording_id": "..." }  // Currently equals meeting_id
+```
+
+### `RecordingStopped` (slice 11)
+
+```json
+{ "audio_path": "...",           // Absolute path to captured audio.wav
+  "screenshot_paths": ["..."],   // Absolute paths to captured JPEGs
+  "duration_ms": 60000           // Recording duration in ms
+}
+```
+
 Param structs intentionally do NOT use `#[serde(deny_unknown_fields)]` — same forward-compat philosophy as `IpcError::Unknown`. New optional fields are non-breaking.
 
 ## Subscriptions
@@ -86,6 +112,8 @@ The subscription is server-push backed by a `tokio::sync::broadcast` channel. A 
 ```json
 { "type": "job.done",  "job_id": "...", "result": { "primary_file": "...", "assets": [...], "meeting_id": "..." } }
 { "type": "job.error", "job_id": "...", "error": { "kind": "input_not_found" | "invalid_input" | "provider_unavailable" | "internal" | "cancelled", "message": "..." } }
+{ "type": "screenshot", "meeting_id": "...", "timestamp_ms": 12345, "path": "..." }  // Slice 11
+{ "type": "recording.progress", "meeting_id": "...", "bytes_captured": 1024, "duration_ms": 5000 }  // Slice 11
 ```
 
 The `Event` enum is internally tagged on `type`. Future event kinds (`asr.partial`, `asr.final`, `screenshot`, `job.progress`) extend this enum. Old clients deserialise unrecognised tags as `Event::Unknown(<original JSON>)`, preserving the subscription so one new tag does not tear down older clients. Implementations that do not use the Rust types directly should mirror this: any envelope whose `type` is not in the known set should be logged and skipped, never treated as a fatal protocol error.
@@ -125,10 +153,11 @@ At the JSON-RPC boundary, errors flowing back as `ErrorObjectOwned` use code `-3
 ## What's NOT shipped (still deferred)
 
 - IPC: `asr.post_pass` / `asr.cancel`, `notes.export`, `llm.probe` / `llm.providers` / `llm.test`, `settings.get` / `settings.set`.
-- Live-capture events: `asr.partial`, `asr.final`, `screenshot`, `job.progress`.
+- Live-capture events: `asr.partial`, `asr.final`, `job.progress` (screen capture writes directly to disk; no streaming events yet).
 - Token auth, WS reconnection, event replay buffer.
 - `CancellationToken` plumbed through `LlmRequest` (the `spawn_blocking` task is uncancellable today).
 - Push events for storage mutations (`meeting.created`, `meeting.deleted`).
+- Real ScreenCaptureKit capture adapter (slice 11 scaffolding: trait + fake + conformance land now; real capture gated on macOS sidecar).
 
 Each deferred item has a tracking issue under `type:debt area:ipc` (or `area:storage`) on the project board.
 
