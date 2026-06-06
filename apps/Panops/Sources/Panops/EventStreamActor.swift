@@ -16,10 +16,10 @@ actor EventStreamActor {
     /// Subscribe to events from the IPC client.
     /// Stores the subscription and starts routing events to callbacks.
     func subscribe(client: IpcClient) async throws {
-        subscription = try await client.subscribeEvents()
+        let stream = try await client.subscribeEvents()
+        subscription = stream
         Task {
-            guard let subscription else { return }
-            for await event in subscription {
+            for await event in stream {
                 route(event: event)
             }
         }
