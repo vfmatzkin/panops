@@ -12,9 +12,8 @@ import Testing
 ///
 ///     ./target/release/panops-engine serve
 ///
-/// The test exercises `meeting.start` + `meeting.get` only — no audio
-/// fixture or `notes.generate` invocation. Notes-pipeline coverage is
-/// the manual GUI smoke documented in `apps/Panops/README.md`.
+/// Tests exercise meeting lifecycle + notes generation with fixture audio,
+/// asserting actual event delivery via WebSocket subscription.
 @Suite("Live IPC smoke (requires engine + PANOPS_LIVE_ENGINE=1)")
 struct IpcClientLiveSmokeTest {
     @Test("live_smoke_meeting_create")
@@ -57,6 +56,19 @@ struct IpcClientLiveSmokeTest {
         guard ProcessInfo.processInfo.environment["PANOPS_LIVE_ENGINE"] == "1" else {
             return
         }
+
+        // Use fixture audio for deterministic test
+        // Expect PANOPS_FIXTURES_DIR env var or use default path relative to repo
+        let fixturesDir = ProcessInfo.processInfo.environment["PANOPS_FIXTURES_DIR"]
+            ?? FileManager.default.currentDirectoryPath + "/tests/fixtures"
+        let audioPath = URL(fileURLWithPath: fixturesDir).appendingPathComponent("audio/en_30s.wav")
+
+        // Verify fixture exists
+        guard FileManager.default.fileExists(atPath: audioPath.path) else {
+            Issue.record("fixture audio not found at \(audioPath.path). Set PANOPS_FIXTURES_DIR or run from repo root.")
+            return
+        }
+
         let socketPath = FileManager.default
             .homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/panops/engine.sock")
@@ -67,34 +79,50 @@ struct IpcClientLiveSmokeTest {
         let eventStream = try await client.subscribeEvents()
 
         // Create a meeting and trigger notes generation
-        // We'll need to use HTTP POST for this since WebSocket is for events only
         let meetingId = try await client.meetingStart()
+        let jobId = try await client.notesGenerate(audio: audioPath, meetingId: meetingId)
+        #expect(!jobId.isEmpty, "notes.generate should return a job_id")
 
-        // Watch for job.done event with our meeting_id
-        var foundJobDone = false
-        let timeout = Date().addingTimeInterval(60) // 60s timeout for manual test
+        // Wait for job.done or job.error with a short timeout (30s for short audio)
+        var receivedEvent: IpcEvent?
+        let timeout = Date().addingTimeInterval(30)
 
         for await event in eventStream {
             switch event {
-            case .jobDone(_, let result):
-                if result.meetingId == meetingId {
-                    foundJobDone = true
+            case .jobDone(let jId, _):
+                if jId == jobId {
+                    receivedEvent = event
                     break
                 }
-            case .jobError(_, _):
-                // Error is also valid - we're just testing event delivery
-                break
+            case .jobError(let jId, _):
+                if jId == jobId {
+                    receivedEvent = event
+                    break
+                }
             case .unknown:
                 break
             }
-            if foundJobDone || Date() > timeout {
+            if receivedEvent != nil || Date() > timeout {
                 break
             }
         }
 
-        // For this test, we just verify we can subscribe and receive events
-        // Actual job.done verification requires triggering notes.generate
-        // which needs audio fixtures - deferred to manual smoke
+        // Assert we received a job completion event for our job_id
+        #expect(receivedEvent != nil, "expected job.done or job.error for job_id \(jobId) within 30s")
+        if let event = receivedEvent {
+            switch event {
+            case .jobDone(let jId, let result):
+                #expect(jId == jobId, "job.done job_id mismatch")
+                #expect(result.meetingId == meetingId, "job.done meeting_id mismatch")
+            case .jobError(let jId, let payload):
+                #expect(jId == jobId, "job.error job_id mismatch")
+                // job.error is acceptable (e.g., ASR model unavailable)
+                // Log but don't fail - we're testing event delivery, not pipeline success
+                print("job.error received: \(payload.kind) - \(payload.message)")
+            case .unknown:
+                Issue.record("unexpected unknown event")
+            }
+        }
 
         await client.disconnect()
     }
