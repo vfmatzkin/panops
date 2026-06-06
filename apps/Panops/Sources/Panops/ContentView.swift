@@ -29,6 +29,7 @@ final class AppViewModel: ObservableObject {
 
     func connect() async throws {
         try await client.connect()
+        await refreshMeetingsWithStartupRetry()
     }
 
     /// Retry connection to engine after a previous failure.
@@ -122,11 +123,30 @@ final class AppViewModel: ObservableObject {
 
     /// Fetch meeting list from engine. Called on app launch and refresh.
     func refreshMeetings() async {
-        do {
-            meetings = try await client.meetingList()
-        } catch {
-            Self.logFullError("meeting.list", error)
-            // Keep existing meetings on error
+        await refreshMeetings(maxAttempts: 1, initialDelayMs: 0)
+    }
+
+    /// Fetch meeting list during startup after IPC connects. The launch-time
+    /// ContentView task can race engine bootstrap; this retry ensures a
+    /// transient not-ready engine does not leave the sidebar empty forever.
+    private func refreshMeetingsWithStartupRetry() async {
+        await refreshMeetings(maxAttempts: 4, initialDelayMs: 200)
+    }
+
+    private func refreshMeetings(maxAttempts: Int, initialDelayMs: UInt64) async {
+        var delayMs = initialDelayMs
+        for attempt in 1...maxAttempts {
+            do {
+                meetings = try await client.meetingList()
+                return
+            } catch {
+                Self.logFullError("meeting.list", error)
+                guard attempt < maxAttempts else { return }
+                if delayMs > 0 {
+                    try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+                    delayMs = min(delayMs * 2, 1_000)
+                }
+            }
         }
     }
 
