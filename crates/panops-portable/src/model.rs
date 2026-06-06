@@ -119,19 +119,32 @@ fn write_verification_marker(marker_path: &Path, sha256: &str, size: u64, mtime:
 /// source for the post-verify marker write so the four `ensure_*` paths
 /// (cache-miss verify + post-download verify, for model and vad) don't
 /// duplicate the metadata read.
-fn mark_verified(file_path: &Path, sha256: &str) -> Result<(), AsrError> {
-    let metadata = fs::metadata(file_path)
-        .map_err(|e| AsrError::Model(format!("metadata {file_path:?}: {e}")))?;
-    let mtime = metadata
-        .modified()
-        .map_err(|e| AsrError::Model(format!("mtime {file_path:?}: {e}")))?;
+///
+/// Best-effort: the marker is purely a startup-perf cache, so a transient
+/// failure to stat the file (e.g. it was unlinked right after verify) is
+/// logged and ignored rather than failing model setup — the next run just
+/// re-verifies. Paths stay in the local log, never in a returned error.
+fn mark_verified(file_path: &Path, sha256: &str) {
+    let metadata = match fs::metadata(file_path) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(path = ?file_path, error = %e, "skip verification marker (metadata)");
+            return;
+        }
+    };
+    let mtime = match metadata.modified() {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(path = ?file_path, error = %e, "skip verification marker (mtime)");
+            return;
+        }
+    };
     write_verification_marker(
         &verification_marker_path(file_path),
         sha256,
         metadata.len(),
         mtime,
     );
-    Ok(())
 }
 
 /// Check if the verification cache is valid for a given model file.
@@ -497,7 +510,7 @@ pub fn ensure_model(name: &str, dest: &Path) -> Result<PathBuf, AsrError> {
             } else {
                 verify_sha256(dest, info.sha256)?;
                 // Write marker after successful verify.
-                mark_verified(dest, info.sha256)?;
+                mark_verified(dest, info.sha256);
             }
         }
         return Ok(dest.to_path_buf());
@@ -517,7 +530,7 @@ pub fn ensure_model(name: &str, dest: &Path) -> Result<PathBuf, AsrError> {
         return Err(e);
     }
     // Write marker after successful download + verify.
-    mark_verified(dest, info.sha256)?;
+    mark_verified(dest, info.sha256);
     tracing::info!(bytes = n, dest = ?dest, "model download complete");
     Ok(dest.to_path_buf())
 }
@@ -629,7 +642,7 @@ pub fn ensure_vad_model(dest: &Path) -> Result<PathBuf, AsrError> {
             } else {
                 verify_sha256(dest, info.sha256)?;
                 // Write marker after successful verify.
-                mark_verified(dest, info.sha256)?;
+                mark_verified(dest, info.sha256);
             }
         }
         return Ok(dest.to_path_buf());
@@ -647,7 +660,7 @@ pub fn ensure_vad_model(dest: &Path) -> Result<PathBuf, AsrError> {
         return Err(e);
     }
     // Write marker after successful download + verify.
-    mark_verified(dest, info.sha256)?;
+    mark_verified(dest, info.sha256);
     tracing::info!(bytes = n, dest = ?dest, "vad model download complete");
     Ok(dest.to_path_buf())
 }
