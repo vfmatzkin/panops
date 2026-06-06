@@ -23,7 +23,7 @@ v0.1 is **not** "all 7 slices shipped." It's **a Mac app the maintainer would ac
 3. ☐ "Generate notes" → markdown file with frontmatter, sections with screenshots, action items, no narrative/key-points duplication.
 4. ☐ Notes file persists across app restarts (SQLite + on-disk markdown).
 5. ☐ Output passes the maintainer's *"would I actually use this for my next meeting?"* test on a real bilingual meeting.
-6. ☐ Build + sign + notarize the `.app`; runs on a clean Mac with no dev tools installed.
+6. ☐ Ad-hoc-signed `.app`, **brew-installable** (`brew install --cask vfmatzkin/panops/panops`), runs on a clean Mac that has Homebrew; a Developer-ID-**notarized** `.app` is a later distribution channel once a paid account exists.
 
 Criterion #5 is the only one not mechanically verifiable — it's the gate that prevents shipping technically-passing-but-actually-bad notes. The maintainer runs a real meeting, reads the output, and decides.
 
@@ -36,6 +36,7 @@ Criterion #5 is the only one not mechanically verifiable — it's the gate that 
 - Not iOS / iPad.
 - Not real-time streaming UI (live transcript shows during recording is fine; live partials are bonus, not required).
 - Not a Notion-style enhanced-markdown viewer (the markdown gets WRITTEN as `NotionEnhanced` dialect by default; opening it elsewhere is the user's problem).
+- Not Developer-ID-notarized (ad-hoc signed for v0.1; notarized `.app` is a later distribution channel — see slice 16 deferred items).
 
 ## Anchors (non-negotiable for v0.1)
 
@@ -65,4 +66,4 @@ These are absolute. They apply to every slice. Any drift away from them is a nor
 - **If a slice surfaces a constraint that conflicts with a north-star item**: that's a *blocking* alignment-audit finding. Amendment requires a maintainer decision recorded in this file with a date stamp. Mid-slice silent amendments are forbidden.
 - **If trajectory shifts** (a slice gets added/removed/reordered): amend `AGENTS.md` → Trajectory and anchors, NOT this file. Trajectory is amendable; the goal isn't.
 
-Last amended: 2026-05-02 (initial).
+Last amended: 2026-06-06 (criterion #6: brew-installable for v0.1, notarized deferred).
