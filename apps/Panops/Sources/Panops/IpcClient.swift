@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import CommonCrypto
+import Security
 
 /// Errors surfaced to UI code; details intentionally short. Full
 /// detail goes to engine stderr (Console.app stream).
@@ -351,6 +352,13 @@ actor IpcClient {
                 continue
             }
 
+            // Cap frame size to prevent unbounded buffering
+            guard header.payloadLen <= Self.maxFrameBytes else {
+                throw IpcClientError.websocketFrameError(
+                    "frame payload exceeds max (\(header.payloadLen) > \(Self.maxFrameBytes))"
+                )
+            }
+
             // Check if we have the complete frame
             let totalLen = WsFrameParser.totalFrameLength(header)
             guard buffer.count >= totalLen else {
@@ -662,6 +670,10 @@ actor IpcClient {
     /// engine's responses are tiny (typically <300 bytes including
     /// JSON body); 8 KB is several orders of magnitude of safety.
     private static let maxHeaderBytes = 8 * 1024
+
+    /// Maximum WebSocket frame payload size (8 MB).
+    /// Prevents unbounded buffering from malformed/hostile peers.
+    private static let maxFrameBytes = 8 * 1024 * 1024
 
     private static func readHttpResponse(_ conn: NWConnection) async throws -> (status: Int, body: Data) {
         // Read until \r\n\r\n to separate header from body, then read
