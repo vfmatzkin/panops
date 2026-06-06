@@ -14,6 +14,7 @@ final class AppViewModel: ObservableObject {
     @Published var state: State = .idle(audio: nil)
     @Published var selectedMeetingId: String?
     @Published var meetings: [MeetingSummary] = []
+    @Published var selectedMeeting: Meeting?
 
     private let client: IpcClient
     private var pollingTask: Task<Void, Never>?
@@ -76,6 +77,8 @@ final class AppViewModel: ObservableObject {
                     switch event {
                     case .jobDone(_, let result):
                         self?.state = .done(notesPath: result.primaryFile)
+                        // Refresh meetings list to show the new meeting
+                        Task { await self?.refreshMeetings() }
                     case .jobError(_, let payload):
                         self?.state = .error(kind: payload.kind, message: payload.message)
                     case .unknown:
@@ -114,6 +117,20 @@ final class AppViewModel: ObservableObject {
         } catch {
             Self.logFullError("meeting.list", error)
             // Keep existing meetings on error
+        }
+    }
+
+    /// Load meeting detail when selected.
+    func loadSelectedMeeting() async {
+        guard let id = selectedMeetingId else {
+            selectedMeeting = nil
+            return
+        }
+        do {
+            selectedMeeting = try await client.meetingGet(id: id)
+        } catch {
+            Self.logFullError("meeting.get", error)
+            selectedMeeting = nil
         }
     }
 
@@ -189,86 +206,124 @@ final class AppViewModel: ObservableObject {
 
 struct ContentView: View {
     @ObservedObject var vm: AppViewModel
+    @StateObject private var recordingController = MockRecordingController()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Panops").font(.largeTitle)
-            Divider()
+        NavigationSplitView {
+            MeetingListView(vm: vm)
+        } detail: {
             switch vm.state {
             case .engineNotConnected:
-                engineNotConnectedSection()
+                engineNotConnectedView()
             case .idle(let audio):
-                idleSection(audio: audio)
+                detailPlaceholder(audio: audio)
             case .working(_, let audioName):
-                workingSection(audioName: audioName)
+                workingView(audioName: audioName)
             case .done(let path):
-                doneSection(path: path)
+                doneView(path: path)
             case .error(let kind, let message):
-                errorSection(kind: kind, message: message)
+                errorView(kind: kind, message: message)
             }
-            Spacer()
         }
-        .padding()
-        .frame(minWidth: 520, minHeight: 320)
+        .frame(minWidth: 720, minHeight: 480)
         .task {
             await vm.refreshMeetings()
         }
-    }
-
-    @ViewBuilder
-    private func idleSection(audio: URL?) -> some View {
-        HStack {
-            Button("Open audio…") { vm.pickAudio() }
-            if let audio {
-                Text(audio.lastPathComponent).font(.body)
-                Spacer()
-                Button("Generate notes") {
-                    Task { await vm.generate() }
-                }
-                .keyboardShortcut(.return, modifiers: [])
-            } else {
-                Text("No file selected").foregroundStyle(.secondary)
+        .onChange(of: vm.selectedMeetingId) { _, _ in
+            if vm.selectedMeetingId != nil {
+                Task { await vm.loadSelectedMeeting() }
             }
         }
     }
 
     @ViewBuilder
-    private func engineNotConnectedSection() -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Engine not connected").font(.headline).foregroundStyle(.orange)
+    private func engineNotConnectedView() -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Engine not connected")
+                .font(.title2)
+                .foregroundStyle(.orange)
             Text("Could not connect to the panops engine. Ensure panops-engine is running.")
             Button("Retry") {
                 Task { await vm.retryConnect() }
             }
+            Spacer()
+        }
+        .padding()
+    }
+
+    @ViewBuilder
+    private func detailPlaceholder(audio: URL?) -> some View {
+        VStack(spacing: 24) {
+            // Show selected meeting detail if available
+            if let meeting = vm.selectedMeeting {
+                MeetingDetailView(meeting: meeting)
+            } else {
+                VStack(spacing: 16) {
+                    Text("Panops").font(.largeTitle)
+                    Text("Select a meeting from the sidebar or generate notes from an audio file.")
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+
+                    Divider()
+
+                    // Notes generation flow preserved here
+                    HStack {
+                        Button("Open audio…") { vm.pickAudio() }
+                        if let audio {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(audio.lastPathComponent).font(.body)
+                                Button("Generate notes") {
+                                    Task { await vm.generate() }
+                                }
+                                .keyboardShortcut(.return, modifiers: [])
+                            }
+                        } else {
+                            Text("No file selected").foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Spacer()
+                }
+                .padding()
+            }
         }
     }
 
     @ViewBuilder
-    private func workingSection(audioName: String) -> some View {
-        HStack(spacing: 12) {
-            ProgressView()
-            Text("Working… (\(audioName))").foregroundStyle(.secondary)
+    private func workingView(audioName: String) -> some View {
+        VStack(spacing: 16) {
+            HStack(spacing: 12) {
+                ProgressView()
+                Text("Generating notes…").font(.headline)
+            }
+            Text(audioName).foregroundStyle(.secondary)
+            Spacer()
         }
+        .padding()
     }
 
     @ViewBuilder
-    private func doneSection(path: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Done").font(.headline).foregroundStyle(.green)
+    private func doneView(path: String) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Done").font(.title2).foregroundStyle(.green)
             Text(path).textSelection(.enabled).font(.system(.body, design: .monospaced))
             HStack {
                 Button("Open in Finder") { vm.reveal(path) }
                 Button("New") { vm.reset() }
             }
+            Spacer()
         }
+        .padding()
     }
 
     @ViewBuilder
-    private func errorSection(kind: String, message: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Error: \(kind)").font(.headline).foregroundStyle(.red)
+    private func errorView(kind: String, message: String) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Error: \(kind)").font(.title2).foregroundStyle(.red)
             Text(message).textSelection(.enabled)
             Button("Try again") { vm.reset() }
+            Spacer()
         }
+        .padding()
     }
 }
