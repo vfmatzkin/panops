@@ -5,8 +5,8 @@ started_at: 2026-05-01T10:00:00+00:00
 duration_ms: 60000
 languages: [en]
 speakers:
-  - speaker_0
-  - speaker_1
+  - Speaker 1
+  - Speaker 2
 tags:
   - budget-review
   - quarterly

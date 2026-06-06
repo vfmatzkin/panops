@@ -321,3 +321,73 @@ fn regenerate_multi_speaker_60s_goldens() {
         .unwrap();
     }
 }
+
+#[test]
+fn speaker_labels_are_humanized_in_frontmatter() {
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = MarkdownExporter;
+    let notes = sample(MarkdownDialect::Basic);
+    let art = exporter.export(&notes, dir.path()).unwrap();
+    let body = fs::read_to_string(&art.primary_file).unwrap();
+    // speaker_0 should be rendered as "Speaker 1"
+    assert!(
+        body.contains("speakers:\n  - Speaker 1"),
+        "expected humanized 'Speaker 1' in frontmatter; got:\n{body}"
+    );
+    // Raw speaker_N must NOT appear in output
+    assert!(
+        !body.contains("speaker_0"),
+        "raw 'speaker_0' must not appear in rendered output; got:\n{body}"
+    );
+}
+
+#[test]
+fn speaker_labels_in_fallback_narrative_are_humanized() {
+    // Simulate a fallback narrative with raw speaker refs (as happens when LLM fails)
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = MarkdownExporter;
+    let mut notes = sample(MarkdownDialect::Basic);
+    notes.frontmatter.speakers = vec!["speaker_0".into(), "speaker_1".into()];
+    // Simulate fallback narrative format
+    notes.sections[0].narrative_md = "**speaker_0:** hello\n\n**speaker_1:** hi".into();
+    let art = exporter.export(&notes, dir.path()).unwrap();
+    let body = fs::read_to_string(&art.primary_file).unwrap();
+    // Both speakers should be humanized
+    assert!(
+        body.contains("**Speaker 1:** hello"),
+        "expected humanized 'Speaker 1' in fallback narrative; got:\n{body}"
+    );
+    assert!(
+        body.contains("**Speaker 2:** hi"),
+        "expected humanized 'Speaker 2' in fallback narrative; got:\n{body}"
+    );
+    // No raw refs should leak
+    assert!(
+        !body.contains("speaker_0") && !body.contains("speaker_1"),
+        "raw speaker_N must not leak; got:\n{body}"
+    );
+}
+
+#[test]
+fn action_item_owner_is_humanized() {
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = MarkdownExporter;
+    let mut notes = sample(MarkdownDialect::Basic);
+    notes.frontmatter.speakers = vec!["speaker_0".into()];
+    notes.sections[0].action_items = vec![ActionItem {
+        description: "do thing".into(),
+        owner: Some("speaker_0".into()),
+        due: None,
+    }];
+    let art = exporter.export(&notes, dir.path()).unwrap();
+    let body = fs::read_to_string(&art.primary_file).unwrap();
+    // owner: speaker_0 should render as "Speaker 1"
+    assert!(
+        body.contains("(owner: Speaker 1)"),
+        "expected humanized 'Speaker 1' as owner; got:\n{body}"
+    );
+    assert!(
+        !body.contains("speaker_0"),
+        "raw 'speaker_0' must not appear; got:\n{body}"
+    );
+}
