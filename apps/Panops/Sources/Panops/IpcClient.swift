@@ -593,14 +593,10 @@ actor IpcClient {
 
     // MARK: - Private
 
-    private func sendRequest<P: Encodable, R: Decodable>(
-        method: String,
-        params: P
+    /// Core HTTP transport: sends encoded body, reads response, decodes result.
+    private func sendRawRequest<R: Decodable>(
+        body: Data
     ) async throws -> R {
-        let id = nextId
-        nextId += 1
-        let envelope = JsonRpcRequest(id: id, method: method, param: params)
-        let body = try JSONEncoder().encode(envelope)
         let request = Self.buildHttpRequest(body: body)
         let conn = NWConnection(to: endpoint, using: .tcp)
         try await Self.start(conn)
@@ -621,6 +617,17 @@ actor IpcClient {
         return result
     }
 
+    private func sendRequest<P: Encodable, R: Decodable>(
+        method: String,
+        params: P
+    ) async throws -> R {
+        let id = nextId
+        nextId += 1
+        let envelope = JsonRpcRequest(id: id, method: method, param: params)
+        let body = try JSONEncoder().encode(envelope)
+        return try await sendRawRequest(body: body)
+    }
+
     /// Send request for methods that take no parameters.
     private func sendRequestNoParams<R: Decodable>(
         method: String
@@ -629,24 +636,7 @@ actor IpcClient {
         nextId += 1
         let envelope = JsonRpcRequestNoParams(id: id, method: method)
         let body = try JSONEncoder().encode(envelope)
-        let request = Self.buildHttpRequest(body: body)
-        let conn = NWConnection(to: endpoint, using: .tcp)
-        try await Self.start(conn)
-        defer { conn.cancel() }
-        try await Self.send(conn, data: request)
-        let (status, responseBody) = try await Self.readHttpResponse(conn)
-        guard status == 200 else {
-            let bodyString = String(data: responseBody, encoding: .utf8) ?? ""
-            throw IpcClientError.httpError(status: status, body: bodyString)
-        }
-        let resp = try JSONDecoder().decode(JsonRpcResponse<R>.self, from: responseBody)
-        if let err = resp.error {
-            throw IpcClientError.rpcError(code: err.code, message: err.message)
-        }
-        guard let result = resp.result else {
-            throw IpcClientError.decode("response missing both result and error")
-        }
-        return result
+        return try await sendRawRequest(body: body)
     }
 
     private static func buildHttpRequest(body: Data) -> Data {
