@@ -1,0 +1,19 @@
+# ai-review per-project config for panops.
+# Sourced as bash AFTER the global config — plain assignments here
+# override the global. Set the env var inline (`AI_CMD=foo ai-review`)
+# to override these for a one-off.
+
+# Use the Alibaba/Qwen profile (claudea wrapper's CLAUDE_CONFIG_DIR).
+AI_CMD=claudea
+AI_PROFILE_DIR=$HOME/.claude-alibaba
+AI_MODEL=qwen3.6-plus
+AI_TIMEOUT=600
+
+# AI_PRELAUNCH (adapter spinup) lives in ~/.config/ai-review/config now.
+# ai-review locks it to global config for security (a per-repo bash
+# command would be a supply-chain hole).
+
+# REQUIRE the GitHub App. Fail loud if the conf goes missing rather
+# than silently posting under fran's gh login.
+# Conf at ~/.config/ai-review/apps/vfmatzkin__panops.{conf,pem}.
+AI_REVIEW_IDENTITY=app
