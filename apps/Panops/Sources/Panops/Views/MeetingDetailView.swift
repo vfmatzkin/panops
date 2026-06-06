@@ -52,7 +52,7 @@ struct MeetingDetailView: View {
                 }
             }
         }
-        .task { await loadMeetingData() }
+        .task(id: meeting.id) { await loadMeetingData() }
     }
 
     private var headerView: some View {
