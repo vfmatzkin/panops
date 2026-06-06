@@ -8,17 +8,16 @@ import Foundation
 actor EventStreamActor {
     private var subscription: AsyncStream<IpcEvent>?
     private var callbacks: [String: @Sendable (IpcEvent) -> Void] = [:]
-    private var subscriptionTask: Task<Void, Never>?
-    /// Buffer of recent job.done/job.error events, keyed by job_id.
+    /// Buffer of recent job.done/job.error events, stored in insertion order.
     /// Bounded to prevent unbounded growth if callbacks are never registered.
-    private var eventBuffer: [String: IpcEvent] = [:]
+    private var eventBuffer: [(jobId: String, event: IpcEvent)] = []
     private static let maxBufferSize = 64
 
     /// Subscribe to events from the IPC client.
     /// Stores the subscription and starts routing events to callbacks.
     func subscribe(client: IpcClient) async throws {
         subscription = try await client.subscribeEvents()
-        subscriptionTask = Task {
+        Task {
             guard let subscription else { return }
             for await event in subscription {
                 route(event: event)
@@ -31,9 +30,9 @@ actor EventStreamActor {
     /// If the event was already received (lost-wakeup race), replay immediately.
     func registerCallback(jobId: String, handler: @escaping @Sendable (IpcEvent) -> Void) {
         // Replay buffered event if already received (lost-wakeup race fix)
-        if let bufferedEvent = eventBuffer[jobId] {
-            handler(bufferedEvent)
-            eventBuffer.removeValue(forKey: jobId)
+        if let idx = eventBuffer.firstIndex(where: { $0.jobId == jobId }) {
+            handler(eventBuffer[idx].event)
+            eventBuffer.remove(at: idx)
             return
         }
         callbacks[jobId] = handler
@@ -43,13 +42,11 @@ actor EventStreamActor {
     /// Called after the job completes to clean up.
     func unregisterCallback(jobId: String) {
         callbacks.removeValue(forKey: jobId)
-        eventBuffer.removeValue(forKey: jobId)
+        eventBuffer.removeAll(where: { $0.jobId == jobId })
     }
 
     /// Stop the subscription and clear all callbacks.
     func stop() {
-        subscriptionTask?.cancel()
-        subscriptionTask = nil
         subscription = nil
         callbacks.removeAll()
         eventBuffer.removeAll()
@@ -67,11 +64,10 @@ actor EventStreamActor {
             } else {
                 // No callback registered yet — buffer for replay
                 if eventBuffer.count >= Self.maxBufferSize {
-                    // Evict oldest entry (first key) to prevent unbounded growth
-                    let oldestKey = eventBuffer.keys.first!
-                    eventBuffer.removeValue(forKey: oldestKey)
+                    // Evict oldest entry (first in insertion order)
+                    eventBuffer.removeFirst()
                 }
-                eventBuffer[jobId] = event
+                eventBuffer.append((jobId: jobId, event: event))
             }
         case .unknown:
             // Ignore unknown events
