@@ -25,6 +25,13 @@ pub const SECTION_CHUNK_THRESHOLD_CHARS: usize = 8000;
 /// the merge prompt's overhead when combining sub-summaries.
 pub const SECTION_CHUNK_TARGET_CHARS: usize = 4000;
 
+/// Approximate rendered transcript overhead per segment line.
+/// Line format: "[XXXX–YYYYs] speaker_N: TEXT\n".
+pub const SEGMENT_LINE_OVERHEAD: usize = 20;
+
+/// Minimum silence gap treated as a semantic chunk boundary.
+pub const SPLIT_GAP_THRESHOLD_MS: u64 = 2000;
+
 /// Compact summary of a section, fed to the frontmatter prompt.
 #[derive(Debug, Clone)]
 pub struct SectionSummary {
@@ -135,9 +142,11 @@ fn render_transcript(segments: &[Segment]) -> String {
 /// Estimate the character count of a rendered transcript for a slice of segments.
 /// Used to determine if chunking is needed and to build chunks of target size.
 pub fn estimate_transcript_chars(segments: &[Segment]) -> usize {
-    // Each segment line format: "[XXXX–YYYYs] speaker_N: TEXT\n"
-    // = ~20 chars overhead + text length
-    segments.iter().map(|s| s.text.len() + 20).sum()
+    // Each segment line format: "[XXXX–YYYYs] speaker_N: TEXT\n".
+    segments
+        .iter()
+        .map(|s| s.text.len() + SEGMENT_LINE_OVERHEAD)
+        .sum()
 }
 
 /// Estimate the input size contribution of one chunk-summary JSON value.
@@ -174,7 +183,7 @@ pub fn split_segments_for_chunking(
     let mut current_chars = 0;
 
     for seg in segments {
-        let seg_chars = seg.text.len() + 20;
+        let seg_chars = seg.text.len() + SEGMENT_LINE_OVERHEAD;
 
         // If adding this segment would exceed max_chars AND we already have content,
         // flush the current chunk and start fresh.
@@ -190,7 +199,7 @@ pub fn split_segments_for_chunking(
             let prev = current.last().unwrap();
             let gap = seg.start_ms.saturating_sub(prev.end_ms);
             let speaker_change = seg.speaker_id != prev.speaker_id;
-            if gap > 2000 || speaker_change {
+            if gap > SPLIT_GAP_THRESHOLD_MS || speaker_change {
                 chunks.push(current);
                 current = Vec::new();
                 current_chars = 0;
