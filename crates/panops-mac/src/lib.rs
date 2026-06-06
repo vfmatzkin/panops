@@ -7,6 +7,8 @@
 
 #![cfg(target_os = "macos")]
 
+mod foundation_llm;
 mod whisperkit_asr;
 
+pub use foundation_llm::{FoundationLlm, ProbeResult};
 pub use whisperkit_asr::WhisperKitAsr;
