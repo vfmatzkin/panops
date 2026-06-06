@@ -144,22 +144,17 @@ struct Meeting: Decodable {
 }
 
 /// Summary item from `ipc.meeting.list`. Mirrors `panops-protocol::MeetingSummary`.
+/// Wire contract: ONLY 4 fields (id, title, started_at, duration_ms) — all required.
 struct MeetingSummary: Decodable {
     let id: String
     let title: String
     let startedAt: String
-    let endedAt: String?
-    let durationMs: UInt64?
-    let language: String
-    let dirPath: String
+    let durationMs: UInt64
 
     enum CodingKeys: String, CodingKey {
         case id
         case title
         case startedAt = "started_at"
-        case endedAt = "ended_at"
         case durationMs = "duration_ms"
-        case language
-        case dirPath = "dir_path"
     }
 }
