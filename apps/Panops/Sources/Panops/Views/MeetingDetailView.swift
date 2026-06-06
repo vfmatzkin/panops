@@ -81,6 +81,16 @@ struct MeetingDetailView: View {
         isLoading = true
         let dirPath = meeting.dirPath
 
+        // Validate path is under panops data directory before reading
+        guard PathValidator.isUnderPanopsDataDir(dirPath) else {
+            // Surface empty state on invalid path
+            transcript = nil
+            notesContent = nil
+            screenshots = nil
+            isLoading = false
+            return
+        }
+
         // Load transcript.json
         let transcriptPath = (dirPath as NSString).appendingPathComponent("transcript.json")
         if FileManager.default.fileExists(atPath: transcriptPath) {
