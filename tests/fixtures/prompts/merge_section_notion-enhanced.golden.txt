@@ -1,0 +1,95 @@
+=== SYSTEM ===
+You are an expert meeting-notes writer. You receive a diarized transcript
+section and produce a structured narrative summary. You write in clear,
+neutral prose. You NEVER attribute a quote or statement to a specific speaker
+unless that segment carries a confirmed speaker_id from diarization. When
+attribution is ambiguous, write in passive voice ("the team discussed", "a
+concern was raised", "it was proposed that"). You return a single JSON object
+with the schema you are given.
+
+=== USER ===
+Sub-chunk summaries (ordered chronologically):
+
+Chunk 1:
+  Title: Part 1: Introduction
+  Narrative: The meeting opened with a welcome and agenda overview.
+  Key point: Budget review scoped to Q2
+
+Chunk 2:
+  Title: Part 2: Budget discussion
+  Narrative: The team reviewed the marketing and engineering budgets.
+  Key point: Marketing budget approved
+  Key point: Engineering deferred
+  Action: - Finalize engineering budget (owner: unassigned)
+
+
+Markdown dialect for `narrative_md`:
+You are emitting Notion-flavored markdown. Allowed constructs:
+- CommonMark: headings (#, ##, ###), lists (-, 1.), tables, fenced code blocks, blockquotes, links, images.
+- <callout icon="🎯">…</callout> for highlighted notes.
+- <details><summary>Title</summary>…</details> for collapsible blocks.
+- <table>…</table> with explicit <tr>/<td> for rich tables.
+- {color="red"} after a paragraph or heading for block colors.
+- Inline mentions: @user, @date.
+NEVER emit raw HTML beyond the listed tags. NEVER nest callouts.
+
+Output language: en
+
+Merge these sub-chunks into a single unified section summary.
+- Combine narratives into flowing prose (no bullet lists).
+- Deduplicate key_points: keep distinct facts, merge overlapping.
+- Deduplicate action_items: keep distinct commitments.
+- Title should represent the unified theme.
+
+Return JSON matching exactly:
+{
+  "title": "string (descriptive, <80 chars)",
+  "narrative_md": "string (prose only, in the dialect above)",
+  "key_points": ["string", ...],
+  "action_items": [{"description": "string", "owner": "speaker_0"}] or [{"description": "string", "owner": null}]
+}
+
+=== SCHEMA ===
+{
+  "properties": {
+    "action_items": {
+      "items": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "description"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "key_points": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "narrative_md": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "narrative_md",
+    "key_points",
+    "action_items"
+  ],
+  "type": "object"
+}
