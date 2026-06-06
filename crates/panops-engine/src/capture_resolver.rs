@@ -2,10 +2,10 @@
 //!
 //! For slice 11, no macOS ScreenCaptureKit sidecar exists yet (that's the
 //! live-capture path gated on manual Mac smoke). We return `FakeCapture`
-//! under `#[cfg(test)]` so the IPC handlers are unit-testable.
+//! when `PANOPS_TEST_CAPTURE=1` is set (for unit tests and integration tests).
 //!
-//! For non-test builds, we return a clear error since the real adapter
-//! is pending (mirrors `asr_resolver`'s pattern).
+//! For non-test builds without the env var, we return a clear error since
+//! the real adapter is pending (mirrors `asr_resolver`'s pattern).
 //!
 //! Once `apps/panops-capture-mac/` exists, this resolver will mirror
 //! `asr_resolver`:
@@ -26,18 +26,15 @@ static CAPTURE: OnceLock<Arc<dyn Capture + Send + Sync>> = OnceLock::new();
 
 /// Resolve the capture adapter.
 ///
-/// Under `#[cfg(test)]`, returns a cached `FakeCapture` for unit tests.
-/// For non-test builds, returns a capture that errors on `start_capture`
-/// since the ScreenCaptureKit sidecar is not yet implemented.
+/// When `PANOPS_TEST_CAPTURE=1` is set, returns a cached `FakeCapture` for tests.
+/// Otherwise, returns a capture that errors on `start_capture` since the
+/// ScreenCaptureKit sidecar is not yet implemented.
 pub fn pick_capture() -> Arc<dyn Capture + Send + Sync> {
     CAPTURE
         .get_or_init(|| {
-            #[cfg(test)]
-            {
+            if std::env::var("PANOPS_TEST_CAPTURE").as_deref() == Ok("1") {
                 Arc::new(panops_core::conformance::fakes::FakeCapture::new())
-            }
-            #[cfg(not(test))]
-            {
+            } else {
                 Arc::new(NotYetImplementedCapture)
             }
         })
@@ -46,10 +43,8 @@ pub fn pick_capture() -> Arc<dyn Capture + Send + Sync> {
 
 /// Placeholder capture that returns a clear error for real/non-test use.
 /// The macOS ScreenCaptureKit sidecar is not yet implemented.
-#[cfg(not(test))]
 struct NotYetImplementedCapture;
 
-#[cfg(not(test))]
 impl Capture for NotYetImplementedCapture {
     fn start_capture(
         &self,
