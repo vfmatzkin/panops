@@ -191,6 +191,12 @@ actor IpcClient {
     /// Stores the connection for subsequent frame reads.
     /// Slice 12 implementation per spec D6.
     func wsConnect() async throws {
+        // Cancel any stale connection before reconnecting: if a prior wsConnect
+        // succeeded but the caller's subscribe failed, the old NWConnection is
+        // still stored here and would leak when we overwrite it below.
+        wsConnection?.cancel()
+        wsConnection = nil
+
         // Generate random 16-byte WebSocket key per RFC 6455
         var keyData = Data(count: 16)
         let keyResult = keyData.withUnsafeMutableBytes { ptr in
