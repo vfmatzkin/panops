@@ -97,6 +97,20 @@ struct JsonRpcRequest<P: Encodable>: Encodable {
     }
 }
 
+/// JSON-RPC request for methods that take no parameters.
+/// Per JSON-RPC 2.0 spec, params field is omitted entirely.
+struct JsonRpcRequestNoParams: Encodable {
+    let jsonrpc: String
+    let id: UInt64
+    let method: String
+
+    init(id: UInt64, method: String) {
+        self.jsonrpc = "2.0"
+        self.id = id
+        self.method = method
+    }
+}
+
 struct JsonRpcResponse<R: Decodable>: Decodable {
     let jsonrpc: String
     let id: UInt64
@@ -107,6 +121,20 @@ struct JsonRpcResponse<R: Decodable>: Decodable {
 struct JsonRpcError: Decodable {
     let code: Int
     let message: String
+}
+
+/// JSON-RPC 2.0 notification envelope for WebSocket events.
+/// Wire format: {"jsonrpc":"2.0","method":"events","params":{"subscription":<id>,"result":<Event>}}
+/// The Event payload is in params.result.
+struct JsonRpcNotification: Decodable {
+    let jsonrpc: String
+    let method: String
+    let params: NotificationParams
+
+    struct NotificationParams: Decodable {
+        let subscription: String
+        let result: IpcEvent
+    }
 }
 
 /// Empty params for RPCs that take no arguments.
