@@ -125,16 +125,36 @@ impl IpcServer for IpcImpl {
         let events_tx = self.events_tx.clone();
         let job_id_owned = job_id.clone();
 
+        // Backpressure heavy note generation before it reaches tokio's
+        // blocking pool. A permit is held for the whole synchronous
+        // pipeline, so a burst of RPC calls cannot enqueue unbounded
+        // decoded audio / ASR / diarization / LLM work and exhaust RAM.
+        // Calls beyond `MAX_CONCURRENT_NOTES_JOBS` wait here, then still
+        // return the job id immediately after their job is accepted
+        // (results continue to arrive through `events.subscribe`).
+        let notes_job_permit = services
+            .notes_jobs
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "notes.generate semaphore closed");
+                ipc_error_to_obj(IpcError::Internal {
+                    message: "notes.generate internal error".into(),
+                })
+            })?;
+
         // Move the pipeline off any tokio worker thread: rayon (used by
         // `NotesGenerator` for the per-section fan-out) and the blocking
         // ASR/diar adapters mustn't share a runtime worker with the RPC
         // accept loop. `spawn_blocking` drops them on the dedicated
-        // blocking pool. The `notes.generate` RPC returns immediately;
-        // the actual result lands on `events.subscribe` as `JobDone`
-        // or `JobError`.
+        // blocking pool. The `notes.generate` RPC returns immediately
+        // after accepting a bounded job; the actual result lands on
+        // `events.subscribe` as `JobDone` or `JobError`.
         let job_id_for_panic = job_id.clone();
         let events_tx_for_panic = events_tx.clone();
         let join_handle = tokio::task::spawn_blocking(move || {
+            let _notes_job_permit = notes_job_permit;
             let outcome = run_notes_pipeline(&services, &params);
             match outcome {
                 Ok(result) => {
@@ -947,5 +967,214 @@ mod readiness_tests {
             }
             other => panic!("expected Internal, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod notes_generate_concurrency_tests {
+    use super::{IpcImpl, IpcServer};
+    use crate::server::MAX_CONCURRENT_NOTES_JOBS;
+    use panops_core::conformance::fakes::{
+        FakeNotesExporter, InMemoryStorage, KnownTurnsFake, TranscriptFileFake,
+    };
+    use panops_core::llm::{LlmError, LlmProvider, LlmRequest, LlmResponse};
+    use panops_core::vad::{SpeechRegion, Vad, VadError};
+    use panops_protocol::{Event, NotesDialect, NotesGenerateParams};
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
+    use tokio::sync::broadcast;
+
+    struct ConcurrencyProbe {
+        in_flight: AtomicUsize,
+        max_seen: AtomicUsize,
+        section_calls_started: AtomicUsize,
+        released: Mutex<bool>,
+        wait_cv: Condvar,
+    }
+
+    impl ConcurrencyProbe {
+        fn new() -> Self {
+            Self {
+                in_flight: AtomicUsize::new(0),
+                max_seen: AtomicUsize::new(0),
+                section_calls_started: AtomicUsize::new(0),
+                released: Mutex::new(false),
+                wait_cv: Condvar::new(),
+            }
+        }
+
+        fn enter_blocking_section_call(&self) {
+            self.section_calls_started.fetch_add(1, Ordering::SeqCst);
+            let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_seen.fetch_max(now, Ordering::SeqCst);
+
+            let mut released = self.released.lock().expect("probe mutex poisoned");
+            while !*released {
+                released = self.wait_cv.wait(released).expect("probe condvar poisoned");
+            }
+
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        fn release_all(&self) {
+            *self.released.lock().expect("probe mutex poisoned") = true;
+            self.wait_cv.notify_all();
+        }
+
+        async fn wait_for_started(&self, expected: usize) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if self.section_calls_started.load(Ordering::SeqCst) >= expected {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("timed out waiting for bounded jobs to enter LLM");
+        }
+    }
+
+    struct BlockingSectionLlm {
+        probe: Arc<ConcurrencyProbe>,
+    }
+
+    impl LlmProvider for BlockingSectionLlm {
+        fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
+            let system = req.system.as_deref().unwrap_or_default();
+            if system.contains("meeting-notes writer") {
+                self.probe.enter_blocking_section_call();
+                return Ok(LlmResponse::Json(serde_json::json!({
+                    "title": "Bounded notes job",
+                    "narrative_md": "The meeting was summarized without exceeding the concurrency bound.",
+                    "key_points": ["Concurrency stayed bounded"],
+                    "action_items": [{"description": "Keep job backpressure in place", "owner": null}]
+                })));
+            }
+
+            if system.contains("meeting-notes editor") {
+                return Ok(LlmResponse::Json(serde_json::json!({
+                    "title": "Bounded notes jobs",
+                    "tags": ["bounded-concurrency"]
+                })));
+            }
+
+            Err(LlmError::Provider(format!(
+                "unexpected prompt system: {system:?}"
+            )))
+        }
+    }
+
+    struct AllSpeechVad;
+
+    impl Vad for AllSpeechVad {
+        fn detect_speech(
+            &self,
+            samples: &[f32],
+            sample_rate: u32,
+        ) -> Result<Vec<SpeechRegion>, VadError> {
+            Ok(vec![SpeechRegion {
+                start_ms: 0,
+                end_ms: (samples.len() as u64 * 1000) / u64::from(sample_rate),
+            }])
+        }
+    }
+
+    fn notes_params(audio_path: &Path) -> NotesGenerateParams {
+        NotesGenerateParams {
+            audio: audio_path.to_string_lossy().into_owned(),
+            dialect: Some(NotesDialect::Basic),
+            llm_provider: None,
+            llm_model: None,
+            no_diarize: Some(true),
+            language: Some("en".into()),
+            meeting_id: None,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn notes_generate_runs_no_more_than_max_concurrent_jobs() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("repo root above crates/panops-engine");
+        let audio_path = repo_root
+            .join("tests")
+            .join("fixtures")
+            .join("audio")
+            .join("multi_speaker_60s.wav");
+        let data_dir = tempfile::tempdir().expect("temp data dir");
+        let probe = Arc::new(ConcurrencyProbe::new());
+        let services = crate::server::EngineServices::ready(
+            Arc::new(BlockingSectionLlm {
+                probe: probe.clone(),
+            }),
+            Arc::new(InMemoryStorage::new()),
+            data_dir.path().to_path_buf(),
+            Arc::new(TranscriptFileFake::from_text(
+                "The team reviewed bounded job concurrency.",
+                Some("en"),
+            )),
+            Arc::new(KnownTurnsFake),
+            Arc::new(FakeNotesExporter),
+            Arc::new(AllSpeechVad),
+        );
+        let (events_tx, mut events_rx) = broadcast::channel(16);
+        let ipc = Arc::new(IpcImpl {
+            services: Arc::new(services),
+            events_tx,
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+        });
+
+        let total_jobs = MAX_CONCURRENT_NOTES_JOBS + 2;
+        let mut rpc_handles = Vec::with_capacity(total_jobs);
+        for _ in 0..total_jobs {
+            let ipc = ipc.clone();
+            let params = notes_params(&audio_path);
+            rpc_handles.push(tokio::spawn(
+                async move { ipc.notes_generate(params).await },
+            ));
+        }
+
+        probe.wait_for_started(MAX_CONCURRENT_NOTES_JOBS).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            probe.section_calls_started.load(Ordering::SeqCst),
+            MAX_CONCURRENT_NOTES_JOBS,
+            "jobs beyond the semaphore bound should not enter the pipeline while permits are held",
+        );
+        assert_eq!(
+            probe.max_seen.load(Ordering::SeqCst),
+            MAX_CONCURRENT_NOTES_JOBS,
+            "more notes jobs ran concurrently than the configured semaphore bound",
+        );
+
+        probe.release_all();
+
+        for handle in rpc_handles {
+            let accepted = tokio::time::timeout(Duration::from_secs(5), handle)
+                .await
+                .expect("notes.generate RPC task should return")
+                .expect("notes.generate RPC task should not panic")
+                .expect("notes.generate should accept bounded job");
+            assert!(!accepted.job_id.is_empty());
+        }
+
+        let mut done = 0;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while done < total_jobs {
+                match events_rx.recv().await.expect("events channel open") {
+                    Event::JobDone(_) => done += 1,
+                    Event::JobError(e) => panic!("notes job errored: {:?}", e.error),
+                    Event::Unknown(v) => panic!("unexpected unknown event: {v}"),
+                    Event::Screenshot(_) | Event::RecordingProgress(_) => {}
+                }
+            }
+        })
+        .await
+        .expect("all accepted notes jobs should finish");
     }
 }
