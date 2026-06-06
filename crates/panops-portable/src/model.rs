@@ -67,6 +67,7 @@ pub const DEFAULT_VAD_MODEL_NAME: &str = "ggml-silero-v6.2.0";
 /// Written after a successful verify; read on subsequent calls to skip re-hashing
 /// if the file hasn't changed (size + mtime match).
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct VerificationMarker {
     /// The expected sha256 hash that was verified.
     sha256: String,
