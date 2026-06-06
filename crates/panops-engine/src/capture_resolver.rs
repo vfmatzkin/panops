@@ -2,26 +2,76 @@
 //!
 //! For slice 11, no macOS ScreenCaptureKit sidecar exists yet (that's the
 //! live-capture path gated on manual Mac smoke). We return `FakeCapture`
-//! unconditionally so the IPC handlers are unit-testable and CI-verifiable.
+//! under `#[cfg(test)]` so the IPC handlers are unit-testable.
+//!
+//! For non-test builds, we return a clear error since the real adapter
+//! is pending (mirrors `asr_resolver`'s pattern).
 //!
 //! Once `apps/panops-capture-mac/` exists, this resolver will mirror
 //! `asr_resolver`:
 //!   - macOS: check `PANOPS_CAPTURE_SIDECAR_BIN` env var; if set and executable,
 //!     use `ScreenCaptureKitCapture` sidecar adapter.
-//!   - Otherwise: fall back to `FakeCapture` (tests) or error in production.
+//!   - Otherwise: fall back to error in production.
 //!
 //! Design: `docs/superpowers/specs/2026-06-05-slice-11-live-capture-design.md`.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use panops_core::capture::Capture;
 
-/// Resolve the capture adapter. For slice 11 scaffolding, returns
-/// `FakeCapture` unconditionally (no real ScreenCaptureKit adapter yet).
+/// Cached capture adapter. `OnceLock` ensures the same instance is returned
+/// on every call, so `start_capture` and `stop_capture` share the same
+/// session map (critical for FakeCapture's internal HashMap).
+static CAPTURE: OnceLock<Arc<dyn Capture + Send + Sync>> = OnceLock::new();
+
+/// Resolve the capture adapter.
+///
+/// Under `#[cfg(test)]`, returns a cached `FakeCapture` for unit tests.
+/// For non-test builds, returns a capture that errors on `start_capture`
+/// since the ScreenCaptureKit sidecar is not yet implemented.
 pub fn pick_capture() -> Arc<dyn Capture + Send + Sync> {
-    // Slice 11 scaffolding: no macOS sidecar exists yet. Return FakeCapture
-    // so the IPC handlers are unit-testable. The real ScreenCaptureKit adapter
-    // will be gated on a manual Mac smoke test and the PANOPS_CAPTURE_SIDECAR_BIN
-    // env var (mirroring asr_resolver).
-    Arc::new(panops_core::conformance::fakes::FakeCapture::new())
+    CAPTURE
+        .get_or_init(|| {
+            #[cfg(test)]
+            {
+                Arc::new(panops_core::conformance::fakes::FakeCapture::new())
+            }
+            #[cfg(not(test))]
+            {
+                Arc::new(NotYetImplementedCapture)
+            }
+        })
+        .clone()
+}
+
+/// Placeholder capture that returns a clear error for real/non-test use.
+/// The macOS ScreenCaptureKit sidecar is not yet implemented.
+#[cfg(not(test))]
+struct NotYetImplementedCapture;
+
+#[cfg(not(test))]
+impl Capture for NotYetImplementedCapture {
+    fn start_capture(
+        &self,
+        _meeting_id: &str,
+        _meeting_dir: &std::path::Path,
+        _config: &panops_core::capture::CaptureConfig,
+    ) -> Result<panops_core::capture::CaptureSession, panops_core::capture::CaptureError> {
+        Err(panops_core::capture::CaptureError::Capture(
+            "live capture not yet implemented — ScreenCaptureKit sidecar pending".into(),
+        ))
+    }
+
+    fn stop_capture(
+        &self,
+        _session: &panops_core::capture::CaptureSession,
+    ) -> Result<panops_core::capture::CaptureResult, panops_core::capture::CaptureError> {
+        Err(panops_core::capture::CaptureError::Capture(
+            "live capture not yet implemented — ScreenCaptureKit sidecar pending".into(),
+        ))
+    }
+
+    fn is_fake(&self) -> bool {
+        false
+    }
 }

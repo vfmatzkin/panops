@@ -10,23 +10,34 @@
 //! `ipc_error_to_obj`, matching the slice spec's "Error mapping at the
 //! RPC boundary" section.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use jsonrpsee::PendingSubscriptionSink;
 use jsonrpsee::core::SubscriptionResult;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::ErrorObjectOwned;
+use panops_core::capture::CaptureSession;
 use panops_core::merge::merge_speaker_turns;
 use panops_core::notes::dialect::MarkdownDialect;
 use panops_core::notes::input::{MeetingMetadata, NotesInput};
 use panops_core::notes::pipeline::NotesGenerator;
 use panops_protocol::{
-    Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, Meeting, MeetingConfig,
-    MeetingSummary, NotesDialect, NotesGenerateParams, NotesGenerateResult, RecordingAccepted,
-    RecordingStartParams, RecordingStopParams, RecordingStopped,
+    AudioSourcesWire, Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, Meeting,
+    MeetingConfig, MeetingSummary, NotesDialect, NotesGenerateParams, NotesGenerateResult,
+    RecordingAccepted, RecordingStartParams, RecordingStopParams, RecordingStopped,
 };
 use tokio::sync::broadcast;
+
+/// Convert wire AudioSources to domain AudioSources.
+fn audio_sources_wire_to_domain(wire: AudioSourcesWire) -> panops_core::capture::AudioSources {
+    match wire {
+        AudioSourcesWire::SystemOnly => panops_core::capture::AudioSources::SystemOnly,
+        AudioSourcesWire::MicOnly => panops_core::capture::AudioSources::MicOnly,
+        AudioSourcesWire::SystemAndMic => panops_core::capture::AudioSources::SystemAndMic,
+    }
+}
 
 /// Wrapper for `meeting.{stop,get,delete,set_language}` request params.
 /// jsonrpsee's `#[rpc]` macro accepts strongly-typed params via a single
@@ -95,6 +106,12 @@ pub(super) trait Ipc {
 pub(super) struct IpcImpl {
     pub(super) services: Arc<crate::server::EngineServices>,
     pub(super) events_tx: broadcast::Sender<Event>,
+    /// Active capture sessions keyed by recording_id (meeting_id).
+    /// Persisted from `recording.start` and looked up in `recording.stop`
+    /// so the real session (with correct started_at_ms) is passed to
+    /// `stop_capture` instead of a fabricated placeholder.
+    /// Wrapped in Arc<Mutex> so it can be cloned and passed to spawn_blocking.
+    pub(super) sessions: Arc<Mutex<HashMap<String, CaptureSession>>>,
 }
 
 #[async_trait::async_trait]
@@ -296,25 +313,37 @@ impl IpcServer for IpcImpl {
     ) -> Result<RecordingAccepted, ErrorObjectOwned> {
         let capture = crate::capture_resolver::pick_capture();
         let storage = self.services.storage.clone();
-        let _data_dir = self.services.data_dir.clone();
+        let data_dir = self.services.data_dir.clone();
         let meeting_id = params.meeting_id;
+        let audio_sources = params.audio_sources;
+
+        // Clone self.sessions for use in spawn_blocking.
+        let sessions = self.sessions.clone();
 
         spawn_blocking_into_ipc("recording.start", move || {
             // Verify meeting exists.
             let m = storage.get_meeting(&meeting_id).map_err(IpcError::from)?;
-            let meeting_dir = PathBuf::from(&m.dir_path);
+            let meeting_dir = validate_meeting_dir(&data_dir, &m.dir_path)?;
 
-            // Start capture.
+            // Start capture with config from wire params.
             let config = panops_core::capture::CaptureConfig {
-                audio_sources: panops_core::capture::AudioSources::SystemAndMic,
+                audio_sources: audio_sources_wire_to_domain(audio_sources),
                 screenshot_interval_ms: params.screenshot_interval_ms,
                 screenshot_threshold: params.screenshot_threshold,
             };
-            let _session = capture
+            let session = capture
                 .start_capture(&meeting_id, &meeting_dir, &config)
                 .map_err(IpcError::from)?;
 
-            // Return recording_id as meeting_id for now (simplified for scaffolding).
+            // Persist session for recording.stop to look up.
+            sessions
+                .lock()
+                .map_err(|_| IpcError::Internal {
+                    message: "sessions mutex poisoned".into(),
+                })?
+                .insert(meeting_id.clone(), session);
+
+            // Return recording_id as meeting_id.
             Ok(RecordingAccepted {
                 recording_id: meeting_id,
             })
@@ -329,11 +358,21 @@ impl IpcServer for IpcImpl {
         let capture = crate::capture_resolver::pick_capture();
         let recording_id = params.recording_id;
 
+        // Clone self.sessions for use in spawn_blocking.
+        let sessions = self.sessions.clone();
+
         spawn_blocking_into_ipc("recording.stop", move || {
-            let session = panops_core::capture::CaptureSession {
-                meeting_id: recording_id.clone(),
-                started_at_ms: 0, // Placeholder; not used by FakeCapture
-            };
+            // Look up the real session persisted by recording.start.
+            let session = sessions
+                .lock()
+                .map_err(|_| IpcError::Internal {
+                    message: "sessions mutex poisoned".into(),
+                })?
+                .remove(&recording_id)
+                .ok_or_else(|| IpcError::InputNotFound {
+                    path: format!("session/{recording_id}"),
+                })?;
+
             let result = capture.stop_capture(&session).map_err(IpcError::from)?;
 
             Ok(RecordingStopped {
