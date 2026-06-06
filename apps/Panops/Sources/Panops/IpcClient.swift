@@ -32,7 +32,8 @@ struct WsFrameParser {
     }
 
     /// Parse frame header from data. Returns nil if data is incomplete.
-    static func parseHeader(_ data: Data) -> FrameHeader? {
+    /// Throws if extended length exceeds max frame size (8 MiB).
+    static func parseHeader(_ data: Data) throws -> FrameHeader? {
         guard data.count >= 2 else { return nil }
 
         let fin = (data[0] & 0x80) != 0
@@ -47,7 +48,12 @@ struct WsFrameParser {
             headerSize = 4
         } else if payloadLen == 127 {
             guard data.count >= 10 else { return nil }
-            payloadLen = Int(data[6]) << 24 | Int(data[7]) << 16 | Int(data[8]) << 8 | Int(data[9])
+            // RFC 6455 §5.2: 64-bit big-endian extended length in bytes [2..9]
+            let len64 = UInt64(data[2]) << 56 | UInt64(data[3]) << 48 | UInt64(data[4]) << 40 | UInt64(data[5]) << 32 | UInt64(data[6]) << 24 | UInt64(data[7]) << 16 | UInt64(data[8]) << 8 | UInt64(data[9])
+            guard len64 <= IpcClient.maxFrameBytes else {
+                throw IpcClientError.websocketFrameError("extended payload length exceeds max (\(len64) > \(IpcClient.maxFrameBytes))")
+            }
+            payloadLen = Int(len64)
             headerSize = 10
         }
 
@@ -96,7 +102,7 @@ struct WsFrameParser {
     /// Parse a complete WebSocket frame from raw bytes.
     /// Returns (opcode, payload) for text/continuation frames, nil for non-text/incomplete.
     static func parse(_ data: Data) throws -> Data? {
-        guard let header = parseHeader(data) else {
+        guard let header = try parseHeader(data) else {
             guard data.count >= 2 else {
                 throw IpcClientError.websocketFrameError("frame too short")
             }
@@ -266,7 +272,7 @@ actor IpcClient {
         nextId += 1
         let subscribeRequest = JsonRpcRequestNoParams(id: id, method: "ipc.events.subscribe")
         let body = try JSONEncoder().encode(subscribeRequest)
-        let frame = Self.buildWsTextFrame(body)
+        let frame = try Self.buildWsTextFrame(body)
         try await Self.send(conn, data: frame)
 
         // Read the subscription-id result reply (first frame after subscribe)
@@ -346,17 +352,10 @@ actor IpcClient {
                 buffer.append(chunk)
             }
 
-            // Parse frame header
-            guard let header = WsFrameParser.parseHeader(buffer) else {
+            // Parse frame header (throws if extended length exceeds max)
+            guard let header = try WsFrameParser.parseHeader(buffer) else {
                 // Incomplete header - need more data
                 continue
-            }
-
-            // Cap frame size to prevent unbounded buffering
-            guard header.payloadLen <= Self.maxFrameBytes else {
-                throw IpcClientError.websocketFrameError(
-                    "frame payload exceeds max (\(header.payloadLen) > \(Self.maxFrameBytes))"
-                )
             }
 
             // Check if we have the complete frame
@@ -437,11 +436,14 @@ actor IpcClient {
 
     /// Build a WebSocket text frame with masked payload (client-to-server).
     /// Per RFC 6455, client frames MUST use a random mask per frame.
-    private static func buildWsTextFrame(_ payload: Data) -> Data {
+    private static func buildWsTextFrame(_ payload: Data) throws -> Data {
         // Generate random 4-byte mask per RFC 6455
         var maskKey = Data(count: 4)
-        maskKey.withUnsafeMutableBytes { ptr in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 4, ptr.baseAddress!)
+        let maskResult = maskKey.withUnsafeMutableBytes { ptr in
+            SecRandomCopyBytes(kSecRandomDefault, 4, ptr.baseAddress!)
+        }
+        guard maskResult == errSecSuccess else {
+            throw IpcClientError.websocketFrameError("failed to generate random mask")
         }
 
         var frame = Data()
@@ -673,7 +675,8 @@ actor IpcClient {
 
     /// Maximum WebSocket frame payload size (8 MB).
     /// Prevents unbounded buffering from malformed/hostile peers.
-    private static let maxFrameBytes = 8 * 1024 * 1024
+    /// Fileprivate for access from WsFrameParser in same file.
+    fileprivate static let maxFrameBytes = 8 * 1024 * 1024
 
     private static func readHttpResponse(_ conn: NWConnection) async throws -> (status: Int, body: Data) {
         // Read until \r\n\r\n to separate header from body, then read
