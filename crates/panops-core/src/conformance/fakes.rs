@@ -280,6 +280,50 @@ impl LlmProvider for MockLlm {
     }
 }
 
+/// A `LlmProvider` fake whose backend always fails. Drives the error-path
+/// conformance checks (`conformance::llm::run_error_suite` /
+/// `assert_empty_response`): a live LLM can't be made to fail on command, so
+/// the error contract is validated through this reference failing impl.
+///
+/// `FailingLlm::provider(msg)` models a backend transport/provider failure;
+/// `FailingLlm::empty()` models a backend that returned a blank completion,
+/// which adapters must surface as `LlmError::EmptyResponse` (see
+/// `panops-portable`'s `GenaiLlm`, which maps an empty `first_text()` the same
+/// way). The prompt is ignored.
+pub struct FailingLlm {
+    mode: FailMode,
+}
+
+enum FailMode {
+    Provider(String),
+    Empty,
+}
+
+impl FailingLlm {
+    /// Models a backend transport/provider failure.
+    pub fn provider(message: &str) -> Self {
+        Self {
+            mode: FailMode::Provider(message.to_string()),
+        }
+    }
+
+    /// Models a backend that returned an empty/blank completion.
+    pub fn empty() -> Self {
+        Self {
+            mode: FailMode::Empty,
+        }
+    }
+}
+
+impl LlmProvider for FailingLlm {
+    fn complete(&self, _req: LlmRequest) -> Result<LlmResponse, LlmError> {
+        match &self.mode {
+            FailMode::Provider(message) => Err(LlmError::Provider(message.clone())),
+            FailMode::Empty => Err(LlmError::EmptyResponse),
+        }
+    }
+}
+
 /// Minimal `NotesExporter` for the conformance harness. Writes a single
 /// `notes.txt` file containing the rendered title and section count under
 /// `dest`. Refuses (with `ExportError::InvalidDest`) when `dest` exists but
