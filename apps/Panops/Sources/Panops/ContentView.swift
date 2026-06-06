@@ -197,7 +197,9 @@ final class AppViewModel: ObservableObject {
 
     func reset() {
         pollingTask?.cancel()
+        pollingTask = nil
         wsSubscriptionTask?.cancel()
+        wsSubscriptionTask = nil
         Task { await eventStream.stop() }
         state = .idle(audio: nil)
     }
