@@ -104,6 +104,48 @@ impl LlmProvider for RecordingLlm {
     }
 }
 
+#[derive(Default)]
+struct BulkyRecordingLlm {
+    calls: Mutex<Vec<LlmRequest>>,
+}
+
+impl BulkyRecordingLlm {
+    fn calls(&self) -> Vec<LlmRequest> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl LlmProvider for BulkyRecordingLlm {
+    fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
+        let response = if req.user.starts_with("Section transcript") {
+            let markers = marker_list(&req.user);
+            LlmResponse::Json(serde_json::json!({
+                "title": markers.first().map_or("Chunk", String::as_str),
+                "narrative_md": format!("{} {}", markers.join(" "), "detail ".repeat(420)),
+                "key_points": markers,
+                "action_items": []
+            }))
+        } else if req.user.starts_with("Sub-chunk summaries") {
+            let markers = marker_list(&req.user);
+            LlmResponse::Json(serde_json::json!({
+                "title": "Merged Section",
+                "narrative_md": format!("{} {}", markers.join(" "), "detail ".repeat(420)),
+                "key_points": markers,
+                "action_items": []
+            }))
+        } else if req.user.starts_with("Section summaries") {
+            LlmResponse::Json(serde_json::json!({
+                "title": "Team Meeting",
+                "tags": ["meeting"]
+            }))
+        } else {
+            return Err(LlmError::Provider("unexpected prompt".into()));
+        };
+        self.calls.lock().unwrap().push(req);
+        Ok(response)
+    }
+}
+
 fn marker_list(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for token in text.split_whitespace() {
@@ -253,6 +295,94 @@ fn long_section_chunks_summarizes_each_chunk_and_merges_in_order() {
     }
 
     assert_eq!(notes.sections[0].title, "Long Section");
+    let narrative = &notes.sections[0].narrative_md;
+    for marker in &expected_markers {
+        assert!(
+            narrative.contains(marker),
+            "final merged section should include {marker}; got {narrative}"
+        );
+    }
+    let narrative_order: Vec<_> = expected_markers
+        .iter()
+        .map(|marker| narrative.find(marker).expect("marker should be present"))
+        .collect();
+    assert!(
+        narrative_order.windows(2).all(|pair| pair[0] < pair[1]),
+        "merged marker order should remain chronological: {narrative}"
+    );
+}
+
+#[test]
+fn long_section_merges_chunk_summaries_in_bounded_rounds() {
+    let mut segments = Vec::new();
+    let mut expected_markers = Vec::new();
+    for i in 0..12u64 {
+        let marker = format!("marker-bounded-{i:02}");
+        expected_markers.push(marker.clone());
+        let filler = " chunk".repeat(620);
+        let start_ms = i * 4_000;
+        segments.push(seg(
+            start_ms,
+            start_ms + 1_000,
+            0,
+            &format!("{marker}{filler}"),
+        ));
+    }
+
+    let llm = BulkyRecordingLlm::default();
+    let generator = NotesGenerator {
+        llm: &llm,
+        dialect: MarkdownDialect::Basic,
+    };
+
+    let notes = generator
+        .generate(notes_input(segments, 48_000))
+        .expect("generate failed");
+
+    assert_eq!(notes.sections.len(), 1);
+    assert_eq!(notes.sections[0].title, "Merged Section");
+    assert!(
+        !notes.sections[0].narrative_md.contains("panops: llm error"),
+        "iterative merge should produce notes without falling back"
+    );
+
+    let calls = llm.calls();
+    let section_calls: Vec<_> = calls
+        .iter()
+        .filter(|c| c.user.starts_with("Section transcript"))
+        .collect();
+    let merge_calls: Vec<_> = calls
+        .iter()
+        .filter(|c| c.user.starts_with("Sub-chunk summaries"))
+        .collect();
+
+    assert!(
+        section_calls.len() > 1,
+        "fixture should trigger chunk-level summaries"
+    );
+    assert!(
+        merge_calls.len() > 1,
+        "bulky chunk summaries should require multiple bounded merge calls"
+    );
+    assert!(
+        merge_calls
+            .iter()
+            .any(|call| call.user.contains("Title: Merged Section")),
+        "at least one merge call should consume a previous merge result"
+    );
+
+    for call in calls.iter().filter(|call| {
+        call.user.starts_with("Section transcript") || call.user.starts_with("Sub-chunk summaries")
+    }) {
+        assert!(
+            call.user.len() <= SECTION_CHUNK_THRESHOLD_CHARS,
+            "LLM input exceeded threshold: {} > {}\n{}",
+            call.user.len(),
+            SECTION_CHUNK_THRESHOLD_CHARS,
+            call.user
+        );
+    }
+
     let narrative = &notes.sections[0].narrative_md;
     for marker in &expected_markers {
         assert!(
