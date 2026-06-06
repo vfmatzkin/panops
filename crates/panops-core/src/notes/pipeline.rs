@@ -23,7 +23,9 @@ use crate::notes::error::NotesError;
 use crate::notes::input::NotesInput;
 use crate::notes::ir::{ActionItem, NotesFrontmatter, NotesSection, Screenshot, StructuredNotes};
 use crate::notes::prompts::{
-    SectionSummary, build_frontmatter_prompt, build_section_narrative_prompt,
+    SECTION_CHUNK_TARGET_CHARS, SECTION_CHUNK_THRESHOLD_CHARS, SectionSummary,
+    build_frontmatter_prompt, build_merge_section_prompt, build_section_narrative_prompt,
+    estimate_transcript_chars, split_segments_for_chunking,
 };
 use crate::notes::screenshot_anchoring::anchor_screenshots;
 use crate::notes::topic_segmentation::{TopicSegmentationConfig, segment_topics};
@@ -66,47 +68,7 @@ impl NotesGenerator<'_> {
                     .iter()
                     .map(|i| input.transcript[*i].clone())
                     .collect();
-                let req = build_section_narrative_prompt(&segs, self.dialect, &language);
-                match self.llm.complete(req) {
-                    Ok(LlmResponse::Json(v)) => {
-                        let draft = SectionDraft::from_json(raw.time_range_ms, segs.clone(), v);
-                        // Verifier gate: if the LLM attributed speech to an
-                        // ID not present in the transcript, drop the draft
-                        // and fall back to a deterministic transcript dump.
-                        match verifier::verify_section_attribution(
-                            &draft.narrative_md,
-                            &draft.action_items,
-                            &allowed_speakers,
-                        ) {
-                            verifier::VerifierReport::Ok => draft,
-                            verifier::VerifierReport::DisallowedSpeakers(ids) => {
-                                tracing::warn!(
-                                    section_ms = ?raw.time_range_ms,
-                                    disallowed = ?ids,
-                                    "section narrative referenced speakers not in transcript; using fallback"
-                                );
-                                SectionDraft::fallback(
-                                    raw.time_range_ms,
-                                    segs,
-                                    "verifier: disallowed speaker reference",
-                                    self.dialect,
-                                )
-                            }
-                        }
-                    }
-                    Ok(LlmResponse::Text(_)) => SectionDraft::fallback(
-                        raw.time_range_ms,
-                        segs,
-                        "llm returned text, expected json",
-                        self.dialect,
-                    ),
-                    Err(e) => SectionDraft::fallback(
-                        raw.time_range_ms,
-                        segs,
-                        &e.to_string(),
-                        self.dialect,
-                    ),
-                }
+                self.process_section(raw.time_range_ms, segs, &language, &allowed_speakers)
             })
             .collect();
 
@@ -197,6 +159,146 @@ impl NotesGenerator<'_> {
             language,
             generated_at: Utc::now(),
         })
+    }
+
+    /// Process a single section: either single LLM call (if transcript fits)
+    /// or chunked multi-call with merge (if transcript exceeds threshold).
+    fn process_section(
+        &self,
+        time_range_ms: (u64, u64),
+        segs: Vec<Segment>,
+        language: &str,
+        allowed_speakers: &HashSet<u32>,
+    ) -> SectionDraft {
+        let transcript_chars = estimate_transcript_chars(&segs);
+
+        if transcript_chars <= SECTION_CHUNK_THRESHOLD_CHARS {
+            // Normal case: single LLM call
+            self.process_single_section(time_range_ms, segs, language, allowed_speakers)
+        } else {
+            // Long section: chunk, summarize each, merge
+            tracing::info!(
+                time_range = ?time_range_ms,
+                chars = transcript_chars,
+                threshold = SECTION_CHUNK_THRESHOLD_CHARS,
+                "section exceeds chunk threshold; splitting"
+            );
+            // Split to the lower target size, not the trigger threshold, so
+            // fixed prompt instructions still fit comfortably in the same
+            // approximate context budget. Single segments may exceed this
+            // because we never split mid-segment.
+            let chunks = split_segments_for_chunking(
+                &segs,
+                SECTION_CHUNK_TARGET_CHARS,
+                SECTION_CHUNK_TARGET_CHARS,
+            );
+            let mut chunk_summaries = Vec::with_capacity(chunks.len());
+            for (i, chunk) in chunks.iter().enumerate() {
+                let req = build_section_narrative_prompt(chunk, self.dialect, language);
+                match self.llm.complete(req) {
+                    Ok(LlmResponse::Json(v)) => chunk_summaries.push(v),
+                    Ok(LlmResponse::Text(_)) => {
+                        return SectionDraft::fallback(
+                            time_range_ms,
+                            segs,
+                            &format!("chunk {} LLM returned text, expected json", i + 1),
+                            self.dialect,
+                        );
+                    }
+                    Err(e) => {
+                        return SectionDraft::fallback(
+                            time_range_ms,
+                            segs,
+                            &format!("chunk {} LLM call failed: {e}", i + 1),
+                            self.dialect,
+                        );
+                    }
+                }
+            }
+
+            // Merge chunk summaries into final section
+            let merge_req = build_merge_section_prompt(&chunk_summaries, self.dialect, language);
+            match self.llm.complete(merge_req) {
+                Ok(LlmResponse::Json(v)) => {
+                    let draft = SectionDraft::from_json(time_range_ms, segs.clone(), v);
+                    match verifier::verify_section_attribution(
+                        &draft.narrative_md,
+                        &draft.action_items,
+                        allowed_speakers,
+                    ) {
+                        verifier::VerifierReport::Ok => draft,
+                        verifier::VerifierReport::DisallowedSpeakers(ids) => {
+                            tracing::warn!(
+                                section_ms = ?time_range_ms,
+                                disallowed = ?ids,
+                                "merged section referenced speakers not in transcript; using fallback"
+                            );
+                            SectionDraft::fallback(
+                                time_range_ms,
+                                segs,
+                                "verifier: disallowed speaker reference",
+                                self.dialect,
+                            )
+                        }
+                    }
+                }
+                Ok(LlmResponse::Text(_)) => SectionDraft::fallback(
+                    time_range_ms,
+                    segs,
+                    "merge LLM returned text, expected json",
+                    self.dialect,
+                ),
+                Err(e) => SectionDraft::fallback(
+                    time_range_ms,
+                    segs,
+                    &format!("merge LLM call failed: {e}"),
+                    self.dialect,
+                ),
+            }
+        }
+    }
+
+    /// Single-section LLM call (original path, unchanged).
+    fn process_single_section(
+        &self,
+        time_range_ms: (u64, u64),
+        segs: Vec<Segment>,
+        language: &str,
+        allowed_speakers: &HashSet<u32>,
+    ) -> SectionDraft {
+        let req = build_section_narrative_prompt(&segs, self.dialect, language);
+        match self.llm.complete(req) {
+            Ok(LlmResponse::Json(v)) => {
+                let draft = SectionDraft::from_json(time_range_ms, segs.clone(), v);
+                match verifier::verify_section_attribution(
+                    &draft.narrative_md,
+                    &draft.action_items,
+                    allowed_speakers,
+                ) {
+                    verifier::VerifierReport::Ok => draft,
+                    verifier::VerifierReport::DisallowedSpeakers(ids) => {
+                        tracing::warn!(
+                            section_ms = ?time_range_ms,
+                            disallowed = ?ids,
+                            "section narrative referenced speakers not in transcript; using fallback"
+                        );
+                        SectionDraft::fallback(
+                            time_range_ms,
+                            segs,
+                            "verifier: disallowed speaker reference",
+                            self.dialect,
+                        )
+                    }
+                }
+            }
+            Ok(LlmResponse::Text(_)) => SectionDraft::fallback(
+                time_range_ms,
+                segs,
+                "llm returned text, expected json",
+                self.dialect,
+            ),
+            Err(e) => SectionDraft::fallback(time_range_ms, segs, &e.to_string(), self.dialect),
+        }
     }
 }
 
