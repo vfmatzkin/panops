@@ -84,6 +84,54 @@ struct IpcClientCodecTests {
         #expect(payload.message == "oops")
     }
 
+
+    @Test("job.error event decodes without message", arguments: [
+        "input_not_found", "cancelled"
+    ])
+    func jobErrorEvent_decodesWithoutMessage(kind: String) throws {
+        let json = #"""
+        {
+          "type": "job.error",
+          "job_id": "j",
+          "error": { "kind": "\#(kind)", "path": "/missing.wav" }
+        }
+        """#
+        let event = try decoder.decode(IpcEvent.self, from: json.data(using: .utf8)!)
+        guard case .jobError(let jobId, let payload) = event else {
+            Issue.record("expected .jobError, got \(event) for kind \(kind)")
+            return
+        }
+        #expect(jobId == "j")
+        #expect(payload.kind == kind)
+        #expect(payload.message == "")
+    }
+
+    @Test("job.error notification decodes without message")
+    func jobErrorNotification_decodesWithoutMessage() throws {
+        let json = #"""
+        {
+          "jsonrpc": "2.0",
+          "method": "events",
+          "params": {
+            "subscription": 1,
+            "result": {
+              "type": "job.error",
+              "job_id": "j",
+              "error": { "kind": "cancelled" }
+            }
+          }
+        }
+        """#
+        let notification = try decoder.decode(JsonRpcNotification.self, from: json.data(using: .utf8)!)
+        guard case .jobError(let jobId, let payload) = notification.params.result else {
+            Issue.record("expected .jobError, got \(notification.params.result)")
+            return
+        }
+        #expect(jobId == "j")
+        #expect(payload.kind == "cancelled")
+        #expect(payload.message == "")
+    }
+
     @Test("unknown event type does not throw")
     func unknownEventType_doesNotThrow() throws {
         let json = #"""
