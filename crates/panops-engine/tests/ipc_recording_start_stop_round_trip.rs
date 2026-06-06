@@ -1,6 +1,6 @@
 //! Slice 11 — `recording.start` → `recording.stop` IPC round-trip.
 //!
-//! Uses `FakeCapture` via cfg(test) resolver. Verifies that:
+//! Uses `FakeCapture` via PANOPS_TEST_CAPTURE=1 env var resolver. Verifies that:
 //! - recording.start creates a session and persists it
 //! - recording.stop looks up the real session (not a fabricated one)
 //! - The shared capture instance is used (same FakeCapture via OnceLock)
@@ -22,8 +22,23 @@ use tokio::sync::watch;
 
 use common::{tempdir_storage, uds_ws_client, wait_for_socket};
 
+/// Set PANOPS_TEST_CAPTURE=1 before any tests run so the resolver
+/// picks FakeCapture. This must happen before the OnceLock is initialized.
+static TEST_CAPTURE_INIT: std::sync::Once = std::sync::Once::new();
+
+fn ensure_test_capture() {
+    TEST_CAPTURE_INIT.call_once(|| {
+        // SAFETY: setting an env var before any tests run is safe; no other
+        // thread can read it before initialization completes.
+        unsafe {
+            std::env::set_var("PANOPS_TEST_CAPTURE", "1");
+        }
+    });
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recording_start_stop_round_trip() {
+    ensure_test_capture();
     let dir = tempdir().unwrap();
     let socket = dir.path().join("engine.sock");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -108,6 +123,7 @@ async fn recording_start_stop_round_trip() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recording_start_with_audio_sources_wire() {
+    ensure_test_capture();
     let dir = tempdir().unwrap();
     let socket = dir.path().join("engine.sock");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -179,6 +195,7 @@ async fn recording_start_with_audio_sources_wire() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recording_stop_unknown_session_returns_input_not_found() {
+    ensure_test_capture();
     let dir = tempdir().unwrap();
     let socket = dir.path().join("engine.sock");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
