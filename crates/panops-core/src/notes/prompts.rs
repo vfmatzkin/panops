@@ -12,6 +12,19 @@ pub const FRONTMATTER_TEMPERATURE: f32 = 0.3;
 pub const SECTION_NARRATIVE_MAX_TOKENS: u32 = 2048;
 pub const FRONTMATTER_MAX_TOKENS: u32 = 512;
 
+/// Approximate context-window threshold for section chunking.
+/// gemma3:4b has ~4k token context; we reserve headroom for system prompt,
+/// schema, and output tokens. Using chars/4 heuristic (~4 chars/token for
+/// English), 8000 chars ≈ 2000 input tokens, leaving ~2k for output.
+/// Sections exceeding this threshold are split into ordered sub-chunks.
+pub const SECTION_CHUNK_THRESHOLD_CHARS: usize = 8000;
+
+/// Target size for each sub-chunk when splitting a long section.
+/// Chunks are built to this target but may vary slightly due to
+/// segment-boundary constraints. Half the threshold allows room for
+/// the merge prompt's overhead when combining sub-summaries.
+pub const SECTION_CHUNK_TARGET_CHARS: usize = 4000;
+
 /// Compact summary of a section, fed to the frontmatter prompt.
 #[derive(Debug, Clone)]
 pub struct SectionSummary {
@@ -117,6 +130,160 @@ fn render_transcript(segments: &[Segment]) -> String {
         out.push_str(&format!("[{start:>4}–{end:>4}s] {label}: {}\n", seg.text));
     }
     out
+}
+
+/// Estimate the character count of a rendered transcript for a slice of segments.
+/// Used to determine if chunking is needed and to build chunks of target size.
+pub fn estimate_transcript_chars(segments: &[Segment]) -> usize {
+    // Each segment line format: "[XXXX–YYYYs] speaker_N: TEXT\n"
+    // = ~20 chars overhead + text length
+    segments.iter().map(|s| s.text.len() + 20).sum()
+}
+
+/// Split segments into ordered sub-chunks, each respecting segment boundaries.
+/// Returns non-empty chunks where each chunk's rendered transcript is close to
+/// `target_chars` but never exceeds `max_chars`. The last chunk may be smaller.
+/// Guarantees: every segment appears in exactly one chunk, order preserved.
+pub fn split_segments_for_chunking(
+    segments: &[Segment],
+    target_chars: usize,
+    max_chars: usize,
+) -> Vec<Vec<Segment>> {
+    if segments.is_empty() {
+        return Vec::new();
+    }
+
+    let total_chars = estimate_transcript_chars(segments);
+    if total_chars <= max_chars {
+        // No chunking needed
+        return vec![segments.to_vec()];
+    }
+
+    let mut chunks: Vec<Vec<Segment>> = Vec::new();
+    let mut current: Vec<Segment> = Vec::new();
+    let mut current_chars = 0;
+
+    for seg in segments {
+        let seg_chars = seg.text.len() + 20;
+
+        // If adding this segment would exceed max_chars AND we already have content,
+        // flush the current chunk and start fresh.
+        if current_chars + seg_chars > max_chars && !current.is_empty() {
+            chunks.push(current);
+            current = Vec::new();
+            current_chars = 0;
+        }
+
+        // If we're over target and this is a natural boundary (gap or speaker change),
+        // consider flushing. This helps keep chunks semantically coherent.
+        if current_chars >= target_chars && !current.is_empty() {
+            let prev = current.last().unwrap();
+            let gap = seg.start_ms.saturating_sub(prev.end_ms);
+            let speaker_change = seg.speaker_id != prev.speaker_id;
+            if gap > 2000 || speaker_change {
+                chunks.push(current);
+                current = Vec::new();
+                current_chars = 0;
+            }
+        }
+
+        current.push(seg.clone());
+        current_chars += seg_chars;
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    // Ensure no chunk exceeds max_chars (shouldn't happen with logic above,
+    // but verify for safety). If a single segment exceeds max_chars, it stays
+    // alone — we can't split mid-segment.
+    debug_assert!(
+        chunks
+            .iter()
+            .all(|c| estimate_transcript_chars(c) <= max_chars || c.len() == 1),
+        "chunk exceeds max_chars"
+    );
+
+    chunks
+}
+
+/// Prompt for merging multiple sub-chunk summaries into a final section summary.
+/// Takes JSON outputs from chunk-level calls and produces a unified result.
+pub fn build_merge_section_prompt(
+    chunk_summaries: &[serde_json::Value],
+    dialect: MarkdownDialect,
+    language: &str,
+) -> LlmRequest {
+    let mut summaries_text = String::new();
+    for (i, summary) in chunk_summaries.iter().enumerate() {
+        let title = summary
+            .get("title")
+            .and_then(|s| s.as_str())
+            .unwrap_or("Untitled chunk");
+        let narrative = summary
+            .get("narrative_md")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        let key_points = summary
+            .get("key_points")
+            .and_then(|s| s.as_array())
+            .map(|arr| arr.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let action_items = summary
+            .get("action_items")
+            .and_then(|s| s.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| {
+                        let o = x.as_object()?;
+                        let desc = o.get("description")?.as_str()?;
+                        let owner = o.get("owner").and_then(|v| v.as_str());
+                        Some(format!(
+                            "- {} (owner: {})",
+                            desc,
+                            owner.unwrap_or("unassigned")
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let _ = writeln!(summaries_text, "Chunk {}:", i + 1);
+        let _ = writeln!(summaries_text, "  Title: {}", title);
+        let _ = writeln!(summaries_text, "  Narrative: {}", narrative);
+        for kp in &key_points {
+            let _ = writeln!(summaries_text, "  Key point: {}", kp);
+        }
+        for ai in &action_items {
+            let _ = writeln!(summaries_text, "  Action: {}", ai);
+        }
+        let _ = writeln!(summaries_text);
+    }
+
+    let cheat = dialect.cheat_sheet();
+    let user = format!(
+        "Sub-chunk summaries (ordered chronologically):\n\n\
+         {summaries_text}\n\
+         Markdown dialect for `narrative_md`:\n\
+         {cheat}\n\
+         Output language: {language}\n\n\
+         Merge these sub-chunks into a single unified section summary.\n\
+         - Combine narratives into flowing prose (no bullet lists).\n\
+         - Deduplicate key_points: keep distinct facts, merge overlapping.\n\
+         - Deduplicate action_items: keep distinct commitments.\n\
+         - Title should represent the unified theme.\n\n\
+         Return JSON matching exactly:\n\
+         {{\n  \"title\": \"string (descriptive, <80 chars)\",\n  \"narrative_md\": \"string (prose only, in the dialect above)\",\n  \"key_points\": [\"string\", ...],\n  \"action_items\": [{{\"description\": \"string\", \"owner\": \"speaker_0\"}}] or [{{\"description\": \"string\", \"owner\": null}}]\n}}"
+    );
+
+    LlmRequest {
+        system: Some(SECTION_NARRATIVE_SYSTEM.to_string()),
+        user,
+        schema: Some(section_narrative_schema()),
+        temperature: SECTION_NARRATIVE_TEMPERATURE,
+        max_tokens: SECTION_NARRATIVE_MAX_TOKENS,
+    }
 }
 
 fn section_narrative_schema() -> serde_json::Value {
@@ -227,5 +394,92 @@ mod tests {
         assert!(p.user.contains("Intro"));
         assert!(p.user.contains("Wrap"));
         assert!(p.user.contains("one"));
+    }
+
+    #[test]
+    fn estimate_transcript_chars_counts_text_plus_overhead() {
+        // Each segment: ~20 chars overhead + text length
+        let segs = vec![
+            seg(0, 5000, Some(0), "hello"),     // 5 chars text
+            seg(5000, 10000, Some(1), "world"), // 5 chars text
+        ];
+        let estimate = estimate_transcript_chars(&segs);
+        assert_eq!(estimate, 50); // 2 * (20 + 5)
+    }
+
+    #[test]
+    fn split_segments_returns_single_chunk_when_below_threshold() {
+        let segs = vec![seg(0, 5000, Some(0), "short")];
+        let chunks = split_segments_for_chunking(&segs, 100, 200);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), 1);
+    }
+
+    #[test]
+    fn split_segments_splits_at_segment_boundaries() {
+        // Create segments totaling > max_chars with clear boundaries
+        let segs: Vec<Segment> = (0..10u32)
+            .map(|i| {
+                seg(
+                    u64::from(i) * 5000,
+                    u64::from(i + 1) * 5000,
+                    Some(i % 2),
+                    "word word word word",
+                )
+            })
+            .collect();
+        // Each segment: 20 + 19 = 39 chars, total = 390 chars
+        let chunks = split_segments_for_chunking(&segs, 80, 120);
+        assert!(chunks.len() > 1, "should split into multiple chunks");
+        // Verify no segment is lost
+        let total_segments: usize = chunks.iter().map(|c| c.len()).sum();
+        assert_eq!(total_segments, segs.len());
+        // Verify order preserved
+        let all_texts: Vec<_> = chunks.iter().flatten().map(|s| s.text.as_str()).collect();
+        let expected: Vec<_> = segs.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(all_texts, expected);
+    }
+
+    #[test]
+    fn split_segments_splits_at_speaker_change_after_target() {
+        // Max=50, so total (78 chars) exceeds max. Target=30.
+        // After first segment (39 >= target), speaker change should trigger split.
+        let segs = vec![
+            seg(0, 5000, Some(0), "text text text text"), // 39 chars (20 + 19)
+            seg(5000, 10000, Some(1), "text text text text"), // 39 chars, speaker change
+        ];
+        // Total = 78 chars, max = 50 → chunking required
+        let chunks = split_segments_for_chunking(&segs, 30, 50);
+        // Should split because after first segment we're >= target and speaker changes
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 1);
+        assert_eq!(chunks[1].len(), 1);
+    }
+
+    #[test]
+    fn split_segments_splits_at_gap_after_target() {
+        // Max=50, so total (78 chars) exceeds max. Target=30. Gap of 5s between segments.
+        let segs = vec![
+            seg(0, 5000, Some(0), "text text text text"), // 39 chars
+            seg(10_000, 15_000, Some(0), "text text text text"), // 39 chars, 5s gap
+        ];
+        // Total = 78 chars, max = 50 → chunking required
+        let chunks = split_segments_for_chunking(&segs, 30, 50);
+        // Should split because after first segment we're >= target and gap > 2s
+        assert_eq!(chunks.len(), 2);
+    }
+
+    #[test]
+    fn build_merge_prompt_includes_all_chunk_summaries() {
+        let summaries = vec![
+            serde_json::json!({"title": "Part 1", "narrative_md": "first part", "key_points": ["a"], "action_items": []}),
+            serde_json::json!({"title": "Part 2", "narrative_md": "second part", "key_points": ["b"], "action_items": [{"description": "do it", "owner": null}]}),
+        ];
+        let p = build_merge_section_prompt(&summaries, MarkdownDialect::Basic, "en");
+        assert!(p.user.contains("Part 1"));
+        assert!(p.user.contains("Part 2"));
+        assert!(p.user.contains("first part"));
+        assert!(p.user.contains("second part"));
+        assert!(p.user.contains("do it"));
     }
 }
