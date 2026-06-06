@@ -37,6 +37,7 @@ final class AppViewModel: ObservableObject {
     func retryConnect() async {
         do {
             try await client.connect()
+            await refreshMeetingsWithStartupRetry()
             state = .idle(audio: nil)
         } catch {
             Self.logFullError("ipc.connect.retry", error)
