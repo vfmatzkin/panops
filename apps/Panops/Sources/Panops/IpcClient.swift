@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import CommonCrypto
 
 /// Errors surfaced to UI code; details intentionally short. Full
 /// detail goes to engine stderr (Console.app stream).
@@ -11,79 +12,112 @@ enum IpcClientError: Error {
     case httpError(status: Int, body: String)
     case websocketUpgradeFailed(String)
     case websocketFrameError(String)
+    case websocketAcceptMismatch
 }
 
 /// Minimal WebSocket frame parser per RFC 6455.
-/// Handles text frames (opcode 0x01) with FIN=1 only.
-/// Unmaskes client-to-server frames, decodes payload as JSON.
+/// Handles text frames (opcode 0x01) and continuation frames (opcode 0x00).
+/// Server→client frames are unmasked; client→server frames must be masked.
 /// Slice 12 implementation per spec D6.
 struct WsFrameParser {
-    /// Parse a single WebSocket frame from raw bytes.
-    /// Returns decoded JSON data for text frames, nil for non-text.
-    static func parse(_ data: Data) throws -> Data? {
-        guard data.count >= 2 else {
-            throw IpcClientError.websocketFrameError("frame too short")
-        }
+    /// Frame metadata extracted from the first 2 bytes.
+    struct FrameHeader {
+        let fin: Bool
+        let opcode: UInt8
+        let masked: Bool
+        let payloadLen: Int
+        let headerSize: Int
+        let maskingKeyOffset: Int?
+    }
+
+    /// Parse frame header from data. Returns nil if data is incomplete.
+    static func parseHeader(_ data: Data) -> FrameHeader? {
+        guard data.count >= 2 else { return nil }
 
         let fin = (data[0] & 0x80) != 0
         let opcode = data[0] & 0x0F
         let masked = (data[1] & 0x80) != 0
         var payloadLen = Int(data[1] & 0x7F)
 
-        // Only handle text frames (opcode 0x01)
-        guard opcode == 0x01 else {
-            return nil // ignore binary/ping/close
-        }
-
-        // Only handle FIN=1 frames (no fragmentation)
-        guard fin else {
-            return nil // ignore fragmented frames
-        }
-
-        // Calculate header offset based on payload length encoding
-        var offset = 2
+        var headerSize = 2
         if payloadLen == 126 {
-            guard data.count >= 4 else {
-                throw IpcClientError.websocketFrameError("extended length missing")
-            }
+            guard data.count >= 4 else { return nil }
             payloadLen = Int(data[2]) << 8 | Int(data[3])
-            offset = 4
+            headerSize = 4
         } else if payloadLen == 127 {
-            guard data.count >= 10 else {
-                throw IpcClientError.websocketFrameError("extended length missing")
-            }
-            // For our use case, we only need 32-bit length
+            guard data.count >= 10 else { return nil }
             payloadLen = Int(data[6]) << 24 | Int(data[7]) << 16 | Int(data[8]) << 8 | Int(data[9])
-            offset = 10
+            headerSize = 10
         }
 
-        // Check for masking key if masked
-        let maskingKeyOffset = offset
+        let maskingKeyOffset = masked ? headerSize : nil
         if masked {
-            guard data.count >= offset + 4 + payloadLen else {
-                throw IpcClientError.websocketFrameError("frame truncated")
-            }
-            offset += 4
-        } else {
-            guard data.count >= offset + payloadLen else {
-                throw IpcClientError.websocketFrameError("frame truncated")
-            }
+            headerSize += 4
         }
 
-        // Extract and unmask payload
-        let payloadStart = offset
-        let payloadData = data.subdata(in: payloadStart..<payloadStart + payloadLen)
+        return FrameHeader(
+            fin: fin,
+            opcode: opcode,
+            masked: masked,
+            payloadLen: payloadLen,
+            headerSize: headerSize,
+            maskingKeyOffset: maskingKeyOffset
+        )
+    }
 
-        if masked {
-            let mask = data.subdata(in: maskingKeyOffset..<maskingKeyOffset + 4)
-            var unmasked = Data(count: payloadLen)
-            for i in 0..<payloadLen {
+    /// Calculate total frame length including header + masking key + payload.
+    static func totalFrameLength(_ header: FrameHeader) -> Int {
+        return header.headerSize + header.payloadLen
+    }
+
+    /// Extract payload from frame data given header.
+    /// Returns nil if data is incomplete.
+    static func extractPayload(_ data: Data, header: FrameHeader) -> Data? {
+        let totalLen = totalFrameLength(header)
+        guard data.count >= totalLen else { return nil }
+
+        let payloadStart = header.headerSize
+        let payloadEnd = payloadStart + header.payloadLen
+        let payloadData = data.subdata(in: payloadStart..<payloadEnd)
+
+        if let maskOffset = header.maskingKeyOffset {
+            let mask = data.subdata(in: maskOffset..<maskOffset + 4)
+            var unmasked = Data(count: header.payloadLen)
+            for i in 0..<header.payloadLen {
                 unmasked[i] = payloadData[i] ^ mask[i % 4]
             }
             return unmasked
         } else {
             return payloadData
         }
+    }
+
+    /// Parse a complete WebSocket frame from raw bytes.
+    /// Returns (opcode, payload) for text/continuation frames, nil for non-text/incomplete.
+    static func parse(_ data: Data) throws -> Data? {
+        guard let header = parseHeader(data) else {
+            guard data.count >= 2 else {
+                throw IpcClientError.websocketFrameError("frame too short")
+            }
+            return nil // incomplete frame
+        }
+
+        // Only handle text frames (opcode 0x01) and continuation (0x00)
+        guard header.opcode == 0x01 || header.opcode == 0x00 else {
+            return nil // ignore binary/ping/close
+        }
+
+        // Only handle FIN=1 frames for text (no fragmentation for text)
+        // Continuation frames (opcode 0x00) can have FIN=0 until the final FIN=1
+        if header.opcode == 0x01 && !header.fin {
+            return nil // ignore fragmented text start frames
+        }
+
+        guard let payload = extractPayload(data, header: header) else {
+            return nil // incomplete
+        }
+
+        return payload
     }
 }
 
@@ -146,30 +180,72 @@ actor IpcClient {
 
     /// WebSocket upgrade: hand-rolled RFC 6455 over UDS.
     /// Sends HTTP GET with Upgrade headers, expects 101 response.
+    /// Verifies Sec-WebSocket-Accept per RFC 6455 §4.2.2.
     /// Stores the connection for subsequent frame reads.
     /// Slice 12 implementation per spec D6.
     func wsConnect() async throws {
-        // Generate WebSocket key (16 bytes base64-encoded)
-        // Use a deterministic key for testing; real impl would use random
-        let keyData = Data([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+        // Generate random 16-byte WebSocket key per RFC 6455
+        var keyData = Data(count: 16)
+        let keyResult = keyData.withUnsafeMutableBytes { ptr in
+            SecRandomCopyBytes(kSecRandomDefault, 16, ptr.baseAddress!)
+        }
+        guard keyResult == errSecSuccess else {
+            throw IpcClientError.websocketUpgradeFailed("failed to generate random WebSocket key")
+        }
         let wsKey = keyData.base64EncodedString()
 
         let request = Self.buildWsUpgradeRequest(key: wsKey)
         let conn = NWConnection(to: endpoint, using: .tcp)
         try await Self.start(conn)
 
+        // Use defer to cancel connection on any early exit (NWConnection leak fix)
+        var connectionStored = false
+        defer {
+            if !connectionStored {
+                conn.cancel()
+            }
+        }
+
         try await Self.send(conn, data: request)
-        let status = try await Self.readWsUpgradeResponse(conn)
+        let (status, acceptHeader) = try await Self.readWsUpgradeResponse(conn, expectedKey: wsKey)
 
         guard status == 101 else {
-            conn.cancel()
             throw IpcClientError.websocketUpgradeFailed(
                 "expected HTTP 101, got \(status)"
             )
         }
 
+        // Verify Sec-WebSocket-Accept per RFC 6455 §4.2.2
+        // accept = base64(SHA1(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+        guard let acceptHeader else {
+            throw IpcClientError.websocketUpgradeFailed("missing Sec-WebSocket-Accept header")
+        }
+        let expectedAccept = Self.computeWebSocketAccept(key: wsKey)
+        guard acceptHeader == expectedAccept else {
+            throw IpcClientError.websocketAcceptMismatch
+        }
+
         // Connection stays open for WebSocket frames
         wsConnection = conn
+        connectionStored = true
+    }
+
+    /// Compute Sec-WebSocket-Accept per RFC 6455 §4.2.2.
+    /// accept = base64(SHA1(key + GUID))
+    private static func computeWebSocketAccept(key: String) -> String {
+        let guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+        let combined = key + guid
+        let combinedData = Data(combined.utf8)
+
+        // SHA1 hash
+        var hash = Data(count: Int(CC_SHA1_DIGEST_LENGTH))
+        combinedData.withUnsafeBytes { combinedPtr in
+            hash.withUnsafeMutableBytes { hashPtr in
+                _ = CC_SHA1(combinedPtr.baseAddress!, CC_LONG(combinedData.count), hashPtr.baseAddress!)
+            }
+        }
+
+        return hash.base64EncodedString()
     }
 
     /// Subscribe to IPC events via WebSocket.
@@ -240,43 +316,123 @@ actor IpcClient {
 
     /// Read a single WebSocket frame from the connection.
     /// Returns payload Data for text frames (opcode 0x01), nil for non-text.
-    /// Accumulates fragmented frames (FIN=0) until FIN=1.
+    /// Handles fragmented frames: FIN=0 frames are consumed and accumulated
+    /// until FIN=1 arrives, then the reassembled payload is returned.
     private static func readWsFrame(_ conn: NWConnection, buffer: inout Data) async throws -> Data? {
-        // Accumulate incoming data until we have a complete frame
-        while buffer.count < 2 {
-            let chunk: Data = try await withCheckedThrowingContinuation { cont in
-                conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
-                    if let error = error {
-                        cont.resume(throwing: error)
-                    } else if let data = data, !data.isEmpty {
-                        cont.resume(returning: data)
-                    } else if isComplete {
-                        cont.resume(throwing: IpcClientError.disconnected)
-                    } else {
-                        cont.resume(returning: Data())
+        // Accumulate fragmented frame payloads
+        var accumulatedPayload = Data()
+        var waitingForContinuation = false
+
+        while true {
+            // Read more data if buffer doesn't have a complete frame header
+            while buffer.count < 2 {
+                let chunk: Data = try await withCheckedThrowingContinuation { cont in
+                    conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
+                        if let error = error {
+                            cont.resume(throwing: error)
+                        } else if let data = data, !data.isEmpty {
+                            cont.resume(returning: data)
+                        } else if isComplete {
+                            cont.resume(throwing: IpcClientError.disconnected)
+                        } else {
+                            cont.resume(returning: Data())
+                        }
                     }
                 }
+                buffer.append(chunk)
             }
-            buffer.append(chunk)
-        }
 
-        // Use WsFrameParser for proper frame handling (including fragmentation)
-        let result = try WsFrameParser.parse(buffer)
-        if result != nil {
-            // Successfully parsed a complete frame - remove it from buffer
-            // Calculate consumed bytes based on frame structure
-            let consumed = Self.calculateFrameLength(buffer)
-            if consumed > 0 && buffer.count >= consumed {
-                buffer = Data(buffer.dropFirst(consumed))
+            // Parse frame header
+            guard let header = WsFrameParser.parseHeader(buffer) else {
+                // Incomplete header - need more data
+                continue
+            }
+
+            // Check if we have the complete frame
+            let totalLen = WsFrameParser.totalFrameLength(header)
+            guard buffer.count >= totalLen else {
+                // Incomplete frame - need more data
+                continue
+            }
+
+            // Check opcode
+            if header.opcode == 0x01 { // Text frame
+                // If we're not waiting for continuation, this is a new message
+                // If we are waiting, this is invalid (text in middle of continuation)
+                guard !waitingForContinuation else {
+                    // Invalid: received text frame while waiting for continuation
+                    buffer = Data(buffer.dropFirst(totalLen))
+                    continue
+                }
+
+                // Extract payload
+                guard let payload = WsFrameParser.extractPayload(buffer, header: header) else {
+                    buffer = Data(buffer.dropFirst(totalLen))
+                    continue
+                }
+
+                // Consume frame from buffer
+                buffer = Data(buffer.dropFirst(totalLen))
+
+                if header.fin {
+                    // Complete text frame - return payload
+                    return payload
+                } else {
+                    // Start of fragmented message - accumulate and wait for continuation
+                    accumulatedPayload = payload
+                    waitingForContinuation = true
+                    continue
+                }
+            } else if header.opcode == 0x00 { // Continuation frame
+                // Must be in continuation mode
+                guard waitingForContinuation else {
+                    // Invalid: received continuation without start frame
+                    buffer = Data(buffer.dropFirst(totalLen))
+                    continue
+                }
+
+                // Extract payload
+                guard let payload = WsFrameParser.extractPayload(buffer, header: header) else {
+                    buffer = Data(buffer.dropFirst(totalLen))
+                    continue
+                }
+
+                // Consume frame from buffer
+                buffer = Data(buffer.dropFirst(totalLen))
+
+                // Append to accumulated payload
+                accumulatedPayload.append(payload)
+
+                if header.fin {
+                    // Final continuation frame - return reassembled payload
+                    waitingForContinuation = false
+                    return accumulatedPayload
+                } else {
+                    // More continuation frames expected
+                    continue
+                }
+            } else {
+                // Non-text frame (binary, ping, close, etc.) - consume and ignore
+                buffer = Data(buffer.dropFirst(totalLen))
+                if waitingForContinuation {
+                    // Invalid: non-text frame during continuation - abort
+                    waitingForContinuation = false
+                    accumulatedPayload = Data()
+                }
+                continue
             }
         }
-        return result
     }
 
     /// Build a WebSocket text frame with masked payload (client-to-server).
+    /// Per RFC 6455, client frames MUST use a random mask per frame.
     private static func buildWsTextFrame(_ payload: Data) -> Data {
-        // Client frames must be masked per RFC 6455
-        let maskKey: [UInt8] = [0x01, 0x02, 0x03, 0x04] // deterministic for testing
+        // Generate random 4-byte mask per RFC 6455
+        var maskKey = Data(count: 4)
+        maskKey.withUnsafeMutableBytes { ptr in
+            _ = SecRandomCopyBytes(kSecRandomDefault, 4, ptr.baseAddress!)
+        }
+
         var frame = Data()
 
         // FIN=1, opcode=0x01 (text)
@@ -301,7 +457,7 @@ actor IpcClient {
         }
 
         // Masking key
-        frame.append(contentsOf: maskKey)
+        frame.append(maskKey)
 
         // Masked payload
         for i in 0..<payload.count {
@@ -309,76 +465,6 @@ actor IpcClient {
         }
 
         return frame
-    }
-
-    /// Parse a single frame from the buffer, removing consumed bytes.
-    /// Returns the payload data for text frames, nil for non-text or incomplete.
-    private static func parseFrameFromBuffer(_ buffer: inout Data) throws -> Data? {
-        guard buffer.count >= 2 else { return nil }
-
-        let fin = (buffer[0] & 0x80) != 0
-        let opcode = buffer[0] & 0x0F
-        var payloadLen = Int(buffer[1] & 0x7F)
-
-        // Only handle text frames
-        guard opcode == 0x01 else {
-            // Skip non-text frames by parsing length and removing from buffer
-            let frameLen = Self.calculateFrameLength(buffer)
-            if frameLen > 0 && buffer.count >= frameLen {
-                buffer = Data(buffer.dropFirst(frameLen))
-                return nil // Continue parsing
-            }
-            return nil // Need more data
-        }
-
-        // Only handle FIN=1 frames
-        guard fin else { return nil }
-
-        // Calculate header size
-        var headerSize = 2
-        if payloadLen == 126 {
-            guard buffer.count >= 4 else { return nil }
-            payloadLen = Int(buffer[2]) << 8 | Int(buffer[3])
-            headerSize = 4
-        } else if payloadLen == 127 {
-            guard buffer.count >= 10 else { return nil }
-            payloadLen = Int(buffer[6]) << 24 | Int(buffer[7]) << 16 | Int(buffer[8]) << 8 | Int(buffer[9])
-            headerSize = 10
-        }
-
-        // Server frames are unmasked
-        let totalLen = headerSize + payloadLen
-        guard buffer.count >= totalLen else { return nil }
-
-        // Extract payload
-        let payload = Data(buffer.subdata(in: headerSize..<totalLen))
-        buffer = Data(buffer.dropFirst(totalLen))
-        return payload
-    }
-
-    /// Calculate total frame length for any frame type.
-    private static func calculateFrameLength(_ buffer: Data) -> Int {
-        guard buffer.count >= 2 else { return 0 }
-
-        var payloadLen = Int(buffer[1] & 0x7F)
-        var headerSize = 2
-
-        if payloadLen == 126 {
-            guard buffer.count >= 4 else { return 0 }
-            payloadLen = Int(buffer[2]) << 8 | Int(buffer[3])
-            headerSize = 4
-        } else if payloadLen == 127 {
-            guard buffer.count >= 10 else { return 0 }
-            payloadLen = Int(buffer[6]) << 24 | Int(buffer[7]) << 16 | Int(buffer[8]) << 8 | Int(buffer[9])
-            headerSize = 10
-        }
-
-        let masked = (buffer[1] & 0x80) != 0
-        if masked {
-            headerSize += 4 // masking key
-        }
-
-        return headerSize + payloadLen
     }
 
     private static func buildWsUpgradeRequest(key: String) -> Data {
@@ -395,7 +481,7 @@ actor IpcClient {
         return Data(header.utf8)
     }
 
-    private static func readWsUpgradeResponse(_ conn: NWConnection) async throws -> Int {
+    private static func readWsUpgradeResponse(_ conn: NWConnection, expectedKey: String) async throws -> (status: Int, accept: String?) {
         var buffer = Data()
         while true {
             let chunk: Data = try await withCheckedThrowingContinuation { cont in
@@ -430,7 +516,16 @@ actor IpcClient {
                 guard parts.count >= 2, let status = Int(parts[1]) else {
                     throw IpcClientError.decode("invalid HTTP status line: \(statusLine)")
                 }
-                return status
+                // Extract Sec-WebSocket-Accept header
+                var acceptHeader: String?
+                for line in lines.dropFirst() {
+                    let lower = line.lowercased()
+                    if lower.hasPrefix("sec-websocket-accept:") {
+                        let value = line.dropFirst("sec-websocket-accept:".count).trimmingCharacters(in: .whitespaces)
+                        acceptHeader = value
+                    }
+                }
+                return (status, acceptHeader)
             }
         }
     }
