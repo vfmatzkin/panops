@@ -40,9 +40,19 @@ use panops_core::exporter::NotesExporter;
 use panops_core::llm::LlmProvider;
 use panops_core::storage::Storage;
 use panops_core::vad::Vad;
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 
 use crate::server::handlers::{IpcImpl, IpcServer};
+
+/// Maximum number of `notes.generate` pipelines allowed to run at once.
+///
+/// Each notes job can hold a decoded audio buffer, ASR intermediates,
+/// diarization state, transcript JSON, and LLM prompt/response payloads, so
+/// keeping this small protects the local Mac from memory exhaustion while
+/// still allowing one foreground job plus one queued/secondary job to make
+/// progress. Additional RPC calls wait for a permit before their blocking
+/// pipeline is spawned, providing backpressure instead of unbounded work.
+pub const MAX_CONCURRENT_NOTES_JOBS: usize = 2;
 
 /// Heavy adapter trio loaded together — bundled so the `OnceLock` swap
 /// is atomic (one set, all three present) and so `notes.generate`'s
@@ -83,6 +93,7 @@ pub struct EngineServices {
     /// CLI; tests inject a `tempfile::TempDir.path()`.
     pub data_dir: PathBuf,
     pub(super) heavy: Arc<OnceLock<Result<HeavyAdapters, String>>>,
+    pub(super) notes_jobs: Arc<Semaphore>,
 }
 
 impl EngineServices {
@@ -110,6 +121,7 @@ impl EngineServices {
             storage,
             data_dir,
             heavy,
+            notes_jobs: Arc::new(Semaphore::new(MAX_CONCURRENT_NOTES_JOBS)),
         }
     }
 
@@ -134,6 +146,7 @@ impl EngineServices {
             storage,
             data_dir,
             heavy: heavy.clone(),
+            notes_jobs: Arc::new(Semaphore::new(MAX_CONCURRENT_NOTES_JOBS)),
         };
         (services, heavy)
     }
@@ -393,8 +406,8 @@ pub async fn run_serve_in_process(
     // ceiling. When the cap is hit, `try_acquire` returns `None` and
     // the per-request handler responds with HTTP 429 (`too_many_requests`)
     // rather than stalling — keeps a runaway client from exhausting the
-    // accept loop. Revisit alongside the DoS bound on `notes.generate`
-    // (filed as issue #85, severity:high).
+    // accept loop. `notes.generate` has its own job-level semaphore
+    // because each accepted connection can otherwise enqueue heavy work.
     let conn_guard = Arc::new(ConnectionGuard::new(100));
 
     let cleanup_path = path.to_path_buf();
