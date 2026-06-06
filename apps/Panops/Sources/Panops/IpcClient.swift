@@ -48,8 +48,13 @@ struct WsFrameParser {
             headerSize = 4
         } else if payloadLen == 127 {
             guard data.count >= 10 else { return nil }
-            // RFC 6455 §5.2: 64-bit big-endian extended length in bytes [2..9]
-            let len64 = UInt64(data[2]) << 56 | UInt64(data[3]) << 48 | UInt64(data[4]) << 40 | UInt64(data[5]) << 32 | UInt64(data[6]) << 24 | UInt64(data[7]) << 16 | UInt64(data[8]) << 8 | UInt64(data[9])
+            // RFC 6455 §5.2: 64-bit big-endian extended length in bytes [2..9].
+            // Assembled in a loop rather than one expression — the release-mode
+            // type-checker times out on the equivalent 8-term `|`/`<<` chain.
+            var len64: UInt64 = 0
+            for i in 2...9 {
+                len64 = (len64 << 8) | UInt64(data[i])
+            }
             guard len64 <= IpcClient.maxFrameBytes else {
                 throw IpcClientError.websocketFrameError("extended payload length exceeds max (\(len64) > \(IpcClient.maxFrameBytes))")
             }
