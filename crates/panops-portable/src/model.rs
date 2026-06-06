@@ -1,10 +1,11 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use directories::ProjectDirs;
 use panops_core::asr::AsrError;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub struct ModelInfo {
@@ -61,6 +62,93 @@ pub const VAD_MODELS: &[ModelInfo] = &[ModelInfo {
 pub const DEFAULT_MODEL_NAME: &str = "ggml-large-v3-turbo-q5_0";
 
 pub const DEFAULT_VAD_MODEL_NAME: &str = "ggml-silero-v6.2.0";
+
+/// Marker file for caching successful sha256 verifications.
+/// Written after a successful verify; read on subsequent calls to skip re-hashing
+/// if the file hasn't changed (size + mtime match).
+#[derive(Serialize, Deserialize)]
+struct VerificationMarker {
+    /// The expected sha256 hash that was verified.
+    sha256: String,
+    /// File size in bytes at verification time.
+    size: u64,
+    /// File modification time as Unix timestamp (seconds since epoch).
+    /// Using duration_since UNIX_EPOCH for portability.
+    mtime_secs: u64,
+}
+
+/// Returns the path to the verification marker file for a given model path.
+/// Marker is a sidecar file: `<model_path>.verified`.
+fn verification_marker_path(model_path: &Path) -> PathBuf {
+    let mut marker = model_path.as_os_str().to_os_string();
+    marker.push(".verified");
+    PathBuf::from(marker)
+}
+
+/// Read the verification marker if it exists and is valid JSON.
+fn read_verification_marker(marker_path: &Path) -> Option<VerificationMarker> {
+    let contents = fs::read_to_string(marker_path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+/// Write the verification marker after a successful sha256 verify.
+fn write_verification_marker(marker_path: &Path, sha256: &str, size: u64, mtime: SystemTime) {
+    let mtime_secs = mtime
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let marker = VerificationMarker {
+        sha256: sha256.to_string(),
+        size,
+        mtime_secs,
+    };
+    let contents = serde_json::to_string(&marker).unwrap_or_default();
+    // Ignore write errors — marker is optional; next run will re-verify.
+    let _ = fs::write(marker_path, contents);
+}
+
+/// Check if the verification cache is valid for a given model file.
+/// Returns true if:
+/// - Marker file exists
+/// - Marker's sha256 matches the expected hash
+/// - Marker's size matches current file size
+/// - Marker's mtime matches current file mtime
+///
+/// If any check fails, returns false (caller should re-verify).
+fn verification_cache_valid(model_path: &Path, expected_sha256: &str) -> bool {
+    let marker_path = verification_marker_path(model_path);
+    let Some(marker) = read_verification_marker(&marker_path) else {
+        return false;
+    };
+
+    // Hash must match what we're verifying against.
+    if marker.sha256 != expected_sha256 {
+        return false;
+    }
+
+    // Get current file metadata.
+    let Some(metadata) = fs::metadata(model_path).ok() else {
+        return false;
+    };
+    let Some(current_mtime) = metadata.modified().ok() else {
+        return false;
+    };
+    let current_size = metadata.len();
+    let current_mtime_secs = current_mtime
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Size and mtime must match.
+    if marker.size != current_size {
+        return false;
+    }
+    if marker.mtime_secs != current_mtime_secs {
+        return false;
+    }
+
+    true
+}
 
 fn data_dir() -> Result<PathBuf, AsrError> {
     let dirs = ProjectDirs::from("dev", "panops", "panops")
@@ -361,14 +449,32 @@ fn download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Resul
 ///   (the user explicitly chose this path, possibly pointing at a different
 ///   registered model than `name`).
 /// - If `PANOPS_SKIP_MODEL_CHECKSUM` env is set: skip checksum.
-/// - Otherwise: verify against the registered hash.
+/// - Otherwise: verify against the registered hash (with caching — skips re-hash
+///   if a valid `.verified` marker exists).
 pub fn ensure_model(name: &str, dest: &Path) -> Result<PathBuf, AsrError> {
     let info = lookup_model(name)?;
     if dest.exists() {
         let user_override = std::env::var("PANOPS_MODEL").is_ok();
         let skip_checksum = std::env::var("PANOPS_SKIP_MODEL_CHECKSUM").is_ok();
         if !user_override && !skip_checksum {
-            verify_sha256(dest, info.sha256)?;
+            // Check verification cache before hashing.
+            if verification_cache_valid(dest, info.sha256) {
+                tracing::debug!(dest = ?dest, "skipping sha256 verify (cached)");
+            } else {
+                verify_sha256(dest, info.sha256)?;
+                // Write marker after successful verify.
+                let metadata = fs::metadata(dest)
+                    .map_err(|e| AsrError::Model(format!("metadata {dest:?}: {e}")))?;
+                let mtime = metadata
+                    .modified()
+                    .map_err(|e| AsrError::Model(format!("mtime {dest:?}: {e}")))?;
+                write_verification_marker(
+                    &verification_marker_path(dest),
+                    info.sha256,
+                    metadata.len(),
+                    mtime,
+                );
+            }
         }
         return Ok(dest.to_path_buf());
     }
@@ -386,6 +492,18 @@ pub fn ensure_model(name: &str, dest: &Path) -> Result<PathBuf, AsrError> {
         let _ = fs::remove_file(dest);
         return Err(e);
     }
+    // Write marker after successful download + verify.
+    let metadata =
+        fs::metadata(dest).map_err(|e| AsrError::Model(format!("metadata {dest:?}: {e}")))?;
+    let mtime = metadata
+        .modified()
+        .map_err(|e| AsrError::Model(format!("mtime {dest:?}: {e}")))?;
+    write_verification_marker(
+        &verification_marker_path(dest),
+        info.sha256,
+        metadata.len(),
+        mtime,
+    );
     tracing::info!(bytes = n, dest = ?dest, "model download complete");
     Ok(dest.to_path_buf())
 }
@@ -483,14 +601,32 @@ pub fn ensure_diar_models() -> Result<(PathBuf, PathBuf), AsrError> {
 /// Behavior on existing files:
 /// - If `PANOPS_VAD_MODEL` env is set: trust the user-provided file, skip checksum.
 /// - If `PANOPS_SKIP_MODEL_CHECKSUM` env is set: skip checksum.
-/// - Otherwise: verify against the registered hash.
+/// - Otherwise: verify against the registered hash (with caching — skips re-hash
+///   if a valid `.verified` marker exists).
 pub fn ensure_vad_model(dest: &Path) -> Result<PathBuf, AsrError> {
     let info = &VAD_MODELS[0];
     if dest.exists() {
         let user_override = std::env::var("PANOPS_VAD_MODEL").is_ok();
         let skip_checksum = std::env::var("PANOPS_SKIP_MODEL_CHECKSUM").is_ok();
         if !user_override && !skip_checksum {
-            verify_sha256(dest, info.sha256)?;
+            // Check verification cache before hashing.
+            if verification_cache_valid(dest, info.sha256) {
+                tracing::debug!(dest = ?dest, "skipping sha256 verify (cached)");
+            } else {
+                verify_sha256(dest, info.sha256)?;
+                // Write marker after successful verify.
+                let metadata = fs::metadata(dest)
+                    .map_err(|e| AsrError::Model(format!("metadata {dest:?}: {e}")))?;
+                let mtime = metadata
+                    .modified()
+                    .map_err(|e| AsrError::Model(format!("mtime {dest:?}: {e}")))?;
+                write_verification_marker(
+                    &verification_marker_path(dest),
+                    info.sha256,
+                    metadata.len(),
+                    mtime,
+                );
+            }
         }
         return Ok(dest.to_path_buf());
     }
@@ -506,6 +642,18 @@ pub fn ensure_vad_model(dest: &Path) -> Result<PathBuf, AsrError> {
         let _ = fs::remove_file(dest);
         return Err(e);
     }
+    // Write marker after successful download + verify.
+    let metadata =
+        fs::metadata(dest).map_err(|e| AsrError::Model(format!("metadata {dest:?}: {e}")))?;
+    let mtime = metadata
+        .modified()
+        .map_err(|e| AsrError::Model(format!("mtime {dest:?}: {e}")))?;
+    write_verification_marker(
+        &verification_marker_path(dest),
+        info.sha256,
+        metadata.len(),
+        mtime,
+    );
     tracing::info!(bytes = n, dest = ?dest, "vad model download complete");
     Ok(dest.to_path_buf())
 }
@@ -585,5 +733,130 @@ mod tests {
         assert!(progress.contains("2.0 KiB/s"));
         assert!(!progress.contains('%'));
         assert!(!progress.contains("eta"));
+    }
+
+    #[test]
+    fn verification_marker_path_is_sidecar() {
+        let model_path = PathBuf::from("/models/ggml-large-v3-turbo-q5_0.bin");
+        let marker_path = verification_marker_path(&model_path);
+        assert_eq!(
+            marker_path.to_str().unwrap(),
+            "/models/ggml-large-v3-turbo-q5_0.bin.verified"
+        );
+
+        let already_verified_model_path = PathBuf::from("/models/model.verified");
+        let marker_path = verification_marker_path(&already_verified_model_path);
+        assert_eq!(
+            marker_path.to_str().unwrap(),
+            "/models/model.verified.verified"
+        );
+    }
+
+    #[test]
+    fn write_and_read_verification_marker_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker_path = dir.path().join("model.verified");
+        let sha256 = "abc123";
+        let size = 1024_u64;
+        let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(12345);
+
+        write_verification_marker(&marker_path, sha256, size, mtime);
+
+        let marker = read_verification_marker(&marker_path).expect("marker should exist");
+        assert_eq!(marker.sha256, sha256);
+        assert_eq!(marker.size, size);
+        assert_eq!(marker.mtime_secs, 12345);
+    }
+
+    #[test]
+    fn verification_cache_valid_returns_true_when_marker_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.bin");
+        let marker_path = verification_marker_path(&model_path);
+
+        // Write a model file.
+        let content = b"test model content";
+        fs::write(&model_path, content).unwrap();
+        let metadata = fs::metadata(&model_path).unwrap();
+        let mtime = metadata.modified().unwrap();
+        let expected_sha256 = format!("{:x}", Sha256::digest(content));
+
+        // Write marker with correct values.
+        write_verification_marker(&marker_path, &expected_sha256, metadata.len(), mtime);
+
+        // Cache should be valid.
+        assert!(verification_cache_valid(&model_path, &expected_sha256));
+    }
+
+    #[test]
+    fn verification_cache_invalid_when_marker_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.bin");
+
+        // Write a model file but no marker.
+        fs::write(&model_path, b"test").unwrap();
+
+        // Cache should be invalid (no marker).
+        assert!(!verification_cache_valid(&model_path, "any-hash"));
+    }
+
+    #[test]
+    fn verification_cache_invalid_when_sha256_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.bin");
+        let marker_path = verification_marker_path(&model_path);
+
+        // Write a model file.
+        let content = b"test model content";
+        fs::write(&model_path, content).unwrap();
+        let metadata = fs::metadata(&model_path).unwrap();
+        let mtime = metadata.modified().unwrap();
+
+        // Write marker with wrong hash.
+        write_verification_marker(&marker_path, "wrong-hash", metadata.len(), mtime);
+
+        // Cache should be invalid (hash mismatch).
+        let actual_sha256 = format!("{:x}", Sha256::digest(content));
+        assert!(!verification_cache_valid(&model_path, &actual_sha256));
+    }
+
+    #[test]
+    fn verification_cache_invalid_when_size_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.bin");
+        let marker_path = verification_marker_path(&model_path);
+
+        // Write a model file.
+        let content = b"test model content";
+        fs::write(&model_path, content).unwrap();
+        let metadata = fs::metadata(&model_path).unwrap();
+        let mtime = metadata.modified().unwrap();
+        let sha256 = format!("{:x}", Sha256::digest(content));
+
+        // Write marker with wrong size (model file changed).
+        write_verification_marker(&marker_path, &sha256, 1, mtime);
+
+        // Cache should be invalid (size mismatch).
+        assert!(!verification_cache_valid(&model_path, &sha256));
+    }
+
+    #[test]
+    fn verification_cache_invalid_when_mtime_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.bin");
+        let marker_path = verification_marker_path(&model_path);
+
+        // Write a model file.
+        let content = b"test model content";
+        fs::write(&model_path, content).unwrap();
+        let metadata = fs::metadata(&model_path).unwrap();
+        let sha256 = format!("{:x}", Sha256::digest(content));
+
+        // Write marker with old mtime (file touched/modified after marker).
+        let old_mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        write_verification_marker(&marker_path, &sha256, metadata.len(), old_mtime);
+
+        // Cache should be invalid (mtime mismatch).
+        assert!(!verification_cache_valid(&model_path, &sha256));
     }
 }
