@@ -144,27 +144,22 @@ struct IpcClientCodecTests {
 
     // MARK: - MeetingSummary decode tests
 
-    @Test("MeetingSummary_decodes")
+    @Test("MeetingSummary_decodes_4_fields_only")
     func meetingSummary_decodes() throws {
+        // Wire contract: MeetingSummary = {id, title, started_at, duration_ms} — 4 fields, all required
         let json = #"""
         {
           "id": "m-123",
           "title": "Team sync",
           "started_at": "2026-06-05T10:00:00Z",
-          "ended_at": "2026-06-05T11:00:00Z",
-          "duration_ms": 3600000,
-          "language": "en",
-          "dir_path": "/tmp/meetings/m-123"
+          "duration_ms": 3600000
         }
         """#
         let summary = try decoder.decode(MeetingSummary.self, from: json.data(using: .utf8)!)
         #expect(summary.id == "m-123")
         #expect(summary.title == "Team sync")
         #expect(summary.startedAt == "2026-06-05T10:00:00Z")
-        #expect(summary.endedAt == "2026-06-05T11:00:00Z")
         #expect(summary.durationMs == 3600000)
-        #expect(summary.language == "en")
-        #expect(summary.dirPath == "/tmp/meetings/m-123")
     }
 
     @Test("Meeting_decodes_with_optional_fields")
