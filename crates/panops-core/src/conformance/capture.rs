@@ -15,32 +15,67 @@ use std::path::Path;
 use crate::capture::{Capture, CaptureConfig, CaptureError, CaptureSession};
 
 /// Run the full conformance suite against a `Capture` implementation.
+///
+/// Creates a fresh temp directory for each test to avoid mutating fixtures.
+/// Screenshots are read from `fixtures_dir` (if needed by the adapter),
+/// but all output goes to a temp location that is cleaned up after the test.
 pub fn run_suite<C: Capture>(adapter: &C, fixtures_dir: &Path) {
     start_returns_session(adapter, fixtures_dir);
     stop_returns_valid_audio(adapter, fixtures_dir);
     stop_returns_screenshot_paths(adapter, fixtures_dir);
     stop_session_not_found(adapter);
-    is_fake_marker(adapter);
+    is_fake_marker(adapter, true); // Fakes should return true
 }
 
-fn start_returns_session<C: Capture>(adapter: &C, fixtures_dir: &Path) {
+fn temp_meeting_dir() -> std::path::PathBuf {
+    // Create temp dir under workspace target/ so FakeCapture can find
+    // fixtures by walking ancestors (meeting_dir.ancestors() must include
+    // workspace root with tests/fixtures/screenshots).
+    let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2) // panops-core is at crates/panops-core, nth(2) is workspace root
+        .expect("workspace root")
+        .to_path_buf();
+
+    let tmp_dir = workspace_root.join("target").join("tmp");
+    std::fs::create_dir_all(&tmp_dir).expect("create target/tmp");
+
+    tmp_dir.join(format!(
+        "capture_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
+fn start_returns_session<C: Capture>(adapter: &C, _fixtures_dir: &Path) {
     let meeting_id = "test_meeting_001";
+    let meeting_dir = temp_meeting_dir();
+    std::fs::create_dir_all(&meeting_dir).expect("create temp meeting dir");
+
     let config = CaptureConfig::default();
     let session = adapter
-        .start_capture(meeting_id, fixtures_dir, &config)
+        .start_capture(meeting_id, &meeting_dir, &config)
         .expect("start_capture should succeed");
     assert_eq!(session.meeting_id, meeting_id);
     assert!(session.started_at_ms > 0, "started_at_ms should be set");
 
     // Clean up the session.
     let _ = adapter.stop_capture(&session);
+
+    // Clean up temp dir.
+    let _ = std::fs::remove_dir_all(&meeting_dir);
 }
 
-fn stop_returns_valid_audio<C: Capture>(adapter: &C, fixtures_dir: &Path) {
+fn stop_returns_valid_audio<C: Capture>(adapter: &C, _fixtures_dir: &Path) {
     let meeting_id = "test_meeting_audio";
+    let meeting_dir = temp_meeting_dir();
+    std::fs::create_dir_all(&meeting_dir).expect("create temp meeting dir");
+
     let config = CaptureConfig::default();
     let session = adapter
-        .start_capture(meeting_id, fixtures_dir, &config)
+        .start_capture(meeting_id, &meeting_dir, &config)
         .expect("start_capture should succeed");
 
     let result = adapter
@@ -70,13 +105,19 @@ fn stop_returns_valid_audio<C: Capture>(adapter: &C, fixtures_dir: &Path) {
         result.duration_ms,
         computed_ms
     );
+
+    // Clean up temp dir.
+    let _ = std::fs::remove_dir_all(&meeting_dir);
 }
 
-fn stop_returns_screenshot_paths<C: Capture>(adapter: &C, fixtures_dir: &Path) {
+fn stop_returns_screenshot_paths<C: Capture>(adapter: &C, _fixtures_dir: &Path) {
     let meeting_id = "test_meeting_screenshots";
+    let meeting_dir = temp_meeting_dir();
+    std::fs::create_dir_all(&meeting_dir).expect("create temp meeting dir");
+
     let config = CaptureConfig::default();
     let session = adapter
-        .start_capture(meeting_id, fixtures_dir, &config)
+        .start_capture(meeting_id, &meeting_dir, &config)
         .expect("start_capture should succeed");
 
     let result = adapter
@@ -88,6 +129,9 @@ fn stop_returns_screenshot_paths<C: Capture>(adapter: &C, fixtures_dir: &Path) {
     for path in &result.screenshot_paths {
         assert!(path.exists(), "screenshot {} should exist", path.display());
     }
+
+    // Clean up temp dir.
+    let _ = std::fs::remove_dir_all(&meeting_dir);
 }
 
 fn stop_session_not_found<C: Capture>(adapter: &C) {
@@ -106,9 +150,13 @@ fn stop_session_not_found<C: Capture>(adapter: &C) {
     }
 }
 
-fn is_fake_marker<C: Capture>(adapter: &C) {
+fn is_fake_marker<C: Capture>(adapter: &C, expected_is_fake: bool) {
     // The trait default is `false`. Fakes should override to `true`.
-    // This test simply asserts that the marker is set correctly for
-    // the adapter type — it's a sanity check, not a functional test.
-    let _ = adapter.is_fake(); // Just verify the method exists and doesn't panic.
+    // This test asserts that the marker is set correctly for the adapter.
+    assert_eq!(
+        adapter.is_fake(),
+        expected_is_fake,
+        "is_fake() should return {} for this adapter",
+        expected_is_fake
+    );
 }
