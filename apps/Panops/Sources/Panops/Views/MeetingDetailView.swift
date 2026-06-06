@@ -78,15 +78,16 @@ struct MeetingDetailView: View {
 
     /// Load transcript.json, notes.md, and screenshots from meeting directory.
     private func loadMeetingData() async {
+        // Reset all detail state at start to avoid stale data on meeting switch
+        transcript = nil
+        notesContent = nil
+        screenshots = nil
         isLoading = true
+
         let dirPath = meeting.dirPath
 
         // Validate path is under panops data directory before reading
         guard PathValidator.isUnderPanopsDataDir(dirPath) else {
-            // Surface empty state on invalid path
-            transcript = nil
-            notesContent = nil
-            screenshots = nil
             isLoading = false
             return
         }
@@ -94,12 +95,12 @@ struct MeetingDetailView: View {
         // Load transcript.json
         let transcriptPath = (dirPath as NSString).appendingPathComponent("transcript.json")
         if FileManager.default.fileExists(atPath: transcriptPath) {
-            do {
-                let data = FileManager.default.contents(atPath: transcriptPath)
-                transcript = try JSONDecoder().decode(Transcript.self, from: data!)
-            } catch {
-                // Keep nil on error
-                transcript = nil
+            if let data = FileManager.default.contents(atPath: transcriptPath) {
+                do {
+                    transcript = try JSONDecoder().decode(Transcript.self, from: data)
+                } catch {
+                    // Keep nil on decode error
+                }
             }
         }
 
@@ -109,7 +110,7 @@ struct MeetingDetailView: View {
             do {
                 notesContent = try String(contentsOfFile: notesPath, encoding: .utf8)
             } catch {
-                notesContent = nil
+                // Keep nil on error
             }
         }
 
@@ -123,7 +124,7 @@ struct MeetingDetailView: View {
                     .map { URL(fileURLWithPath: (screenshotsPath as NSString).appendingPathComponent($0)) }
                     .sorted { $0.lastPathComponent < $1.lastPathComponent }
             } catch {
-                screenshots = nil
+                // Keep nil on error
             }
         }
 
