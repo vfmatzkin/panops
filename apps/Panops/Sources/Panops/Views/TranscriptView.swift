@@ -37,4 +37,3 @@ struct TranscriptView: View {
         }
     }
 }
-

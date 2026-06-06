@@ -251,8 +251,7 @@ actor IpcClient {
     /// Compute Sec-WebSocket-Accept per RFC 6455 §4.2.2.
     /// accept = base64(SHA1(key + GUID))
     private static func computeWebSocketAccept(key: String) -> String {
-        let guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-        let combined = key + guid
+        let combined = key + Self.wsGuid
         let combinedData = Data(combined.utf8)
 
         // SHA1 hash
@@ -347,19 +346,7 @@ actor IpcClient {
         while true {
             // Read more data if buffer doesn't have a complete frame header
             while buffer.count < 2 {
-                let chunk: Data = try await withCheckedThrowingContinuation { cont in
-                    conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
-                        if let error = error {
-                            cont.resume(throwing: error)
-                        } else if let data = data, !data.isEmpty {
-                            cont.resume(returning: data)
-                        } else if isComplete {
-                            cont.resume(throwing: IpcClientError.disconnected)
-                        } else {
-                            cont.resume(returning: Data())
-                        }
-                    }
-                }
+                let chunk = try await Self.receiveChunk(conn)
                 buffer.append(chunk)
             }
 
@@ -508,19 +495,7 @@ actor IpcClient {
     private static func readWsUpgradeResponse(_ conn: NWConnection, expectedKey: String) async throws -> (status: Int, accept: String?) {
         var buffer = Data()
         while true {
-            let chunk: Data = try await withCheckedThrowingContinuation { cont in
-                conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
-                    if let error = error {
-                        cont.resume(throwing: error)
-                    } else if let data = data, !data.isEmpty {
-                        cont.resume(returning: data)
-                    } else if isComplete {
-                        cont.resume(throwing: IpcClientError.disconnected)
-                    } else {
-                        cont.resume(returning: Data())
-                    }
-                }
-            }
+            let chunk = try await Self.receiveChunk(conn)
             buffer.append(chunk)
             if buffer.count > Self.maxHeaderBytes {
                 throw IpcClientError.decode(
@@ -689,26 +664,39 @@ actor IpcClient {
     /// Fileprivate for access from WsFrameParser in same file.
     fileprivate static let maxFrameBytes = 8 * 1024 * 1024
 
+    /// Bytes requested per `NWConnection.receive` call.
+    private static let maxReceiveChunk = 64 * 1024
+
+    /// RFC 6455 §4.2.2 WebSocket accept GUID.
+    private static let wsGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+    /// One `NWConnection.receive` as an async chunk. Returns the bytes read,
+    /// an empty `Data` on a zero-length non-final read, or throws on error /
+    /// EOF (`disconnected`). Shared by the frame, upgrade, and HTTP readers.
+    private static func receiveChunk(_ conn: NWConnection) async throws -> Data {
+        try await withCheckedThrowingContinuation { cont in
+            conn.receive(minimumIncompleteLength: 1, maximumLength: maxReceiveChunk) {
+                data, _, isComplete, error in
+                if let error = error {
+                    cont.resume(throwing: error)
+                } else if let data = data, !data.isEmpty {
+                    cont.resume(returning: data)
+                } else if isComplete {
+                    cont.resume(throwing: IpcClientError.disconnected)
+                } else {
+                    cont.resume(returning: Data())
+                }
+            }
+        }
+    }
+
     private static func readHttpResponse(_ conn: NWConnection) async throws -> (status: Int, body: Data) {
         // Read until \r\n\r\n to separate header from body, then read
         // body length per Content-Length. Engine sets Connection: close
         // so we could also read until EOF, but Content-Length is cleaner.
         var buffer = Data()
         while true {
-            let chunk: Data = try await withCheckedThrowingContinuation { cont in
-                conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
-                    if let error = error {
-                        cont.resume(throwing: error)
-                    } else if let data = data, !data.isEmpty {
-                        cont.resume(returning: data)
-                    } else if isComplete {
-                        // EOF before headers complete — error.
-                        cont.resume(throwing: IpcClientError.disconnected)
-                    } else {
-                        cont.resume(returning: Data())
-                    }
-                }
-            }
+            let chunk = try await Self.receiveChunk(conn)
             buffer.append(chunk)
             if buffer.count > Self.maxHeaderBytes,
                 buffer.range(of: Data("\r\n\r\n".utf8)) == nil {
