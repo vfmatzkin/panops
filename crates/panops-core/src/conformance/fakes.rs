@@ -815,3 +815,188 @@ mod capture_fake_tests {
         run_suite(&adapter, &fixtures_dir());
     }
 }
+
+// === InMemoryMeetingStore ============================================
+
+use crate::meeting_store::{
+    MeetingStore, MeetingStoreError, ScreenshotDraft, ScreenshotRow, SegmentDraft, SegmentRow,
+    SpeakerDraft, SpeakerRow,
+};
+
+/// In-process `MeetingStore` fake. Used by `panops-core`'s own tests and
+/// by engine integration tests where opening a real SQLite DB would be
+/// unnecessary friction.
+pub struct InMemoryMeetingStore {
+    inner: Mutex<InMemoryMeetingInner>,
+}
+
+struct InMemoryMeetingInner {
+    segments: std::collections::HashMap<i64, SegmentRow>,
+    screenshots: std::collections::HashMap<i64, ScreenshotRow>,
+    speakers: std::collections::HashMap<i64, SpeakerRow>,
+    next_id: i64,
+}
+
+impl Default for InMemoryMeetingStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InMemoryMeetingStore {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(InMemoryMeetingInner {
+                segments: std::collections::HashMap::new(),
+                screenshots: std::collections::HashMap::new(),
+                speakers: std::collections::HashMap::new(),
+                next_id: 1,
+            }),
+        }
+    }
+
+    fn next_id(inner: &mut InMemoryMeetingInner) -> i64 {
+        let id = inner.next_id;
+        inner.next_id += 1;
+        id
+    }
+}
+
+impl MeetingStore for InMemoryMeetingStore {
+    fn create_segment(&self, draft: SegmentDraft) -> Result<SegmentRow, MeetingStoreError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| MeetingStoreError::sql("mutex poisoned"))?;
+        let id = Self::next_id(&mut inner);
+        let row = SegmentRow {
+            id,
+            meeting_id: draft.meeting_id,
+            start_ms: draft.start_ms,
+            end_ms: draft.end_ms,
+            text: draft.text,
+            language: draft.language,
+            confidence: draft.confidence,
+            speaker_id: draft.speaker_id,
+            source: draft.source,
+        };
+        inner.segments.insert(id, row.clone());
+        Ok(row)
+    }
+
+    fn list_segments(&self, meeting_id: &str) -> Result<Vec<SegmentRow>, MeetingStoreError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| MeetingStoreError::sql("mutex poisoned"))?;
+        let mut segments: Vec<SegmentRow> = inner
+            .segments
+            .values()
+            .filter(|s| s.meeting_id == meeting_id)
+            .cloned()
+            .collect();
+        segments.sort_by_key(|s| s.start_ms);
+        Ok(segments)
+    }
+
+    fn create_screenshot(
+        &self,
+        draft: ScreenshotDraft,
+    ) -> Result<ScreenshotRow, MeetingStoreError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| MeetingStoreError::sql("mutex poisoned"))?;
+        let id = Self::next_id(&mut inner);
+        let row = ScreenshotRow {
+            id,
+            meeting_id: draft.meeting_id,
+            timestamp_ms: draft.timestamp_ms,
+            path: draft.path,
+            feature_print: draft.feature_print,
+            caption: draft.caption,
+        };
+        inner.screenshots.insert(id, row.clone());
+        Ok(row)
+    }
+
+    fn list_screenshots(&self, meeting_id: &str) -> Result<Vec<ScreenshotRow>, MeetingStoreError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| MeetingStoreError::sql("mutex poisoned"))?;
+        let mut screenshots: Vec<ScreenshotRow> = inner
+            .screenshots
+            .values()
+            .filter(|s| s.meeting_id == meeting_id)
+            .cloned()
+            .collect();
+        screenshots.sort_by_key(|s| s.timestamp_ms);
+        Ok(screenshots)
+    }
+
+    fn create_speaker(&self, draft: SpeakerDraft) -> Result<SpeakerRow, MeetingStoreError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| MeetingStoreError::sql("mutex poisoned"))?;
+        let id = Self::next_id(&mut inner);
+        let row = SpeakerRow {
+            id,
+            meeting_id: draft.meeting_id,
+            label: draft.label,
+            embedding: draft.embedding,
+        };
+        inner.speakers.insert(id, row.clone());
+        Ok(row)
+    }
+
+    fn list_speakers(&self, meeting_id: &str) -> Result<Vec<SpeakerRow>, MeetingStoreError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| MeetingStoreError::sql("mutex poisoned"))?;
+        Ok(inner
+            .speakers
+            .values()
+            .filter(|s| s.meeting_id == meeting_id)
+            .cloned()
+            .collect())
+    }
+
+    fn get_speaker(&self, id: i64) -> Result<SpeakerRow, MeetingStoreError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| MeetingStoreError::sql("mutex poisoned"))?;
+        inner
+            .speakers
+            .get(&id)
+            .cloned()
+            .ok_or(MeetingStoreError::SpeakerNotFound { id })
+    }
+
+    fn update_speaker_label(&self, id: i64, label: &str) -> Result<SpeakerRow, MeetingStoreError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| MeetingStoreError::sql("mutex poisoned"))?;
+        let speaker = inner
+            .speakers
+            .get_mut(&id)
+            .ok_or(MeetingStoreError::SpeakerNotFound { id })?;
+        speaker.label = label.into();
+        Ok(speaker.clone())
+    }
+}
+
+#[cfg(test)]
+mod meeting_store_fake_tests {
+    use super::InMemoryMeetingStore;
+    use crate::conformance::meeting_store::run_suite;
+
+    #[test]
+    fn in_memory_meeting_store_passes_conformance() {
+        run_suite(&InMemoryMeetingStore::new());
+    }
+}
