@@ -20,6 +20,7 @@ final class AppViewModel: ObservableObject {
     private var pollingTask: Task<Void, Never>?
     private let eventStream: EventStreamActor
     private var wsSubscriptionTask: Task<Void, Never>?
+    nonisolated private static let pollingDeadlineSeconds: TimeInterval = 5 * 60
 
     init(client: IpcClient) {
         self.client = client
@@ -65,27 +66,33 @@ final class AppViewModel: ObservableObject {
         guard case .idle(let audio?) = state else { return }
         do {
             // Ensure WebSocket subscription is active (lazy)
-            await ensureWsSubscription()
+            // If WebSocket fails, fall back to filesystem polling (fix #5)
+            let wsOk = await ensureWsSubscription()
 
             let meetingId = try await client.meetingStart()
             let jobId = try await client.notesGenerate(audio: audio, meetingId: meetingId)
             state = .working(meetingId: meetingId, audioName: audio.lastPathComponent)
 
-            // Register callback for job completion (event-driven, no polling)
-            await eventStream.registerCallback(jobId: jobId, handler: { [weak self] event in
-                Task { @MainActor in
-                    switch event {
-                    case .jobDone(_, let result):
-                        self?.state = .done(notesPath: result.primaryFile)
-                        // Refresh meetings list to show the new meeting
-                        Task { await self?.refreshMeetings() }
-                    case .jobError(_, let payload):
-                        self?.state = .error(kind: payload.kind, message: payload.message)
-                    case .unknown:
-                        break
+            if wsOk {
+                // Register callback for job completion (event-driven, no polling)
+                await eventStream.registerCallback(jobId: jobId, handler: { [weak self] event in
+                    Task { @MainActor in
+                        switch event {
+                        case .jobDone(_, let result):
+                            self?.state = .done(notesPath: result.primaryFile)
+                            // Refresh meetings list to show the new meeting
+                            Task { await self?.refreshMeetings() }
+                        case .jobError(_, let payload):
+                            self?.state = .error(kind: payload.kind, message: payload.message)
+                        case .unknown:
+                            break
+                        }
                     }
-                }
-            })
+                })
+            } else {
+                // WebSocket failed — fall back to filesystem polling
+                startPolling(meetingId: meetingId)
+            }
         } catch let IpcClientError.rpcError(_, message) {
             state = .error(kind: "rpc_error", message: message)
         } catch {
@@ -95,18 +102,21 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Ensure WebSocket subscription is active. Lazy per spec decision.
-    private func ensureWsSubscription() async {
+    /// Returns true if WebSocket connected successfully, false on failure.
+    private func ensureWsSubscription() async -> Bool {
         // Only subscribe once
-        guard wsSubscriptionTask == nil else { return }
+        guard wsSubscriptionTask == nil else { return true }
         do {
             try await client.wsConnect()
             try await eventStream.subscribe(client: client)
             wsSubscriptionTask = Task {
                 // EventStreamActor.subscribe handles the stream internally
             }
+            return true
         } catch {
             Self.logFullError("ws.subscribe", error)
-            // WebSocket failure is non-fatal; fall back to polling
+            // WebSocket failure is non-fatal; caller falls back to polling
+            return false
         }
     }
 
@@ -157,7 +167,7 @@ final class AppViewModel: ObservableObject {
                 return
             }
             let notesPath = (meeting.dirPath as NSString).appendingPathComponent("notes.md")
-            let deadline = Date().addingTimeInterval(5 * 60)
+            let deadline = Date().addingTimeInterval(Self.pollingDeadlineSeconds)
             while !Task.isCancelled, Date() < deadline {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if FileManager.default.fileExists(atPath: notesPath) {
@@ -170,7 +180,7 @@ final class AppViewModel: ObservableObject {
             await MainActor.run {
                 guard let mainActorRef else { return }
                 if case .working = mainActorRef.state {
-                    mainActorRef.state = .error(kind: "timeout", message: "notes.generate did not complete within 5 minutes")
+                    mainActorRef.state = .error(kind: "timeout", message: "notes.generate did not complete within \(Int(Self.pollingDeadlineSeconds / 60)) minutes")
                 }
             }
         }
@@ -192,6 +202,8 @@ final class AppViewModel: ObservableObject {
 
     func reset() {
         pollingTask?.cancel()
+        wsSubscriptionTask?.cancel()
+        Task { await eventStream.stop() }
         state = .idle(audio: nil)
     }
 
