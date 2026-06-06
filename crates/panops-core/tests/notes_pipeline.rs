@@ -8,10 +8,10 @@ use panops_core::llm::{LlmError, LlmProvider, LlmRequest, LlmResponse};
 use panops_core::notes::dialect::MarkdownDialect;
 use panops_core::notes::input::{MeetingMetadata, NotesInput};
 use panops_core::notes::ir::Screenshot;
-use panops_core::notes::pipeline::NotesGenerator;
+use panops_core::notes::pipeline::{NotesGenerator, rendered_llm_request_chars};
 use panops_core::notes::prompts::{
     SECTION_CHUNK_THRESHOLD_CHARS, SectionSummary, build_frontmatter_prompt,
-    build_section_narrative_prompt,
+    build_section_narrative_prompt, estimate_transcript_chars,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -187,15 +187,6 @@ fn marker_list(text: &str) -> Vec<String> {
     out
 }
 
-fn rendered_request_chars(req: &LlmRequest) -> usize {
-    req.system.as_deref().map_or(0, str::len)
-        + req.user.len()
-        + req
-            .schema
-            .as_ref()
-            .map_or(0, |schema| schema.to_string().len())
-}
-
 fn notes_input(segments: Vec<Segment>, duration_ms: u64) -> NotesInput {
     NotesInput {
         transcript: segments,
@@ -272,6 +263,112 @@ fn short_section_uses_single_section_llm_call_without_merge() {
 }
 
 #[test]
+fn near_threshold_rendered_section_uses_chunk_path() {
+    let mut segments = Vec::new();
+    let segment_count = 20usize;
+    let mut remaining_estimate = SECTION_CHUNK_THRESHOLD_CHARS - 16;
+
+    for i in 0..segment_count {
+        let marker = format!("marker-rendered-{i:02}");
+        let remaining_segments = segment_count - i;
+        let line_chars = remaining_estimate / remaining_segments;
+        let text_len = line_chars.saturating_sub(20);
+        let filler_len = text_len.saturating_sub(marker.len() + 1);
+        let text = format!("{marker} {}", "x".repeat(filler_len));
+        remaining_estimate = remaining_estimate.saturating_sub(text.len() + 20);
+        let start_ms = i as u64 * 4_000;
+        segments.push(seg(start_ms, start_ms + 1_000, 0, &text));
+    }
+
+    let transcript_chars = estimate_transcript_chars(&segments);
+    let single_req = build_section_narrative_prompt(&segments, MarkdownDialect::Basic, "en");
+    assert!(
+        transcript_chars < SECTION_CHUNK_THRESHOLD_CHARS,
+        "fixture must stay under the transcript-only threshold: {transcript_chars}"
+    );
+    assert!(
+        rendered_llm_request_chars(&single_req) > SECTION_CHUNK_THRESHOLD_CHARS,
+        "fixture must exceed the rendered prompt threshold"
+    );
+
+    let llm = RecordingLlm::default();
+    let generator = NotesGenerator {
+        llm: &llm,
+        dialect: MarkdownDialect::Basic,
+    };
+
+    let notes = generator
+        .generate(notes_input(segments, 80_000))
+        .expect("generate failed");
+
+    assert_eq!(notes.sections.len(), 1);
+    let calls = llm.calls();
+    let section_calls: Vec<_> = calls
+        .iter()
+        .filter(|c| c.user.starts_with("Section transcript"))
+        .collect();
+    let merge_calls: Vec<_> = calls
+        .iter()
+        .filter(|c| c.user.starts_with("Sub-chunk summaries"))
+        .collect();
+
+    assert!(
+        section_calls.len() > 1,
+        "rendered prompt overhead should force multiple chunk summaries"
+    );
+    assert_eq!(
+        merge_calls.len(),
+        1,
+        "multiple rendered-budget chunks should merge once"
+    );
+}
+
+#[test]
+fn single_chunk_long_section_skips_merge_call() {
+    let segments = vec![seg(
+        0,
+        60_000,
+        0,
+        &format!("marker-single-chunk {}", "context ".repeat(1_200)),
+    )];
+    let single_req = build_section_narrative_prompt(&segments, MarkdownDialect::Basic, "en");
+    assert!(
+        rendered_llm_request_chars(&single_req) > SECTION_CHUNK_THRESHOLD_CHARS,
+        "fixture must exceed the rendered prompt threshold"
+    );
+
+    let llm = RecordingLlm::default();
+    let generator = NotesGenerator {
+        llm: &llm,
+        dialect: MarkdownDialect::Basic,
+    };
+
+    let notes = generator
+        .generate(notes_input(segments, 60_000))
+        .expect("generate failed");
+
+    assert_eq!(notes.sections.len(), 1);
+    assert_eq!(notes.sections[0].narrative_md, "marker-single-chunk");
+    let calls = llm.calls();
+    let section_calls = calls
+        .iter()
+        .filter(|c| c.user.starts_with("Section transcript"))
+        .count();
+    let merge_calls = calls
+        .iter()
+        .filter(|c| c.user.starts_with("Sub-chunk summaries"))
+        .count();
+    assert_eq!(
+        section_calls, 1,
+        "single unbreakable chunk is summarized once"
+    );
+    assert_eq!(
+        merge_calls, 0,
+        "one chunk summary should pass through without an LLM merge"
+    );
+}
+
+#[test]
 fn long_section_chunks_summarizes_each_chunk_and_merges_in_order() {
     let mut segments = Vec::new();
     let mut expected_markers = Vec::new();
@@ -326,9 +423,9 @@ fn long_section_chunks_summarizes_each_chunk_and_merges_in_order() {
     }
     for call in &calls {
         assert!(
-            rendered_request_chars(call) <= SECTION_CHUNK_THRESHOLD_CHARS,
+            rendered_llm_request_chars(call) <= SECTION_CHUNK_THRESHOLD_CHARS,
             "LLM input exceeded threshold: {} > {}",
-            rendered_request_chars(call),
+            rendered_llm_request_chars(call),
             SECTION_CHUNK_THRESHOLD_CHARS
         );
     }
@@ -414,9 +511,9 @@ fn long_section_merges_chunk_summaries_in_bounded_rounds() {
         call.user.starts_with("Section transcript") || call.user.starts_with("Sub-chunk summaries")
     }) {
         assert!(
-            rendered_request_chars(call) <= SECTION_CHUNK_THRESHOLD_CHARS,
+            rendered_llm_request_chars(call) <= SECTION_CHUNK_THRESHOLD_CHARS,
             "LLM input exceeded threshold: {} > {}\n{}",
-            rendered_request_chars(call),
+            rendered_llm_request_chars(call),
             SECTION_CHUNK_THRESHOLD_CHARS,
             call.user
         );
@@ -468,8 +565,13 @@ fn long_section_merge_text_response_falls_back_without_aborting() {
     assert_eq!(notes.sections[0].title, "Section");
     let narrative = &notes.sections[0].narrative_md;
     assert!(
-        narrative.contains("panops: llm error: merge LLM returned text, expected json"),
-        "fallback should include merge error marker; got: {narrative}"
+        narrative.contains("panops: llm error: LLM unavailable"),
+        "fallback should include a generic LLM marker; got: {narrative}"
+    );
+    assert!(
+        !narrative.contains("merge failed as text")
+            && !narrative.contains("merge LLM returned text, expected json"),
+        "fallback should not leak internal LLM details; got: {narrative}"
     );
     assert!(
         narrative.contains("marker-fallback-00"),

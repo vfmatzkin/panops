@@ -172,26 +172,34 @@ impl NotesGenerator<'_> {
         allowed_speakers: &HashSet<u32>,
     ) -> SectionDraft {
         let transcript_chars = estimate_transcript_chars(&segs);
+        let single_req = build_section_narrative_prompt(&segs, self.dialect, language);
+        let single_req_chars = rendered_llm_request_chars(&single_req);
 
-        if transcript_chars <= SECTION_CHUNK_THRESHOLD_CHARS {
+        if single_req_chars <= SECTION_CHUNK_THRESHOLD_CHARS {
             // Normal case: single LLM call
-            self.process_single_section(time_range_ms, segs, language, allowed_speakers)
+            self.process_single_section(time_range_ms, segs, single_req, allowed_speakers)
         } else {
             // Long section: chunk, summarize each, merge
             tracing::info!(
                 time_range = ?time_range_ms,
-                chars = transcript_chars,
+                transcript_chars,
+                rendered_chars = single_req_chars,
                 threshold = SECTION_CHUNK_THRESHOLD_CHARS,
                 "section exceeds chunk threshold; splitting"
             );
-            // Split to the lower target size, not the trigger threshold, so
-            // fixed prompt instructions still fit comfortably in the same
-            // approximate context budget. Single segments may exceed this
-            // because we never split mid-segment.
-            let chunks = split_segments_for_chunking(
+            // Split toward the lower soft target, while keeping the threshold
+            // as the hard transcript ceiling. Rendered prompt overhead is
+            // checked below because system/schema/dialect text also count.
+            let initial_chunks = split_segments_for_chunking(
                 &segs,
                 SECTION_CHUNK_TARGET_CHARS,
-                SECTION_CHUNK_TARGET_CHARS,
+                SECTION_CHUNK_THRESHOLD_CHARS,
+            );
+            let chunks = split_chunks_to_rendered_budget(
+                initial_chunks,
+                self.dialect,
+                language,
+                SECTION_CHUNK_THRESHOLD_CHARS,
             );
             let mut chunk_summaries = Vec::with_capacity(chunks.len());
             for (i, chunk) in chunks.iter().enumerate() {
@@ -199,18 +207,27 @@ impl NotesGenerator<'_> {
                 match self.llm.complete(req) {
                     Ok(LlmResponse::Json(v)) => chunk_summaries.push(v),
                     Ok(LlmResponse::Text(_)) => {
+                        tracing::warn!(
+                            chunk_index = i + 1,
+                            "chunk summary LLM returned text, expected json"
+                        );
                         return SectionDraft::fallback(
                             time_range_ms,
                             segs,
-                            &format!("chunk {} LLM returned text, expected json", i + 1),
+                            "LLM unavailable",
                             self.dialect,
                         );
                     }
                     Err(e) => {
+                        tracing::warn!(
+                            chunk_index = i + 1,
+                            error = %e,
+                            "chunk summary LLM call failed"
+                        );
                         return SectionDraft::fallback(
                             time_range_ms,
                             segs,
-                            &format!("chunk {} LLM call failed: {e}", i + 1),
+                            "LLM unavailable",
                             self.dialect,
                         );
                     }
@@ -257,6 +274,9 @@ impl NotesGenerator<'_> {
         if summaries.is_empty() {
             return Err("merge LLM call failed: no chunk summaries".to_string());
         }
+        if summaries.len() == 1 {
+            return Ok(summaries.remove(0));
+        }
 
         while summaries.len() > 1 {
             let before_estimate = summaries
@@ -288,6 +308,11 @@ impl NotesGenerator<'_> {
                     index += 1;
                 }
 
+                if batch.len() == 1 {
+                    next_round.push(batch.remove(0));
+                    continue;
+                }
+
                 let merge_req = build_merge_section_prompt(&batch, self.dialect, language);
                 let merge_req_chars = rendered_llm_request_chars(&merge_req);
                 if merge_req_chars > SECTION_CHUNK_THRESHOLD_CHARS {
@@ -301,9 +326,13 @@ impl NotesGenerator<'_> {
                 match self.llm.complete(merge_req) {
                     Ok(LlmResponse::Json(v)) => next_round.push(v),
                     Ok(LlmResponse::Text(_)) => {
-                        return Err("merge LLM returned text, expected json".to_string());
+                        tracing::warn!("merge LLM returned text, expected json");
+                        return Err("LLM unavailable".to_string());
                     }
-                    Err(e) => return Err(format!("merge LLM call failed: {e}")),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "merge LLM call failed");
+                        return Err("LLM unavailable".to_string());
+                    }
                 }
             }
 
@@ -328,10 +357,9 @@ impl NotesGenerator<'_> {
         &self,
         time_range_ms: (u64, u64),
         segs: Vec<Segment>,
-        language: &str,
+        req: LlmRequest,
         allowed_speakers: &HashSet<u32>,
     ) -> SectionDraft {
-        let req = build_section_narrative_prompt(&segs, self.dialect, language);
         match self.llm.complete(req) {
             Ok(LlmResponse::Json(v)) => {
                 let draft = SectionDraft::from_json(time_range_ms, v);
@@ -367,7 +395,50 @@ impl NotesGenerator<'_> {
     }
 }
 
-fn rendered_llm_request_chars(req: &LlmRequest) -> usize {
+fn split_chunks_to_rendered_budget(
+    chunks: Vec<Vec<Segment>>,
+    dialect: MarkdownDialect,
+    language: &str,
+    max_chars: usize,
+) -> Vec<Vec<Segment>> {
+    let mut out = Vec::new();
+    for chunk in chunks {
+        push_rendered_budget_chunk(chunk, dialect, language, max_chars, &mut out);
+    }
+    out
+}
+
+fn push_rendered_budget_chunk(
+    chunk: Vec<Segment>,
+    dialect: MarkdownDialect,
+    language: &str,
+    max_chars: usize,
+    out: &mut Vec<Vec<Segment>>,
+) {
+    let req = build_section_narrative_prompt(&chunk, dialect, language);
+    if chunk.len() <= 1 || rendered_llm_request_chars(&req) <= max_chars {
+        out.push(chunk);
+        return;
+    }
+
+    let mut current = Vec::new();
+    for seg in chunk {
+        current.push(seg);
+        let req = build_section_narrative_prompt(&current, dialect, language);
+        if rendered_llm_request_chars(&req) > max_chars && current.len() > 1 {
+            let overflow = current.pop().expect("current has at least two segments");
+            out.push(current);
+            current = vec![overflow];
+        }
+    }
+
+    if !current.is_empty() {
+        push_rendered_budget_chunk(current, dialect, language, max_chars, out);
+    }
+}
+
+#[doc(hidden)]
+pub fn rendered_llm_request_chars(req: &LlmRequest) -> usize {
     req.system.as_deref().map_or(0, str::len)
         + req.user.len()
         + req
