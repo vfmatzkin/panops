@@ -54,19 +54,11 @@ struct PanopsApp: App {
             startupError = "Could not start the engine. See Console.app for detail."
             return
         }
-        do {
-            try await viewModel.connect()
-        } catch {
-            AppViewModel.logFullError("ipc.connect", error)
-            // Per spec #124: non-fatal engine connection failure.
-            // Set state to engineNotConnected instead of showing fatal alert.
-            viewModel.setEngineNotConnected()
-            return
-        }
-        // Remove a prior observer if bootstrap somehow fires twice
-        // (SwiftUI lifecycle quirks or future refactors). Otherwise
-        // the stale observer would SIGTERM the old engine while the
-        // new one leaks.
+
+        // Install will-terminate observer immediately after engine starts,
+        // regardless of IPC connection success. The engine process was spawned
+        // and must be SIGTERM'd on app quit to avoid stray processes.
+        // Remove prior observer if bootstrap fires twice (SwiftUI lifecycle quirks).
         if let prior = willTerminateObserver {
             NotificationCenter.default.removeObserver(prior)
         }
@@ -83,6 +75,16 @@ struct PanopsApp: App {
             // teardown anyway, and the OS reaps the child process when
             // the app exits.
             engineCopy?.terminateSync()
+        }
+
+        do {
+            try await viewModel.connect()
+        } catch {
+            AppViewModel.logFullError("ipc.connect", error)
+            // Per spec #124: non-fatal engine connection failure.
+            // Set state to engineNotConnected instead of showing fatal alert.
+            viewModel.setEngineNotConnected()
+            return
         }
     }
 }
