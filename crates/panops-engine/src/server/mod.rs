@@ -50,9 +50,10 @@ use crate::server::handlers::{IpcImpl, IpcServer};
 /// diarization state, transcript JSON, and LLM prompt/response payloads, so
 /// keeping this small protects the local Mac from memory exhaustion while
 /// still allowing one foreground job plus one queued/secondary job to make
-/// progress. Additional RPC calls wait for a permit before their blocking
-/// pipeline is spawned, providing backpressure instead of unbounded work.
-pub const MAX_CONCURRENT_NOTES_JOBS: usize = 2;
+/// progress. Additional jobs wait for a permit (off the RPC accept path)
+/// before their blocking pipeline is spawned, providing backpressure instead
+/// of unbounded work.
+pub(super) const MAX_CONCURRENT_NOTES_JOBS: usize = 2;
 
 /// Heavy adapter trio loaded together — bundled so the `OnceLock` swap
 /// is atomic (one set, all three present) and so `notes.generate`'s

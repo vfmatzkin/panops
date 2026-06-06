@@ -125,60 +125,67 @@ impl IpcServer for IpcImpl {
         let events_tx = self.events_tx.clone();
         let job_id_owned = job_id.clone();
 
-        // Backpressure heavy note generation before it reaches tokio's
-        // blocking pool. A permit is held for the whole synchronous
-        // pipeline, so a burst of RPC calls cannot enqueue unbounded
-        // decoded audio / ASR / diarization / LLM work and exhaust RAM.
-        // Calls beyond `MAX_CONCURRENT_NOTES_JOBS` wait here, then still
-        // return the job id immediately after their job is accepted
-        // (results continue to arrive through `events.subscribe`).
-        let notes_job_permit = services
-            .notes_jobs
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "notes.generate semaphore closed");
-                ipc_error_to_obj(IpcError::Internal {
-                    message: "notes.generate internal error".into(),
-                })
-            })?;
-
-        // Move the pipeline off any tokio worker thread: rayon (used by
-        // `NotesGenerator` for the per-section fan-out) and the blocking
-        // ASR/diar adapters mustn't share a runtime worker with the RPC
-        // accept loop. `spawn_blocking` drops them on the dedicated
-        // blocking pool. The `notes.generate` RPC returns immediately
-        // after accepting a bounded job; the actual result lands on
+        // Accept the job and return its id immediately. ALL heavy work — the
+        // backpressure wait AND the synchronous pipeline — runs off the RPC
+        // accept path, so the `{job_id}`-then-events contract holds even under
+        // load: the caller never blocks waiting for a permit. Results land on
         // `events.subscribe` as `JobDone` or `JobError`.
-        let job_id_for_panic = job_id.clone();
-        let events_tx_for_panic = events_tx.clone();
-        let join_handle = tokio::task::spawn_blocking(move || {
-            let _notes_job_permit = notes_job_permit;
-            let outcome = run_notes_pipeline(&services, &params);
-            match outcome {
-                Ok(result) => {
-                    let _ = events_tx.send(Event::JobDone(JobDoneEvent {
-                        job_id: job_id_owned,
-                        result,
-                    }));
-                }
-                Err(error) => {
+        tokio::spawn(async move {
+            // Backpressure heavy note generation before it reaches tokio's
+            // blocking pool. A permit is held for the whole synchronous
+            // pipeline, so a burst of jobs cannot enqueue unbounded decoded
+            // audio / ASR / diarization / LLM work and exhaust RAM. Jobs
+            // beyond `MAX_CONCURRENT_NOTES_JOBS` wait here (off the RPC path).
+            let notes_job_permit = match services.notes_jobs.clone().acquire_owned().await {
+                Ok(permit) => permit,
+                Err(e) => {
+                    // `acquire_owned` errors only when the semaphore is
+                    // permanently closed (engine shutdown) — not the normal
+                    // wait-when-full case. The job id was already returned, so
+                    // surface the failure as a `JobError` event, not an RPC error.
+                    tracing::error!(error = %e, "notes.generate semaphore permanently closed");
                     let _ = events_tx.send(Event::JobError(JobErrorEvent {
                         job_id: job_id_owned,
-                        error,
+                        error: IpcError::Internal {
+                            message: "notes.generate internal error".into(),
+                        },
                     }));
+                    return;
                 }
-            }
-        });
+            };
 
-        // Awaiter for the blocking task. Without this, a panic inside
-        // the closure (MockLlm fingerprint mismatch, rayon panic, OOM)
-        // is silently swallowed when the JoinHandle drops, leaving
-        // subscribers waiting forever. We turn a JoinError into a
-        // synthetic `JobError` event with an opaque `Internal` message
-        // so the wire never leaks panic payloads or filesystem paths.
-        tokio::spawn(async move {
+            // Move the pipeline off any tokio worker thread: rayon (used by
+            // `NotesGenerator` for the per-section fan-out) and the blocking
+            // ASR/diar adapters mustn't share a runtime worker with the RPC
+            // accept loop. `spawn_blocking` drops them on the dedicated
+            // blocking pool.
+            let job_id_for_panic = job_id_owned.clone();
+            let events_tx_for_panic = events_tx.clone();
+            let join_handle = tokio::task::spawn_blocking(move || {
+                let _notes_job_permit = notes_job_permit;
+                let outcome = run_notes_pipeline(&services, &params);
+                match outcome {
+                    Ok(result) => {
+                        let _ = events_tx.send(Event::JobDone(JobDoneEvent {
+                            job_id: job_id_owned,
+                            result,
+                        }));
+                    }
+                    Err(error) => {
+                        let _ = events_tx.send(Event::JobError(JobErrorEvent {
+                            job_id: job_id_owned,
+                            error,
+                        }));
+                    }
+                }
+            });
+
+            // Awaiter for the blocking task. Without this, a panic inside
+            // the closure (MockLlm fingerprint mismatch, rayon panic, OOM)
+            // is silently swallowed when the JoinHandle drops, leaving
+            // subscribers waiting forever. We turn a JoinError into a
+            // synthetic `JobError` event with an opaque `Internal` message
+            // so the wire never leaks panic payloads or filesystem paths.
             if let Err(join_err) = join_handle.await {
                 let msg = if join_err.is_panic() {
                     "pipeline panicked".to_string()
