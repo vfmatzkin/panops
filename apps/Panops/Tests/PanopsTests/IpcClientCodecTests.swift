@@ -141,4 +141,50 @@ struct IpcClientCodecTests {
         let result = try WsFrameParser.parse(frame)
         #expect(result == nil, "binary frames should be ignored")
     }
+
+    // MARK: - MeetingSummary decode tests
+
+    @Test("MeetingSummary_decodes")
+    func meetingSummary_decodes() throws {
+        let json = #"""
+        {
+          "id": "m-123",
+          "title": "Team sync",
+          "started_at": "2026-06-05T10:00:00Z",
+          "ended_at": "2026-06-05T11:00:00Z",
+          "duration_ms": 3600000,
+          "language": "en",
+          "dir_path": "/tmp/meetings/m-123"
+        }
+        """#
+        let summary = try decoder.decode(MeetingSummary.self, from: json.data(using: .utf8)!)
+        #expect(summary.id == "m-123")
+        #expect(summary.title == "Team sync")
+        #expect(summary.startedAt == "2026-06-05T10:00:00Z")
+        #expect(summary.endedAt == "2026-06-05T11:00:00Z")
+        #expect(summary.durationMs == 3600000)
+        #expect(summary.language == "en")
+        #expect(summary.dirPath == "/tmp/meetings/m-123")
+    }
+
+    @Test("Meeting_decodes_with_optional_fields")
+    func meeting_decodes_with_optional_fields() throws {
+        let json = #"""
+        {
+          "id": "m-456",
+          "title": "Quick call",
+          "started_at": "2026-06-05T09:00:00Z",
+          "ended_at": null,
+          "duration_ms": null,
+          "language": "auto",
+          "dir_path": "/tmp/meetings/m-456"
+        }
+        """#
+        let meeting = try decoder.decode(Meeting.self, from: json.data(using: .utf8)!)
+        #expect(meeting.id == "m-456")
+        #expect(meeting.title == "Quick call")
+        #expect(meeting.endedAt == nil)
+        #expect(meeting.durationMs == nil)
+        #expect(meeting.language == "auto")
+    }
 }
