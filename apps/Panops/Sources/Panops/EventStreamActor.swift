@@ -19,7 +19,8 @@ actor EventStreamActor {
     func subscribe(client: IpcClient) async throws {
         subscription = try await client.subscribeEvents()
         subscriptionTask = Task {
-            for await event in subscription! {
+            guard let subscription else { return }
+            for await event in subscription {
                 route(event: event)
             }
         }
