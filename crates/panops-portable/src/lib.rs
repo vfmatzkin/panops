@@ -6,6 +6,7 @@ pub mod genai_llm;
 pub mod markdown_exporter;
 pub mod model;
 pub mod recursive_asr;
+pub mod rusqlite_meeting_store;
 pub mod rusqlite_storage;
 
 mod sherpa_diarizer;
@@ -14,6 +15,7 @@ pub mod whisper_vad;
 
 pub use genai_llm::GenaiLlm;
 pub use markdown_exporter::MarkdownExporter;
+pub use rusqlite_meeting_store::RusqliteMeetingStore;
 pub use rusqlite_storage::RusqliteStorage;
 pub use sherpa_diarizer::SherpaDiarizer;
 pub use whisper_adapter::WhisperRsAsr;
