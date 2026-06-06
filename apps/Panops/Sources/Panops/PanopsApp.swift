@@ -54,7 +54,9 @@ struct PanopsApp: App {
             try await viewModel.connect()
         } catch {
             AppViewModel.logFullError("ipc.connect", error)
-            startupError = "Could not connect to the engine. See Console.app for detail."
+            // Per spec #124: non-fatal engine connection failure.
+            // Set state to engineNotConnected instead of showing fatal alert.
+            viewModel.setEngineNotConnected()
             return
         }
         // Remove a prior observer if bootstrap somehow fires twice

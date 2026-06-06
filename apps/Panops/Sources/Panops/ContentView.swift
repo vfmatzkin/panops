@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 @MainActor
 final class AppViewModel: ObservableObject {
     enum State {
+        case engineNotConnected
         case idle(audio: URL?)
         case working(meetingId: String, audioName: String)
         case done(notesPath: String)
@@ -21,6 +22,22 @@ final class AppViewModel: ObservableObject {
 
     func connect() async throws {
         try await client.connect()
+    }
+
+    /// Retry connection to engine after a previous failure.
+    /// Used when state is `.engineNotConnected`.
+    func retryConnect() async {
+        do {
+            try await client.connect()
+            state = .idle(audio: nil)
+        } catch {
+            Self.logFullError("ipc.connect.retry", error)
+            // Stay in engineNotConnected state
+        }
+    }
+
+    func setEngineNotConnected() {
+        state = .engineNotConnected
     }
 
     func pickAudio() {
@@ -156,6 +173,8 @@ struct ContentView: View {
             Text("Panops").font(.largeTitle)
             Divider()
             switch vm.state {
+            case .engineNotConnected:
+                engineNotConnectedSection()
             case .idle(let audio):
                 idleSection(audio: audio)
             case .working(_, let audioName):
@@ -184,6 +203,17 @@ struct ContentView: View {
                 .keyboardShortcut(.return, modifiers: [])
             } else {
                 Text("No file selected").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func engineNotConnectedSection() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Engine not connected").font(.headline).foregroundStyle(.orange)
+            Text("Could not connect to the panops engine. Ensure panops-engine is running.")
+            Button("Retry") {
+                Task { await vm.retryConnect() }
             }
         }
     }
