@@ -391,3 +391,145 @@ fn action_item_owner_is_humanized() {
         "raw 'speaker_0' must not appear; got:\n{body}"
     );
 }
+
+/// FIX 2 (#45) — Verify NotionEnhanced dialect produces its expected structure.
+/// The exporter controls screenshot rendering: NotionEnhanced uses <table>,
+/// Basic uses plain image lines. Test asserts the distinguishing features.
+#[test]
+fn notion_enhanced_screenshots_use_table_layout() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let img1 = src_dir.path().join("shot1.png");
+    let img2 = src_dir.path().join("shot2.png");
+    fs::write(&img1, b"fake-png-1").unwrap();
+    fs::write(&img2, b"fake-png-2").unwrap();
+
+    let mut notes = sample(MarkdownDialect::NotionEnhanced);
+    notes.sections[0].screenshots = vec![
+        Screenshot {
+            ms_since_start: 10_000,
+            path: img1.clone(),
+            caption: Some("First shot".into()),
+        },
+        Screenshot {
+            ms_since_start: 20_000,
+            path: img2.clone(),
+            caption: Some("Second shot".into()),
+        },
+    ];
+
+    let dest_dir = tempfile::tempdir().unwrap();
+    let exporter = MarkdownExporter;
+    exporter.export(&notes, dest_dir.path()).unwrap();
+    let body = fs::read_to_string(dest_dir.path().join("notes.md")).unwrap();
+
+    // NotionEnhanced-specific markers for screenshots
+    assert!(
+        body.contains("<table>"),
+        "NotionEnhanced must wrap screenshots in <table>; got:\n{body}"
+    );
+    assert!(
+        body.contains("<tr>"),
+        "NotionEnhanced screenshots must use <tr>; got:\n{body}"
+    );
+    assert!(
+        body.contains("<td>"),
+        "NotionEnhanced screenshots must use <td>; got:\n{body}"
+    );
+    assert!(
+        body.contains("</table>"),
+        "NotionEnhanced must close <table>; got:\n{body}"
+    );
+    // Dialect header must match
+    assert!(
+        body.contains("dialect: notion-enhanced"),
+        "frontmatter must declare notion-enhanced dialect; got:\n{body}"
+    );
+}
+
+#[test]
+fn basic_screenshots_use_plain_images_not_table() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let img1 = src_dir.path().join("shot1.png");
+    fs::write(&img1, b"fake-png").unwrap();
+
+    let mut notes = sample(MarkdownDialect::Basic);
+    notes.sections[0].screenshots = vec![Screenshot {
+        ms_since_start: 10_000,
+        path: img1.clone(),
+        caption: Some("Caption text".into()),
+    }];
+
+    let dest_dir = tempfile::tempdir().unwrap();
+    let exporter = MarkdownExporter;
+    exporter.export(&notes, dest_dir.path()).unwrap();
+    let body = fs::read_to_string(dest_dir.path().join("notes.md")).unwrap();
+
+    // Basic must NOT use table markup
+    assert!(
+        !body.contains("<table>"),
+        "Basic dialect must NOT use <table>; got:\n{body}"
+    );
+    assert!(
+        !body.contains("<tr>"),
+        "Basic dialect must NOT use <tr>; got:\n{body}"
+    );
+    assert!(
+        !body.contains("<td>"),
+        "Basic dialect must NOT use <td>; got:\n{body}"
+    );
+    // Basic uses plain image syntax with relative path
+    assert!(
+        body.contains("![Caption text](screenshots/"),
+        "Basic must use plain image syntax; got:\n{body}"
+    );
+    // Dialect header must match
+    assert!(
+        body.contains("dialect: basic"),
+        "frontmatter must declare basic dialect; got:\n{body}"
+    );
+}
+
+#[test]
+fn dialects_render_screenshots_differently() {
+    // Comprehensive test: same notes content, different dialects, different screenshot markup
+    let src_dir = tempfile::tempdir().unwrap();
+    let img = src_dir.path().join("frame.png");
+    fs::write(&img, b"png-data").unwrap();
+
+    let mut notes_notion = sample(MarkdownDialect::NotionEnhanced);
+    notes_notion.sections[0].screenshots = vec![Screenshot {
+        ms_since_start: 5_000,
+        path: img.clone(),
+        caption: None,
+    }];
+
+    let mut notes_basic = sample(MarkdownDialect::Basic);
+    notes_basic.sections[0].screenshots = vec![Screenshot {
+        ms_since_start: 5_000,
+        path: img.clone(),
+        caption: None,
+    }];
+
+    let dir_notion = tempfile::tempdir().unwrap();
+    let dir_basic = tempfile::tempdir().unwrap();
+    MarkdownExporter
+        .export(&notes_notion, dir_notion.path())
+        .unwrap();
+    MarkdownExporter
+        .export(&notes_basic, dir_basic.path())
+        .unwrap();
+
+    let notion_body = fs::read_to_string(dir_notion.path().join("notes.md")).unwrap();
+    let basic_body = fs::read_to_string(dir_basic.path().join("notes.md")).unwrap();
+
+    // Structural difference is the table
+    assert!(
+        notion_body.contains("<table>"),
+        "NotionEnhanced: missing <table>"
+    );
+    assert!(!basic_body.contains("<table>"), "Basic: unexpected <table>");
+    assert_ne!(
+        notion_body, basic_body,
+        "dialects must produce different output"
+    );
+}
