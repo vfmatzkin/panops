@@ -58,10 +58,16 @@ struct ThumbnailView: View {
             }
         }
         .help(url.lastPathComponent)
-        .task { loadImage() }
+        .task { await loadImage() }
     }
 
-    private func loadImage() {
-        image = NSImage(contentsOf: url)
+    private func loadImage() async {
+        // Decode off the MainActor: NSImage(contentsOf:) does a synchronous
+        // disk read + decode, which would hitch the UI per visible thumbnail.
+        let url = self.url
+        let loaded = await Task.detached(priority: .utility) {
+            NSImage(contentsOf: url)
+        }.value
+        image = loaded
     }
 }
