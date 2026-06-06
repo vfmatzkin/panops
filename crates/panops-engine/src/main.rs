@@ -14,6 +14,7 @@ use panops_core::notes::dialect::MarkdownDialect;
 use panops_core::notes::input::{MeetingMetadata, NotesInput};
 use panops_core::notes::ir::Screenshot;
 use panops_core::notes::pipeline::NotesGenerator;
+use panops_core::notes::raw_transcript::write_raw_transcript;
 use panops_core::storage::{MeetingDraft, NoteDraft, Storage};
 use panops_core::vad::Vad;
 use panops_portable::SherpaDiarizer;
@@ -246,6 +247,14 @@ fn run_notes(
     std::fs::write(&transcript_path, &transcript_json)
         .map_err(|e| (3, format!("write transcript.json: {e}")))?;
     tracing::info!(file = ?transcript_path, "wrote transcript");
+
+    // Additive raw-transcript sidecar: a human-readable, grep-friendly view of
+    // the raw Whisper segments next to notes.md, so the LLM synthesis can be
+    // compared against the source. Best-effort — never block on it.
+    match write_raw_transcript(&transcript.segments, &out_dir) {
+        Ok(p) => tracing::info!(file = ?p, "wrote raw transcript sidecar"),
+        Err(e) => tracing::warn!(error = %e, "write transcript.txt failed; continuing"),
+    }
 
     let llm = match llm_provider.as_str() {
         "auto" => match llm_model {

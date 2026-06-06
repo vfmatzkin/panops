@@ -4,6 +4,7 @@ pub mod input;
 pub mod ir;
 pub mod pipeline;
 pub mod prompts;
+pub mod raw_transcript;
 pub mod screenshot_anchoring;
 pub mod topic_segmentation;
 pub mod verifier;
