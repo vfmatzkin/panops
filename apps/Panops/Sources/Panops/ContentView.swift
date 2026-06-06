@@ -372,9 +372,7 @@ struct ContentView: View {
             await vm.refreshMeetings()
         }
         .onChange(of: vm.selectedMeetingId) { _, _ in
-            if vm.selectedMeetingId != nil {
-                Task { await vm.loadSelectedMeeting() }
-            }
+            Task { await vm.loadSelectedMeeting() }
         }
     }
 
