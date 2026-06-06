@@ -72,9 +72,11 @@ struct VerificationMarker {
     sha256: String,
     /// File size in bytes at verification time.
     size: u64,
-    /// File modification time as Unix timestamp (seconds since epoch).
-    /// Using duration_since UNIX_EPOCH for portability.
+    /// File modification time seconds component since Unix epoch.
+    /// Stored with nanoseconds below so same-second rewrites re-verify.
     mtime_secs: u64,
+    /// File modification time nanoseconds component within `mtime_secs`.
+    mtime_nanos: u32,
 }
 
 /// Returns the path to the verification marker file for a given model path.
@@ -91,16 +93,21 @@ fn read_verification_marker(marker_path: &Path) -> Option<VerificationMarker> {
     serde_json::from_str(&contents).ok()
 }
 
+fn mtime_parts(mtime: SystemTime) -> (u64, u32) {
+    let duration = mtime
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    (duration.as_secs(), duration.subsec_nanos())
+}
+
 /// Write the verification marker after a successful sha256 verify.
 fn write_verification_marker(marker_path: &Path, sha256: &str, size: u64, mtime: SystemTime) {
-    let mtime_secs = mtime
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let (mtime_secs, mtime_nanos) = mtime_parts(mtime);
     let marker = VerificationMarker {
         sha256: sha256.to_string(),
         size,
         mtime_secs,
+        mtime_nanos,
     };
     let contents = serde_json::to_string(&marker).unwrap_or_default();
     // Ignore write errors — marker is optional; next run will re-verify.
@@ -134,16 +141,16 @@ fn verification_cache_valid(model_path: &Path, expected_sha256: &str) -> bool {
         return false;
     };
     let current_size = metadata.len();
-    let current_mtime_secs = current_mtime
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let (current_mtime_secs, current_mtime_nanos) = mtime_parts(current_mtime);
 
     // Size and mtime must match.
     if marker.size != current_size {
         return false;
     }
     if marker.mtime_secs != current_mtime_secs {
+        return false;
+    }
+    if marker.mtime_nanos != current_mtime_nanos {
         return false;
     }
 
@@ -662,6 +669,45 @@ pub fn ensure_vad_model(dest: &Path) -> Result<PathBuf, AsrError> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn set_file_mtime(path: &Path, secs: std::ffi::c_long, nanos: std::ffi::c_long) {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        #[repr(C)]
+        struct Timespec {
+            tv_sec: std::ffi::c_long,
+            tv_nsec: std::ffi::c_long,
+        }
+
+        unsafe extern "C" {
+            fn utimensat(
+                dirfd: std::ffi::c_int,
+                pathname: *const std::ffi::c_char,
+                times: *const Timespec,
+                flags: std::ffi::c_int,
+            ) -> std::ffi::c_int;
+        }
+
+        const AT_FDCWD: std::ffi::c_int = -100;
+        let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+        let times = [
+            Timespec {
+                tv_sec: secs,
+                tv_nsec: nanos,
+            },
+            Timespec {
+                tv_sec: secs,
+                tv_nsec: nanos,
+            },
+        ];
+
+        // SAFETY: `path` is a valid, NUL-terminated CString and `times` points to
+        // two initialized POSIX timespec values for atime and mtime.
+        let result = unsafe { utimensat(AT_FDCWD, path.as_ptr(), times.as_ptr(), 0) };
+        assert_eq!(result, 0, "utimensat should set file mtime");
+    }
+
     #[test]
     fn percent_complete_rounds_to_nearest_integer() {
         assert_eq!(percent_complete(1, 3), Some(33));
@@ -758,7 +804,7 @@ mod tests {
         let marker_path = dir.path().join("model.verified");
         let sha256 = "abc123";
         let size = 1024_u64;
-        let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(12345);
+        let mtime = SystemTime::UNIX_EPOCH + Duration::new(12345, 678);
 
         write_verification_marker(&marker_path, sha256, size, mtime);
 
@@ -766,6 +812,7 @@ mod tests {
         assert_eq!(marker.sha256, sha256);
         assert_eq!(marker.size, size);
         assert_eq!(marker.mtime_secs, 12345);
+        assert_eq!(marker.mtime_nanos, 678);
     }
 
     #[test]
@@ -858,5 +905,45 @@ mod tests {
 
         // Cache should be invalid (mtime mismatch).
         assert!(!verification_cache_valid(&model_path, &sha256));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verification_cache_invalidates_same_size_rewrite_with_subsecond_mtime_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.bin");
+        let marker_path = verification_marker_path(&model_path);
+
+        let original = b"original bytes";
+        let replacement = b"changed! bytes";
+        assert_eq!(original.len(), replacement.len());
+
+        fs::write(&model_path, original).unwrap();
+        set_file_mtime(&model_path, 1_700_000_000, 100);
+        let metadata = fs::metadata(&model_path).unwrap();
+        let original_mtime = metadata.modified().unwrap();
+        let original_sha256 = format!("{:x}", Sha256::digest(original));
+        write_verification_marker(
+            &marker_path,
+            &original_sha256,
+            metadata.len(),
+            original_mtime,
+        );
+
+        fs::write(&model_path, replacement).unwrap();
+        set_file_mtime(&model_path, 1_700_000_000, 200);
+        let rewritten_metadata = fs::metadata(&model_path).unwrap();
+        let rewritten_mtime = rewritten_metadata.modified().unwrap();
+
+        assert_eq!(metadata.len(), rewritten_metadata.len());
+        assert_eq!(
+            mtime_parts(original_mtime).0,
+            mtime_parts(rewritten_mtime).0
+        );
+        assert_ne!(
+            mtime_parts(original_mtime).1,
+            mtime_parts(rewritten_mtime).1
+        );
+        assert!(!verification_cache_valid(&model_path, &original_sha256));
     }
 }
