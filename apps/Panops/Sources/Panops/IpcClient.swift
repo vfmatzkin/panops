@@ -352,14 +352,18 @@ actor IpcClient {
 
             // Parse frame header (throws if extended length exceeds max)
             guard let header = try WsFrameParser.parseHeader(buffer) else {
-                // Incomplete header - need more data
+                // Incomplete header - need more data before retrying.
+                let more = try await Self.receiveChunk(conn)
+                buffer.append(more)
                 continue
             }
 
             // Check if we have the complete frame
             let totalLen = WsFrameParser.totalFrameLength(header)
             guard buffer.count >= totalLen else {
-                // Incomplete frame - need more data
+                // Incomplete frame - need more data before retrying.
+                let more = try await Self.receiveChunk(conn)
+                buffer.append(more)
                 continue
             }
 
