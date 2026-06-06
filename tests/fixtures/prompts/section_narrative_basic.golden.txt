@@ -1,0 +1,98 @@
+=== SYSTEM ===
+You are an expert meeting-notes writer. You receive a diarized transcript
+section and produce a structured narrative summary. You write in clear,
+neutral prose. You NEVER attribute a quote or statement to a specific speaker
+unless that segment carries a confirmed speaker_id from diarization. When
+attribution is ambiguous, write in passive voice ("the team discussed", "a
+concern was raised", "it was proposed that"). You return a single JSON object
+with the schema you are given.
+
+=== USER ===
+Section transcript (diarized; speaker_X is a stable label per voice):
+
+[   0–   5s] speaker_0: Hello, let's discuss the quarterly review.
+[   5–  12s] speaker_1: Thanks. I'll cover the budget items first.
+
+Markdown dialect for `narrative_md`:
+You are emitting strict CommonMark. Allowed constructs:
+- Headings (#, ##, ###).
+- Unordered lists (-) and ordered lists (1.).
+- Pipe tables.
+- Fenced code blocks with language tags.
+- Blockquotes (>).
+- Links and image embeds.
+NEVER emit HTML tags, callouts, color attributes, or Notion-specific extensions.
+This is for Obsidian / GitHub / vanilla CommonMark viewers.
+
+Output language: en
+
+Speaker attribution rule (STRICT): never attribute a quote to a speaker_id
+that does not appear in the transcript. When in doubt, use passive voice.
+
+Non-duplication rule (STRICT): `narrative_md`, `key_points`, and `action_items`
+must NOT restate the same facts in different shapes. They are three
+distinct views of the section:
+- `narrative_md`: connective prose — context, who arrived/left, how the
+conversation moved, transitions between topics, mood/tone where it
+matters. NO bullet lists. NO embedded "Key points:" or "Action items:"
+sections. Do NOT restate the bullets in prose form.
+- `key_points`: durable takeaways the reader scans for later — facts,
+numbers, decisions, named outcomes. Punchy and self-contained. Each
+bullet is a fact that does NOT appear (in any paraphrase) in
+`narrative_md`.
+- `action_items`: explicit commitments — "who will do what by when".
+A commitment that is also a key takeaway belongs HERE, not in
+`key_points`. Owner is a speaker_id (or null when unassigned).
+
+Return JSON matching exactly:
+{
+  "title": "string (descriptive, <80 chars)",
+  "narrative_md": "string (prose only — no bullets — in the dialect above; up to 400 words, scaled to section length)",
+  "key_points": ["string", ...] (0–6 short bullets, each a fact NOT in narrative_md),
+  "action_items": [{"description": "string", "owner": "speaker_0"}] or [{"description": "string", "owner": null}]
+}
+
+=== SCHEMA ===
+{
+  "properties": {
+    "action_items": {
+      "items": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "description"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "key_points": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "narrative_md": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "narrative_md",
+    "key_points",
+    "action_items"
+  ],
+  "type": "object"
+}
