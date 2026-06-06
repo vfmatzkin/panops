@@ -32,21 +32,21 @@ struct ScreenshotsStripView: View {
 }
 
 /// Thumbnail view for a screenshot URL.
-/// Loads image asynchronously and shows placeholder on error.
+/// Loads local file with NSImage (AsyncImage doesn't support file:// URLs).
 struct ThumbnailView: View {
     let url: URL
+    @State private var image: NSImage?
 
     var body: some View {
-        AsyncImage(url: url) { phase in
-            switch phase {
-            case .success(let image):
-                image
+        Group {
+            if let image {
+                Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: 120, height: 80)
                     .clipped()
                     .cornerRadius(4)
-            case .failure:
+            } else {
                 Rectangle()
                     .fill(Color.secondary.opacity(0.3))
                     .frame(width: 120, height: 80)
@@ -55,18 +55,13 @@ struct ThumbnailView: View {
                         Image(systemName: "photo")
                             .foregroundStyle(.secondary)
                     )
-            case .empty:
-                Rectangle()
-                    .fill(Color.secondary.opacity(0.2))
-                    .frame(width: 120, height: 80)
-                    .cornerRadius(4)
-            @unknown default:
-                Rectangle()
-                    .fill(Color.secondary.opacity(0.2))
-                    .frame(width: 120, height: 80)
-                    .cornerRadius(4)
             }
         }
         .help(url.lastPathComponent)
+        .task { loadImage() }
+    }
+
+    private func loadImage() {
+        image = NSImage(contentsOf: url)
     }
 }
