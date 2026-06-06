@@ -121,7 +121,7 @@ impl LlmProvider for BulkyRecordingLlm {
             let markers = marker_list(&req.user);
             LlmResponse::Json(serde_json::json!({
                 "title": markers.first().map_or("Chunk", String::as_str),
-                "narrative_md": format!("{} {}", markers.join(" "), "detail ".repeat(420)),
+                "narrative_md": format!("{} {}", markers.join(" "), "detail ".repeat(300)),
                 "key_points": markers,
                 "action_items": []
             }))
@@ -129,7 +129,7 @@ impl LlmProvider for BulkyRecordingLlm {
             let markers = marker_list(&req.user);
             LlmResponse::Json(serde_json::json!({
                 "title": "Merged Section",
-                "narrative_md": format!("{} {}", markers.join(" "), "detail ".repeat(420)),
+                "narrative_md": format!("{} {}", markers.join(" "), "detail ".repeat(300)),
                 "key_points": markers,
                 "action_items": []
             }))
@@ -155,6 +155,15 @@ fn marker_list(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+fn rendered_request_chars(req: &LlmRequest) -> usize {
+    req.system.as_deref().map_or(0, str::len)
+        + req.user.len()
+        + req
+            .schema
+            .as_ref()
+            .map_or(0, |schema| schema.to_string().len())
 }
 
 fn notes_input(segments: Vec<Segment>, duration_ms: u64) -> NotesInput {
@@ -287,9 +296,9 @@ fn long_section_chunks_summarizes_each_chunk_and_merges_in_order() {
     }
     for call in &calls {
         assert!(
-            call.user.len() <= SECTION_CHUNK_THRESHOLD_CHARS,
+            rendered_request_chars(call) <= SECTION_CHUNK_THRESHOLD_CHARS,
             "LLM input exceeded threshold: {} > {}",
-            call.user.len(),
+            rendered_request_chars(call),
             SECTION_CHUNK_THRESHOLD_CHARS
         );
     }
@@ -375,9 +384,9 @@ fn long_section_merges_chunk_summaries_in_bounded_rounds() {
         call.user.starts_with("Section transcript") || call.user.starts_with("Sub-chunk summaries")
     }) {
         assert!(
-            call.user.len() <= SECTION_CHUNK_THRESHOLD_CHARS,
+            rendered_request_chars(call) <= SECTION_CHUNK_THRESHOLD_CHARS,
             "LLM input exceeded threshold: {} > {}\n{}",
-            call.user.len(),
+            rendered_request_chars(call),
             SECTION_CHUNK_THRESHOLD_CHARS,
             call.user
         );

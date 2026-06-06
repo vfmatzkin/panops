@@ -17,7 +17,7 @@ use chrono::Utc;
 use rayon::prelude::*;
 
 use crate::Segment;
-use crate::llm::{LlmProvider, LlmResponse};
+use crate::llm::{LlmProvider, LlmRequest, LlmResponse};
 use crate::notes::dialect::MarkdownDialect;
 use crate::notes::error::NotesError;
 use crate::notes::input::NotesInput;
@@ -268,36 +268,31 @@ impl NotesGenerator<'_> {
 
             while index < summaries.len() {
                 let mut batch = Vec::new();
-                let mut batch_estimate = 0usize;
 
                 while index < summaries.len() {
                     let next = summaries[index].clone();
-                    let next_estimate = estimate_chunk_summary_chars(&next);
 
                     if !batch.is_empty() {
-                        let candidate_estimate = batch_estimate.saturating_add(next_estimate);
-                        if candidate_estimate > SECTION_CHUNK_THRESHOLD_CHARS {
-                            break;
-                        }
-
                         let mut candidate_batch = batch.clone();
                         candidate_batch.push(next.clone());
                         let candidate_req =
                             build_merge_section_prompt(&candidate_batch, self.dialect, language);
-                        if candidate_req.user.len() > SECTION_CHUNK_THRESHOLD_CHARS {
+                        if rendered_llm_request_chars(&candidate_req)
+                            > SECTION_CHUNK_THRESHOLD_CHARS
+                        {
                             break;
                         }
                     }
 
                     batch.push(next);
-                    batch_estimate = batch_estimate.saturating_add(next_estimate);
                     index += 1;
                 }
 
                 let merge_req = build_merge_section_prompt(&batch, self.dialect, language);
-                if merge_req.user.len() > SECTION_CHUNK_THRESHOLD_CHARS {
+                let merge_req_chars = rendered_llm_request_chars(&merge_req);
+                if merge_req_chars > SECTION_CHUNK_THRESHOLD_CHARS {
                     tracing::warn!(
-                        input_chars = merge_req.user.len(),
+                        input_chars = merge_req_chars,
                         threshold = SECTION_CHUNK_THRESHOLD_CHARS,
                         "single chunk summary exceeds merge context threshold"
                     );
@@ -370,6 +365,15 @@ impl NotesGenerator<'_> {
             Err(e) => SectionDraft::fallback(time_range_ms, segs, &e.to_string(), self.dialect),
         }
     }
+}
+
+fn rendered_llm_request_chars(req: &LlmRequest) -> usize {
+    req.system.as_deref().map_or(0, str::len)
+        + req.user.len()
+        + req
+            .schema
+            .as_ref()
+            .map_or(0, |schema| schema.to_string().len())
 }
 
 struct SectionDraft {
