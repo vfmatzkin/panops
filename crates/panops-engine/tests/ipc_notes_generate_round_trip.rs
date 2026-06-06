@@ -71,22 +71,25 @@ async fn notes_generate_round_trip_emits_job_done() {
     .await
     .expect("call notes.generate");
 
-    let event = tokio::time::timeout(Duration::from_secs(60), subscription.next())
-        .await
-        .expect("event arrived within 60s")
-        .expect("subscription not closed")
-        .expect("event payload deserialised");
-
-    let primary_file = match event {
-        Event::JobDone(d) => PathBuf::from(d.result.primary_file),
-        Event::JobError(e) => panic!("expected JobDone, got JobError: {:?}", e.error),
-        Event::Unknown(v) => panic!("expected JobDone, got Unknown: {v}"),
-        // Slice 11 adds Screenshot and RecordingProgress events; ignore them
-        // in this notes pipeline test.
-        Event::Screenshot(_) | Event::RecordingProgress(_) => {
-            panic!("expected JobDone, got Screenshot/Progress event")
+    let primary_file = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let event = subscription
+                .next()
+                .await
+                .expect("subscription open")
+                .expect("payload deserialises");
+            match event {
+                Event::JobDone(d) => return PathBuf::from(d.result.primary_file),
+                Event::JobError(e) => panic!("expected JobDone, got JobError: {:?}", e.error),
+                Event::Unknown(v) => panic!("expected JobDone, got Unknown: {v}"),
+                // Slice 11 adds Screenshot and RecordingProgress events; ignore them
+                // in this notes pipeline test (they may arrive from concurrent tests).
+                Event::Screenshot(_) | Event::RecordingProgress(_) => continue,
+            }
         }
-    };
+    })
+    .await
+    .expect("event arrived within 60s");
     assert!(
         primary_file.exists(),
         "primary_file does not exist: {primary_file:?}"
