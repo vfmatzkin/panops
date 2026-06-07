@@ -30,7 +30,7 @@ ContentView (NavigationSplitView)
 
 Slice 12 addressed debt #122 (WebSocket IPC), #124 (non-fatal engine connect failure UX).
 
-Note: The external swift-testing dependency is retained (warning silenced in future Swift version).
+Note: Tests use the `Testing` module bundled in Swift 6.x — no external swift-testing dependency (dropped in #123).
 
 ## Recording Controller
 
