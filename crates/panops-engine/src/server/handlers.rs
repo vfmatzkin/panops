@@ -25,8 +25,8 @@ use panops_core::notes::input::{MeetingMetadata, NotesInput};
 use panops_core::notes::pipeline::NotesGenerator;
 use panops_core::notes::raw_transcript::write_raw_transcript;
 use panops_protocol::{
-    AudioSourcesWire, Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, Meeting,
-    MeetingConfig, MeetingSummary, NotesDialect, NotesGenerateParams, NotesGenerateResult,
+    AudioSourcesWire, Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, JobProgressEvent,
+    Meeting, MeetingConfig, MeetingSummary, NotesDialect, NotesGenerateParams, NotesGenerateResult,
     RecordingAccepted, RecordingStartParams, RecordingStopParams, RecordingStopped,
 };
 use tokio::sync::broadcast;
@@ -164,7 +164,7 @@ impl IpcServer for IpcImpl {
             let events_tx_for_panic = events_tx.clone();
             let join_handle = tokio::task::spawn_blocking(move || {
                 let _notes_job_permit = notes_job_permit;
-                let outcome = run_notes_pipeline(&services, &params);
+                let outcome = run_notes_pipeline(&services, &params, &events_tx, &job_id_owned);
                 match outcome {
                     Ok(result) => {
                         let _ = events_tx.send(Event::JobDone(JobDoneEvent {
@@ -460,6 +460,23 @@ impl IpcServer for IpcImpl {
     }
 }
 
+fn emit_job_progress(
+    events_tx: &broadcast::Sender<Event>,
+    job_id: &str,
+    stage: &str,
+    current: Option<u32>,
+    total: Option<u32>,
+    message: Option<&str>,
+) {
+    let _ = events_tx.send(Event::JobProgress(JobProgressEvent {
+        job_id: job_id.to_string(),
+        stage: stage.to_string(),
+        current,
+        total,
+        message: message.map(str::to_string),
+    }));
+}
+
 /// Run VAD + recursive ASR over one already-loaded track, returning its
 /// stitched segments (absolute timestamps) and the model name. Mirrors the
 /// legacy single-track loop so both the file-import path and the slice-11
@@ -469,6 +486,28 @@ fn transcribe_track(
     samples: &[f32],
     sample_rate: u32,
     language: Option<&str>,
+    events_tx: &broadcast::Sender<Event>,
+    job_id: &str,
+) -> Result<(Vec<panops_core::Segment>, Option<String>), IpcError> {
+    transcribe_track_labeled(
+        heavy,
+        samples,
+        sample_rate,
+        language,
+        events_tx,
+        job_id,
+        None,
+    )
+}
+
+fn transcribe_track_labeled(
+    heavy: &crate::server::HeavyAdapters,
+    samples: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+    events_tx: &broadcast::Sender<Event>,
+    job_id: &str,
+    message: Option<&str>,
 ) -> Result<(Vec<panops_core::Segment>, Option<String>), IpcError> {
     let regions = heavy.vad.detect_speech(samples, sample_rate).map_err(|e| {
         tracing::error!(error = %e, "vad detect_speech failed");
@@ -478,11 +517,20 @@ fn transcribe_track(
     let total_audio_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
     let mut segments = Vec::new();
     let mut model = None;
-    for region in merged.iter() {
+    let total = merged.len() as u32;
+    for (idx, region) in merged.iter().enumerate() {
         let clamped = region.clamp_to(total_audio_ms);
         if clamped.start_ms >= clamped.end_ms {
             continue;
         }
+        emit_job_progress(
+            events_tx,
+            job_id,
+            "transcribing",
+            Some((idx + 1) as u32),
+            Some(total),
+            message,
+        );
         let result = panops_portable::recursive_asr::transcribe_recursive(
             heavy.asr.as_ref(),
             samples,
@@ -513,6 +561,8 @@ fn transcribe_two_track(
     mic_wav: Option<&std::path::Path>,
     language: Option<&str>,
     no_diarize: bool,
+    events_tx: &broadcast::Sender<Event>,
+    job_id: &str,
 ) -> Result<panops_core::Transcript, IpcError> {
     if system_wav.is_none() && mic_wav.is_none() {
         return Err(IpcError::InvalidInput {
@@ -530,7 +580,15 @@ fn transcribe_two_track(
         let (samples, sr) =
             panops_portable::audio::load_audio_mono16k(mic).map_err(IpcError::from)?;
         duration_ms = duration_ms.max((samples.len() as u64 * 1000) / u64::from(sr));
-        let (segs, m) = transcribe_track(heavy, &samples, sr, language)?;
+        let (segs, m) = transcribe_track_labeled(
+            heavy,
+            &samples,
+            sr,
+            language,
+            events_tx,
+            job_id,
+            Some("mic track"),
+        )?;
         if model.is_none() {
             model = m;
         }
@@ -540,12 +598,21 @@ fn transcribe_two_track(
         let (samples, sr) =
             panops_portable::audio::load_audio_mono16k(system).map_err(IpcError::from)?;
         duration_ms = duration_ms.max((samples.len() as u64 * 1000) / u64::from(sr));
-        let (segs, m) = transcribe_track(heavy, &samples, sr, language)?;
+        let (segs, m) = transcribe_track_labeled(
+            heavy,
+            &samples,
+            sr,
+            language,
+            events_tx,
+            job_id,
+            Some("system track"),
+        )?;
         if model.is_none() {
             model = m;
         }
         system_segments = segs;
         if !no_diarize {
+            emit_job_progress(events_tx, job_id, "diarizing", None, None, None);
             system_turns = heavy.diar.diarize(system).map_err(IpcError::from)?;
         }
     }
@@ -581,6 +648,8 @@ fn transcribe_two_track(
 pub(super) fn run_notes_pipeline(
     services: &crate::server::EngineServices,
     params: &NotesGenerateParams,
+    events_tx: &broadcast::Sender<Event>,
+    job_id: &str,
 ) -> Result<NotesGenerateResult, IpcError> {
     // Warmup gate first. The CLI `serve` path uses
     // `EngineServices::pending(llm)` and fills `heavy` from a
@@ -640,6 +709,7 @@ pub(super) fn run_notes_pipeline(
             path: params.audio.clone(),
         }
     })?;
+    emit_job_progress(events_tx, job_id, "loading", None, None, None);
 
     // Slice 06: resolve `meeting_id`. If the caller passed one, verify
     // it exists (NotFound -> InputNotFound surfaces synchronously).
@@ -705,13 +775,21 @@ pub(super) fn run_notes_pipeline(
             mic_wav.exists().then_some(mic_wav.as_path()),
             params.language.as_deref(),
             params.no_diarize.unwrap_or(false),
+            events_tx,
+            job_id,
         )?
     } else {
         let (samples, sample_rate) =
             panops_portable::audio::load_audio_mono16k(&audio_path).map_err(IpcError::from)?;
         let total_audio_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
-        let (segments, model) =
-            transcribe_track(heavy, &samples, sample_rate, params.language.as_deref())?;
+        let (segments, model) = transcribe_track(
+            heavy,
+            &samples,
+            sample_rate,
+            params.language.as_deref(),
+            events_tx,
+            job_id,
+        )?;
 
         let mut transcript = panops_core::Transcript {
             schema_version: panops_core::Transcript::SCHEMA_VERSION,
@@ -724,6 +802,7 @@ pub(super) fn run_notes_pipeline(
 
         let no_diarize = params.no_diarize.unwrap_or(false);
         if !no_diarize {
+            emit_job_progress(events_tx, job_id, "diarizing", None, None, None);
             let turns = heavy.diar.diarize(&audio_path).map_err(IpcError::from)?;
             transcript.segments = merge_speaker_turns(transcript.segments, &turns);
             transcript.diarized = true;
@@ -807,6 +886,7 @@ pub(super) fn run_notes_pipeline(
         },
     };
 
+    emit_job_progress(events_tx, job_id, "generating_notes", None, None, None);
     let generator = NotesGenerator {
         llm: services.llm.as_ref(),
         dialect,
@@ -814,6 +894,7 @@ pub(super) fn run_notes_pipeline(
     let notes = generator.generate(input).map_err(IpcError::from)?;
     let exporter = heavy.exporter.clone();
 
+    emit_job_progress(events_tx, job_id, "exporting", None, None, None);
     let artifact = exporter.export(&notes, &out_dir).map_err(|e| {
         // Domain-to-wire mapping lives in `panops-protocol` (gated by
         // `domain-conversions`); we still log the full error here so
@@ -1060,7 +1141,9 @@ mod readiness_tests {
             Arc::new(panops_core::conformance::fakes::InMemoryStorage::new());
         let (services, _heavy_lock) =
             crate::server::EngineServices::pending(llm, storage, std::path::PathBuf::from("/tmp"));
-        let err = run_notes_pipeline(&services, &dummy_params()).expect_err("warmup must error");
+        let (events_tx, _) = broadcast::channel(16);
+        let err = run_notes_pipeline(&services, &dummy_params(), &events_tx, "test-job")
+            .expect_err("warmup must error");
         match err {
             IpcError::ProviderUnavailable { message } => {
                 assert!(
@@ -1084,8 +1167,9 @@ mod readiness_tests {
             .set(Err("simulated whisper init failure".to_string()))
             .map_err(|_| ())
             .expect("set OnceLock");
-        let err =
-            run_notes_pipeline(&services, &dummy_params()).expect_err("init failure must surface");
+        let (events_tx, _) = broadcast::channel(16);
+        let err = run_notes_pipeline(&services, &dummy_params(), &events_tx, "test-job")
+            .expect_err("init failure must surface");
         match err {
             IpcError::Internal { message } => {
                 assert!(
@@ -1302,7 +1386,7 @@ mod notes_generate_concurrency_tests {
                     Event::JobDone(_) => done += 1,
                     Event::JobError(e) => panic!("notes job errored: {:?}", e.error),
                     Event::Unknown(v) => panic!("unexpected unknown event: {v}"),
-                    Event::Screenshot(_) | Event::RecordingProgress(_) => {}
+                    Event::Screenshot(_) | Event::RecordingProgress(_) | Event::JobProgress(_) => {}
                 }
             }
         })

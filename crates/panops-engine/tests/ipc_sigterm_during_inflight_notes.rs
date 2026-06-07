@@ -182,7 +182,9 @@ async fn shutdown_during_inflight_notes_drains_without_hanging() {
         match next {
             // Drained terminal events are fine (the issue leaves the
             // drain-vs-cancel race unspecified); keep going until close.
-            Some(Ok(Event::JobDone(_))) | Some(Ok(Event::JobError(_))) => continue,
+            Some(Ok(Event::JobDone(_)))
+            | Some(Ok(Event::JobError(_)))
+            | Some(Ok(Event::JobProgress(_))) => continue,
             // Ignore non-terminal noise (screenshot / progress events
             // that may arrive from concurrent tests) and Unknown.
             Some(Ok(_)) => continue,
