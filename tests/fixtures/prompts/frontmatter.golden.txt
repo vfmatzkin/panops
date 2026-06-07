@@ -12,12 +12,13 @@ Section 1: Quarterly budget review kickoff
   - Budget scoped to next quarter
   - Review sequence: marketing, engineering
 
-Meeting language: en
+CRITICAL: write the title in en. Do NOT translate to English;
+keep the speakers' original language.
 Meeting duration: 60000 ms
 
 Return JSON matching exactly:
 {
-  "title": "string (<=80 chars, descriptive)",
+  "title": "string (<=80 chars, descriptive, in en)",
   "tags": ["lowercase-kebab-case", ...] (max 10)
 }
 

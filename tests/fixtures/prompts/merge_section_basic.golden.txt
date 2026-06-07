@@ -34,7 +34,9 @@ You are emitting strict CommonMark. Allowed constructs:
 NEVER emit HTML tags, callouts, color attributes, or Notion-specific extensions.
 This is for Obsidian / GitHub / vanilla CommonMark viewers.
 
-Output language: en
+CRITICAL: write the ENTIRE output (title, narrative_md, key_points,
+action_items) in en. Do NOT translate to English; keep the
+speakers' original language.
 
 Merge these sub-chunks into a single unified section summary.
 - Combine narratives into flowing prose (no bullet lists).
