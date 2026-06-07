@@ -47,12 +47,16 @@ final class Screenshotter: NSObject, SCStreamOutput, @unchecked Sendable {
     private var lastKeptVector: [Float]?
     private var kept: [String] = []
 
-    init(dir: String, intervalMs: UInt64, threshold: Float) {
+    init(dir: String, intervalMs: UInt64, threshold: Float) throws {
         self.dir = URL(fileURLWithPath: dir)
         self.intervalMs = max(intervalMs, 1)
         self.threshold = threshold
         super.init()
-        try? FileManager.default.createDirectory(at: self.dir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: self.dir, withIntermediateDirectories: true)
+        } catch {
+            throw CaptureFailure.invalidParams("could not create screenshots_dir: \(error.localizedDescription)")
+        }
     }
 
     func markStarted(atMs ms: UInt64) {

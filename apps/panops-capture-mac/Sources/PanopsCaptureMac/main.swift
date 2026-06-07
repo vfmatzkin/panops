@@ -56,6 +56,7 @@ func failureCode(_ error: Error) -> (Int, String) {
         case .noDisplay: return (-32000, "no display available")
         case .permissionDenied(let what):
             return what == "microphone" ? (-32002, "microphone") : (-32001, "screen recording")
+        case .invalidParams(let message): return (-32602, message)
         }
     }
     // ScreenCaptureKit surfaces TCC denial as an SCStream error; treat an
@@ -63,26 +64,30 @@ func failureCode(_ error: Error) -> (Int, String) {
     return (-32000, "capture failed")
 }
 
-// Global shutdown flag (swiftc requires this pattern for signal handlers)
-// Marked nonisolated(unsafe) because the signal handler is a C callback
-// that runs outside Swift's concurrency model
+// Global shutdown flag. Mutated only from normal Swift code: DispatchSourceSignal
+// event handlers run on a dispatch queue, avoiding POSIX signal-handler state
+// mutation and semaphore calls. The handler closes stdin to unblock `readLine`
+// so the loop can observe the flag and run the top-level cleanup path.
 nonisolated(unsafe) var shutdownRequested = false
 
-// Signal handler that sets the flag (runs on main thread via semaphore)
-let shutdownSemaphore = DispatchSemaphore(value: 0)
+func setupSignalHandlers() -> [DispatchSourceSignal] {
+    signal(SIGINT, SIG_IGN)
+    signal(SIGTERM, SIG_IGN)
 
-func setupSignalHandlers() {
-    signal(SIGINT, { _ in
-        shutdownRequested = true
-        shutdownSemaphore.signal()
-    })
-    signal(SIGTERM, { _ in
-        shutdownRequested = true
-        shutdownSemaphore.signal()
-    })
+    let signalQueue = DispatchQueue(label: "ar.tzk.panops.capture.signals")
+    let signals = [SIGINT, SIGTERM]
+    return signals.map { sig in
+        let source = DispatchSource.makeSignalSource(signal: sig, queue: signalQueue)
+        source.setEventHandler {
+            shutdownRequested = true
+            FileHandle.standardInput.closeFile()
+        }
+        source.resume()
+        return source
+    }
 }
 
-setupSignalHandlers()
+let signalSources = setupSignalHandlers()
 
 // Main loop with EOF cleanup - finalizes recordings on exit
 while !shutdownRequested, let line = readLine(strippingNewline: true) {
@@ -119,7 +124,7 @@ while !shutdownRequested, let line = readLine(strippingNewline: true) {
                 systemPath: params.systemAudioPath,
                 micPath: params.micAudioPath
             )
-            let screenshotter = Screenshotter(
+            let screenshotter = try Screenshotter(
                 dir: params.screenshotsDir ?? FileManager.default.temporaryDirectory.path,
                 intervalMs: params.screenshotIntervalMs ?? 500,
                 threshold: params.screenshotThreshold ?? 0.15

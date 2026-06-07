@@ -65,6 +65,13 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         self.plan = plan
         super.init()
 
+        guard !plan.wantsSystem || systemPath != nil else {
+            throw CaptureFailure.invalidParams("missing system_audio_path for requested system audio")
+        }
+        guard !plan.wantsMic || micPath != nil else {
+            throw CaptureFailure.invalidParams("missing mic_audio_path for requested microphone audio")
+        }
+
         // Build writers in a temp array first, then assign only if all succeed
         // This prevents FileHandle leak if one track initialization fails
         var writers: [String: WavWriter] = [:]
@@ -88,18 +95,7 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         do {
             content = try await SCShareableContent.current
         } catch {
-            // SCStreamError with code 1001/1002 is TCC denial (screen/mic)
-            // Use the rawValue to compare against expected TCC codes
-            if let scError = error as? SCStreamError {
-                let errorCode = Int(scError.code.rawValue)
-                switch errorCode {
-                case 1001: throw CaptureFailure.permissionDenied("screen recording")
-                case 1002: throw CaptureFailure.permissionDenied("microphone")
-                default: break
-                }
-            }
-            // Re-throw non-TCC errors
-            throw error
+            throw Self.mapSCStreamError(error)
         }
         guard let display = content.displays.first else {
             throw CaptureFailure.noDisplay
@@ -137,7 +133,11 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         if let s = screenshotter {
             try stream.addStreamOutput(s, type: .screen, sampleHandlerQueue: s.queue)
         }
-        try await stream.startCapture()
+        do {
+            try await stream.startCapture()
+        } catch {
+            throw Self.mapSCStreamError(error)
+        }
 
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
         // Scoped `withLock`: NSLock's bare lock()/unlock() are unavailable from
@@ -177,6 +177,20 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         case .microphone: appendAudio(sampleBuffer, system: false)
         default: break   // `.screen` is handled by the Screenshotter output
         }
+    }
+
+    private static func mapSCStreamError(_ error: Error) -> Error {
+        // SCStreamError with code 1001/1002 is TCC denial (screen/mic).
+        // Use the rawValue to compare against expected TCC codes.
+        if let scError = error as? SCStreamError {
+            let errorCode = Int(scError.code.rawValue)
+            switch errorCode {
+            case 1001: return CaptureFailure.permissionDenied("screen recording")
+            case 1002: return CaptureFailure.permissionDenied("microphone")
+            default: break
+            }
+        }
+        return error
     }
 
     // MARK: - Audio path
@@ -263,6 +277,7 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
 enum CaptureFailure: Error {
     case noDisplay
     case permissionDenied(String)
+    case invalidParams(String)
 }
 
 /// One-shot input box for `AVAudioConverter`'s `@Sendable` input block:
