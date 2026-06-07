@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 // Stateful capture sidecar. Unlike the request/response ASR sidecar, capture
 // is a session: `capture.start` opens an SCStream + screenshotter and acks;
@@ -24,20 +25,26 @@ var current: CaptureSession?
 let decoder = JSONDecoder()
 let encoder = JSONEncoder()
 
-func emit<R: Encodable>(_ response: JsonRpcResponse<R>) {
-    guard let body = try? encoder.encode(response),
-          let line = String(data: body, encoding: .utf8) else {
-        let id = response.id.map(String.init) ?? "null"
-        print("{\"jsonrpc\":\"2.0\",\"id\":\(id),\"error\":{\"code\":-32603,\"message\":\"response encode failed\"}}")
-        fflush(stdout)
-        return
+func emit<R: Encodable>(_ response: JsonRpcResponse<R>) throws {
+    let body = try encoder.encode(response)
+    guard let line = String(data: body, encoding: .utf8) else {
+        _ = response.id.map(String.init) ?? "null"
+        throw JsonRpcError(code: -32603, message: "response encode failed")
     }
     print(line)
     fflush(stdout)
 }
 
 func emitError(id: UInt64?, code: Int, message: String) {
-    emit(JsonRpcResponse<Empty>(id: id, error: JsonRpcError(code: code, message: message)))
+    let response = JsonRpcResponse<Empty>(id: id, error: JsonRpcError(code: code, message: message))
+    let body = try? encoder.encode(response)
+    guard let line = body.flatMap({ String(data: $0, encoding: .utf8) }) else {
+        let idStr = id.map(String.init) ?? "null"
+        FileHandle.standardError.write(Data("emitError encode failed for id=\(idStr)\n".utf8))
+        return
+    }
+    print(line)
+    fflush(stdout)
 }
 
 /// Map a capture failure to an opaque JSON-RPC code. Full detail goes to
@@ -56,9 +63,29 @@ func failureCode(_ error: Error) -> (Int, String) {
     return (-32000, "capture failed")
 }
 
-FileHandle.standardError.write(Data("panops-capture-mac ready\n".utf8))
+// Global shutdown flag (swiftc requires this pattern for signal handlers)
+// Marked nonisolated(unsafe) because the signal handler is a C callback
+// that runs outside Swift's concurrency model
+nonisolated(unsafe) var shutdownRequested = false
 
-while let line = readLine(strippingNewline: true) {
+// Signal handler that sets the flag (runs on main thread via semaphore)
+let shutdownSemaphore = DispatchSemaphore(value: 0)
+
+func setupSignalHandlers() {
+    signal(SIGINT, { _ in
+        shutdownRequested = true
+        shutdownSemaphore.signal()
+    })
+    signal(SIGTERM, { _ in
+        shutdownRequested = true
+        shutdownSemaphore.signal()
+    })
+}
+
+setupSignalHandlers()
+
+// Main loop with EOF cleanup - finalizes recordings on exit
+while !shutdownRequested, let line = readLine(strippingNewline: true) {
     if line.isEmpty { continue }
     let data = Data(line.utf8)
     let request: JsonRpcRequest
@@ -101,10 +128,15 @@ while let line = readLine(strippingNewline: true) {
             current = CaptureSession(
                 meetingId: meetingId, recorder: recorder, screenshotter: screenshotter
             )
-            emit(JsonRpcResponse(
-                id: request.id,
-                result: StartedResult(startedAtMs: recorder.startedAtMs)
-            ))
+            do {
+                try emit(JsonRpcResponse(
+                    id: request.id,
+                    result: StartedResult(startedAtMs: recorder.startedAtMs)
+                ))
+            } catch {
+                FileHandle.standardError.write(Data("emit fail: \(error)\n".utf8))
+                emitError(id: request.id, code: -32603, message: "response send failed")
+            }
         } catch {
             FileHandle.standardError.write(Data("capture.start failed: \(error)\n".utf8))
             let (code, message) = failureCode(error)
@@ -126,7 +158,12 @@ while let line = readLine(strippingNewline: true) {
                 durationMs: durationMs
             )
             current = nil
-            emit(JsonRpcResponse(id: request.id, result: result))
+            do {
+                try emit(JsonRpcResponse(id: request.id, result: result))
+            } catch {
+                FileHandle.standardError.write(Data("emit fail: \(error)\n".utf8))
+                emitError(id: request.id, code: -32603, message: "response send failed")
+            }
         } catch {
             FileHandle.standardError.write(Data("capture.stop failed: \(error)\n".utf8))
             current = nil
@@ -139,4 +176,22 @@ while let line = readLine(strippingNewline: true) {
     }
 }
 
-FileHandle.standardError.write(Data("panops-capture-mac EOF; exiting\n".utf8))
+// Cleanup on EOF or signal - finalize any open recordings
+if let session = current {
+    FileHandle.standardError.write(Data("cleanup: stopping capture for \(session.meetingId)\n".utf8))
+    // Run stop synchronously to finalize WAV files before exit
+    let result = DispatchWorkItem {
+        Task { @MainActor in
+            do {
+                let _ = try await session.recorder.stop()
+                FileHandle.standardError.write(Data("cleanup: stop succeeded\n".utf8))
+            } catch {
+                FileHandle.standardError.write(Data("cleanup stop failed: \(error)\n".utf8))
+            }
+        }
+    }
+    DispatchQueue.main.async(execute: result)
+    // Give it a moment to complete before force-exiting
+    sleep(1)
+}
+FileHandle.standardError.write(Data("panops-capture-mac cleanup complete; exiting\n".utf8))

@@ -54,7 +54,7 @@ struct StoppedResult: Encodable {
     }
 }
 
-struct JsonRpcError: Encodable {
+struct JsonRpcError: Encodable, Error {
     let code: Int
     let message: String
 }
