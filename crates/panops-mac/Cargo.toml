@@ -14,3 +14,10 @@ serde_json = "1"
 tempfile = "3"
 hound = "3.5"
 tracing = "0.1"
+
+# CI test double for the capture control protocol. Located by the adapter
+# conformance test via CARGO_BIN_EXE_fake-capture-sidecar. Compiles to an
+# empty `main` on non-macOS (the body is `cfg(target_os = "macos")`-gated).
+[[bin]]
+name = "fake-capture-sidecar"
+path = "src/bin/fake_capture_sidecar.rs"

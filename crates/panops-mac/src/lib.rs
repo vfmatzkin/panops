@@ -8,7 +8,9 @@
 #![cfg(target_os = "macos")]
 
 mod foundation_llm;
+mod screencapturekit_capture;
 mod whisperkit_asr;
 
 pub use foundation_llm::{FoundationLlm, ProbeResult};
+pub use screencapturekit_capture::ScreenCaptureKitCapture;
 pub use whisperkit_asr::WhisperKitAsr;
