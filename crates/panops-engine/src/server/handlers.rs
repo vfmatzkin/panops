@@ -571,7 +571,7 @@ pub(super) fn run_notes_pipeline(
     //      with lang_hint=None to trigger per-region auto-detect.
     //   5. Stitch transcripts back with absolute-time offsets.
     let (samples, sample_rate) =
-        panops_portable::audio::load_wav_mono16k(&audio_path).map_err(IpcError::from)?;
+        panops_portable::audio::load_audio_mono16k(&audio_path).map_err(IpcError::from)?;
 
     let regions = heavy
         .vad
