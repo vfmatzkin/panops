@@ -547,6 +547,10 @@ pub fn ensure_model(name: &str, dest: &Path) -> Result<PathBuf, AsrError> {
 /// (segmentation_model_path, embedding_model_path). Honors
 /// PANOPS_DIAR_SEG / PANOPS_DIAR_EMB env overrides. Handles the
 /// segmentation tarball download + extraction transparently.
+///
+/// sha256 checks reuse the shared `.verified` cache (skips re-hashing the
+/// embedding model and the segmentation tarball when a valid marker exists),
+/// the same mechanism `ensure_model` / `ensure_vad_model` use.
 pub fn ensure_diar_models() -> Result<(PathBuf, PathBuf), AsrError> {
     let seg = default_diar_seg_path()?;
     let emb = default_diar_emb_path()?;
@@ -572,11 +576,19 @@ pub fn ensure_diar_models() -> Result<(PathBuf, PathBuf), AsrError> {
     // for files that pre-existed (the user-trusted case).
     let verify_emb = !skip_checksum && (!emb_existed_before || !emb_user_override);
     if verify_emb {
-        if let Err(e) = verify_sha256(&emb, emb_info.sha256) {
-            if !emb_existed_before {
-                let _ = fs::remove_file(&emb);
+        // Skip re-hashing a previously verified file (same `.verified` cache
+        // used by ensure_model / ensure_vad_model). A freshly downloaded file
+        // has no marker yet, so it always verifies and then writes one.
+        if verification_cache_valid(&emb, emb_info.sha256) {
+            tracing::debug!(dest = ?emb, "skipping sha256 verify (cached)");
+        } else {
+            if let Err(e) = verify_sha256(&emb, emb_info.sha256) {
+                if !emb_existed_before {
+                    let _ = fs::remove_file(&emb);
+                }
+                return Err(e);
             }
-            return Err(e);
+            mark_verified(&emb, emb_info.sha256);
         }
     }
 
@@ -605,11 +617,18 @@ pub fn ensure_diar_models() -> Result<(PathBuf, PathBuf), AsrError> {
             download(&client, seg_info.url, &tar_path)?;
         }
         if !skip_checksum {
-            if let Err(e) = verify_sha256(&tar_path, seg_info.sha256) {
-                if !tar_existed_before {
-                    let _ = fs::remove_file(&tar_path);
+            // Same `.verified` cache: skip re-hashing the tarball when a valid
+            // marker exists (only re-runs when the extracted model is missing).
+            if verification_cache_valid(&tar_path, seg_info.sha256) {
+                tracing::debug!(dest = ?tar_path, "skipping sha256 verify (cached)");
+            } else {
+                if let Err(e) = verify_sha256(&tar_path, seg_info.sha256) {
+                    if !tar_existed_before {
+                        let _ = fs::remove_file(&tar_path);
+                    }
+                    return Err(e);
                 }
-                return Err(e);
+                mark_verified(&tar_path, seg_info.sha256);
             }
         }
         let f = fs::File::open(&tar_path)
@@ -971,5 +990,53 @@ mod tests {
             mtime_parts(rewritten_mtime).1
         );
         assert!(!verification_cache_valid(&model_path, &original_sha256));
+    }
+
+    #[test]
+    fn mark_verified_writes_marker_that_cache_honors() {
+        // The diar paths (embedding model + segmentation tarball) reuse
+        // `mark_verified` + `verification_cache_valid` to skip re-hashing.
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("3dspeaker_embedding.onnx");
+
+        let content = b"diar embedding model content";
+        fs::write(&model_path, content).unwrap();
+        let sha256 = format!("{:x}", Sha256::digest(content));
+
+        // No marker yet — a freshly downloaded file always verifies.
+        assert!(!verification_cache_valid(&model_path, &sha256));
+
+        // After marking, the sidecar exists and the cache is honored.
+        mark_verified(&model_path, &sha256);
+        assert!(verification_marker_path(&model_path).exists());
+        assert!(verification_cache_valid(&model_path, &sha256));
+    }
+
+    #[test]
+    fn mark_verified_invalidates_after_content_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let tar_path = dir.path().join("segmentation.tar.bz2");
+
+        let original = b"original tarball bytes";
+        fs::write(&tar_path, original).unwrap();
+        let sha256 = format!("{:x}", Sha256::digest(original));
+        mark_verified(&tar_path, &sha256);
+        assert!(verification_cache_valid(&tar_path, &sha256));
+
+        // Replacing the file (size changes) invalidates the cached marker, so
+        // the diar path re-verifies instead of trusting a stale hash.
+        fs::write(&tar_path, b"different, longer tarball bytes").unwrap();
+        assert!(!verification_cache_valid(&tar_path, &sha256));
+    }
+
+    #[test]
+    fn mark_verified_on_missing_file_writes_no_marker() {
+        // Best-effort: a vanished file is logged and skipped, not a hard error.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("gone.onnx");
+
+        mark_verified(&missing, "any-hash");
+
+        assert!(!verification_marker_path(&missing).exists());
     }
 }
