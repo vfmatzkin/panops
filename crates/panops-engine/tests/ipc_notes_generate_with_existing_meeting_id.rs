@@ -87,7 +87,9 @@ async fn notes_generate_with_existing_meeting_id_attaches_note() {
                 Event::Unknown(v) => panic!("expected JobDone, got Unknown: {v}"),
                 // Slice 11 adds Screenshot and RecordingProgress events; ignore them
                 // in this notes pipeline test (they may arrive from concurrent tests).
-                Event::Screenshot(_) | Event::RecordingProgress(_) => continue,
+                Event::Screenshot(_) | Event::RecordingProgress(_) | Event::JobProgress(_) => {
+                    continue;
+                }
             }
         }
     })

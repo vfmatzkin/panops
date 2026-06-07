@@ -23,6 +23,8 @@ pub enum Event {
     JobDone(JobDoneEvent),
     #[serde(rename = "job.error")]
     JobError(JobErrorEvent),
+    #[serde(rename = "job.progress")]
+    JobProgress(JobProgressEvent),
     /// Screenshot captured during recording (slice 11).
     #[serde(rename = "screenshot")]
     Screenshot(ScreenshotEvent),
@@ -51,6 +53,9 @@ impl<'de> Deserialize<'de> for Event {
             "job.error" => serde_json::from_value::<JobErrorEvent>(value)
                 .map(Event::JobError)
                 .map_err(serde::de::Error::custom),
+            "job.progress" => serde_json::from_value::<JobProgressEvent>(value)
+                .map(Event::JobProgress)
+                .map_err(serde::de::Error::custom),
             "screenshot" => serde_json::from_value::<ScreenshotEvent>(value)
                 .map(Event::Screenshot)
                 .map_err(serde::de::Error::custom),
@@ -72,6 +77,18 @@ pub struct JobDoneEvent {
 pub struct JobErrorEvent {
     pub job_id: String,
     pub error: crate::IpcError,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JobProgressEvent {
+    pub job_id: String,
+    pub stage: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// Screenshot captured during a recording session. Emitted via WebSocket
@@ -455,6 +472,23 @@ mod tests {
         let json = serde_json::to_string(&e).unwrap();
         assert!(json.contains(r#""type":"job.error""#));
         assert!(json.contains(r#""kind":"input_not_found""#));
+        let back: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, e);
+    }
+
+    #[test]
+    fn job_progress_event_round_trips_with_type_tag() {
+        let e = Event::JobProgress(JobProgressEvent {
+            job_id: "abc".into(),
+            stage: "transcribing".into(),
+            current: Some(1),
+            total: Some(3),
+            message: Some("mic track".into()),
+        });
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains(r#""type":"job.progress""#));
+        assert!(json.contains(r#""job_id":"abc""#));
+        assert!(json.contains(r#""stage":"transcribing""#));
         let back: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(back, e);
     }

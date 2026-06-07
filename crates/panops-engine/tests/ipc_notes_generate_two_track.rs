@@ -124,7 +124,9 @@ async fn two_track_capture_splits_local_and_remote_speakers() {
                 Event::JobError(e) => panic!("expected JobDone, got JobError: {:?}", e.error),
                 Event::Unknown(v) => panic!("expected JobDone, got Unknown: {v}"),
                 // Other events may arrive from concurrent tests; ignore them.
-                Event::Screenshot(_) | Event::RecordingProgress(_) => continue,
+                Event::Screenshot(_) | Event::RecordingProgress(_) | Event::JobProgress(_) => {
+                    continue;
+                }
             }
         }
     })

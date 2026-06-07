@@ -86,7 +86,9 @@ async fn late_subscriber_does_not_receive_prior_events() {
                 Event::JobDone(d) => panic!("expected JobError, got JobDone: {:?}", d),
                 Event::Unknown(v) => panic!("expected JobError, got Unknown: {v}"),
                 // Ignore screenshot/recording progress from concurrent tests.
-                Event::Screenshot(_) | Event::RecordingProgress(_) => continue,
+                Event::Screenshot(_) | Event::RecordingProgress(_) | Event::JobProgress(_) => {
+                    continue;
+                }
             }
         }
     })
@@ -135,7 +137,12 @@ async fn late_subscriber_does_not_receive_prior_events() {
         Ok(Event::JobDone(d)) => {
             panic!("late subscriber received prior JobDone: {:?}", d);
         }
-        Ok(Event::Screenshot(_) | Event::RecordingProgress(_) | Event::Unknown(_)) => {
+        Ok(
+            Event::Screenshot(_)
+            | Event::RecordingProgress(_)
+            | Event::JobProgress(_)
+            | Event::Unknown(_),
+        ) => {
             // Spurious event from concurrent test — acceptable, but NOT the
             // prior JobError. The test still proves broadcast semantics hold.
         }
