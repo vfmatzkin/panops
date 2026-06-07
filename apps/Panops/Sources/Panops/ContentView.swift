@@ -355,9 +355,9 @@ final class AppViewModel: ObservableObject {
     }
 }
 
-struct ContentView: View {
+struct ContentView<Controller: RecordingController & ObservableObject>: View {
     @ObservedObject var vm: AppViewModel
-    @StateObject private var recordingController = MockRecordingController()
+    @ObservedObject var recordingController: Controller
 
     var body: some View {
         NavigationSplitView {

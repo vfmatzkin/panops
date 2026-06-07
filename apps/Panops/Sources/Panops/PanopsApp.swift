@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct PanopsApp: App {
     @StateObject private var viewModel: AppViewModel
+    @StateObject private var recordingController: LiveRecordingController
     @State private var engine: EngineProcess?
     @State private var startupError: String?
     @State private var willTerminateObserver: NSObjectProtocol?
@@ -17,11 +18,14 @@ struct PanopsApp: App {
             .appendingPathComponent("Library/Application Support/panops/engine.sock")
         let client = IpcClient(socketPath: socketPath)
         self._viewModel = StateObject(wrappedValue: AppViewModel(client: client))
+        self._recordingController = StateObject(
+            wrappedValue: LiveRecordingController(ipcClient: client)
+        )
     }
 
     var body: some Scene {
         WindowGroup("Panops") {
-            ContentView(vm: viewModel)
+            ContentView(vm: viewModel, recordingController: recordingController)
                 .task { await bootstrap() }
                 .alert("Engine failed to start", isPresented: errorPresented) {
                     Button("Quit", role: .destructive) { NSApp.terminate(nil) }

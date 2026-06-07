@@ -594,6 +594,36 @@ actor IpcClient {
         )
     }
 
+    /// `ipc.recording.start` — starts live capture for an existing meeting.
+    /// Returns the engine-issued recording session id used by
+    /// `ipc.recording.stop`.
+    func recordingStart(
+        meetingId: String,
+        audioSources: AudioSourcesWire = .systemAndMic,
+        screenshotIntervalMs: UInt64 = 500,
+        screenshotThreshold: Float = 0.15
+    ) async throws -> RecordingAccepted {
+        let params = RecordingStartParams(
+            meetingId: meetingId,
+            audioSources: audioSources,
+            screenshotIntervalMs: screenshotIntervalMs,
+            screenshotThreshold: screenshotThreshold
+        )
+        return try await sendRequest(
+            method: "ipc.recording.start",
+            params: params
+        )
+    }
+
+    /// `ipc.recording.stop` — stops a live capture session and returns
+    /// captured artifact paths.
+    func recordingStop(recordingId: String) async throws -> RecordingStopped {
+        return try await sendRequest(
+            method: "ipc.recording.stop",
+            params: RecordingStopParams(recordingId: recordingId)
+        )
+    }
+
     // MARK: - Private
 
     /// Core HTTP transport: sends encoded body, reads response, decodes result.
