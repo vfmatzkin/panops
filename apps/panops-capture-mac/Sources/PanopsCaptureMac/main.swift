@@ -178,34 +178,21 @@ while !shutdownRequested, let line = readLine(strippingNewline: true) {
 
 FileHandle.standardError.write(Data("panops-capture-mac EOF; exiting\n".utf8))
 
-// Cleanup on EOF - finalize any open recordings synchronously
-// Since we're exiting anyway, just call stop from main thread (not async)
-func synchronousCleanup() {
-    guard let session = current else { return }
+// Cleanup on EOF: finalize any open recording. Top-level code is MainActor
+// and async (see the `try await` handlers above), so we read `current` and
+// await `stop()` directly — no queue hop, no semaphore. The previous version
+// deadlocked: it blocked the main thread on a semaphore while dispatching the
+// stop onto DispatchQueue.main, which then could never run.
+if let session = current {
     FileHandle.standardError.write(Data("cleanup: stopping capture for \(session.meetingId)\n".utf8))
-
-    // Run stop on the main sync queue to wait for completion
-    let semaphore = DispatchSemaphore(value: 0)
-    let queue = DispatchQueue.main
-
-    queue.async {
-        // Create a new Task with @mainActor context
-        Task { @MainActor in
-            do {
-                let _ = try await session.recorder.stop()
-                FileHandle.standardError.write(Data("cleanup: stop succeeded\n".utf8))
-            } catch {
-                FileHandle.standardError.write(Data("cleanup stop failed: \(error)\n".utf8))
-            }
-            semaphore.signal()
-        }
+    do {
+        _ = try await session.recorder.stop()
+        FileHandle.standardError.write(Data("cleanup: stop succeeded\n".utf8))
+    } catch {
+        FileHandle.standardError.write(Data("cleanup stop failed: \(error)\n".utf8))
     }
-
-    // Wait for the task to complete
-    _ = semaphore.wait(timeout: .distantFuture)
+    current = nil
 }
-
-synchronousCleanup()
 
 FileHandle.standardError.write(Data("panops-capture-mac cleanup complete; exiting\n".utf8))
 
