@@ -99,8 +99,9 @@ pub fn load_audio_mono16k(path: &Path) -> Result<(Vec<f32>, u32), AsrError> {
 /// A 16 kHz-WAV path for consumers that decode the audio *file* themselves
 /// (e.g. the sherpa diarizer, which calls its own reader). Either borrows
 /// the caller's already-16 kHz WAV, or owns a temporary transcoded copy
-/// that is removed on drop.
-pub enum Wav16kPath {
+/// that is removed on drop. Crate-internal: the only consumers are
+/// `load_audio_mono16k` (samples) and the sherpa diarizer (file path).
+pub(crate) enum Wav16kPath {
     /// The caller's path was already a 16 kHz WAV; used as-is.
     Borrowed(PathBuf),
     /// A temp WAV transcoded from non-WAV / wrong-rate input; deleted on drop.
@@ -109,7 +110,7 @@ pub enum Wav16kPath {
 
 impl Wav16kPath {
     /// The on-disk path to a 16 kHz WAV, valid until this guard is dropped.
-    pub fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         match self {
             Wav16kPath::Borrowed(p) | Wav16kPath::Temp(p) => p,
         }
@@ -119,7 +120,11 @@ impl Wav16kPath {
 impl Drop for Wav16kPath {
     fn drop(&mut self) {
         if let Wav16kPath::Temp(p) = self {
-            let _ = std::fs::remove_file(p);
+            // Best-effort cleanup; surface failures (disk-full / read-only)
+            // in logs rather than leaking temp files silently.
+            if let Err(e) = std::fs::remove_file(p.as_path()) {
+                tracing::warn!(error = %e, path = ?p, "failed to remove transcode temp file");
+            }
         }
     }
 }
@@ -131,7 +136,7 @@ impl Drop for Wav16kPath {
 /// deletes any temp file when dropped. Mirrors [`load_audio_mono16k`] for the
 /// path-consuming case (samples vs file). On non-macOS only 16 kHz WAV input
 /// is supported (afconvert is macOS-only).
-pub fn ensure_wav16k(path: &Path) -> Result<Wav16kPath, AsrError> {
+pub(crate) fn ensure_wav16k(path: &Path) -> Result<Wav16kPath, AsrError> {
     if !path.exists() {
         return Err(AsrError::AudioNotFound(path.to_path_buf()));
     }
