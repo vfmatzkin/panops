@@ -709,7 +709,9 @@ mod storage_fake_tests {
 use std::f32::consts::PI;
 use std::path::PathBuf;
 
-use crate::capture::{Capture, CaptureConfig, CaptureError, CaptureResult, CaptureSession};
+use crate::capture::{
+    AudioSources, Capture, CaptureConfig, CaptureError, CaptureResult, CaptureSession,
+};
 
 /// A fake `Capture` adapter for testing. Produces:
 /// - A synthetic 440 Hz sine wave PCM written to a WAV file via `hound`.
@@ -717,7 +719,7 @@ use crate::capture::{Capture, CaptureConfig, CaptureError, CaptureResult, Captur
 ///
 /// Thread-safe: sessions are tracked in an internal `Mutex<HashMap>`.
 pub struct FakeCapture {
-    sessions: Mutex<std::collections::HashMap<String, (PathBuf, u64)>>,
+    sessions: Mutex<std::collections::HashMap<String, (PathBuf, u64, AudioSources)>>,
 }
 
 impl Default for FakeCapture {
@@ -739,7 +741,7 @@ impl Capture for FakeCapture {
         &self,
         meeting_id: &str,
         meeting_dir: &std::path::Path,
-        _config: &CaptureConfig,
+        config: &CaptureConfig,
     ) -> Result<CaptureSession, CaptureError> {
         let started_at_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -753,7 +755,11 @@ impl Capture for FakeCapture {
             .map_err(|_| CaptureError::Capture("mutex poisoned".into()))?;
         sessions.insert(
             meeting_id.to_string(),
-            (meeting_dir.to_path_buf(), started_at_ms),
+            (
+                meeting_dir.to_path_buf(),
+                started_at_ms,
+                config.audio_sources,
+            ),
         );
 
         Ok(CaptureSession {
@@ -767,7 +773,7 @@ impl Capture for FakeCapture {
             .sessions
             .lock()
             .map_err(|_| CaptureError::Capture("mutex poisoned".into()))?;
-        let (meeting_dir, started_at_ms) = sessions
+        let (meeting_dir, started_at_ms, audio_sources) = sessions
             .remove(&session.meeting_id)
             .ok_or_else(|| CaptureError::SessionNotFound(session.meeting_id.clone()))?;
 
@@ -778,31 +784,24 @@ impl Capture for FakeCapture {
             .as_millis() as u64;
         let duration_ms = ended_at_ms.saturating_sub(started_at_ms).max(1000);
 
-        // Generate synthetic 440 Hz sine wave WAV at 16 kHz mono.
-        let audio_path = meeting_dir.join("audio.wav");
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: 16_000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
+        // Write one synthetic 16 kHz mono WAV per requested source — never a
+        // mixed track (slice 11, Decision §2). Each field is `Some` only when
+        // its source was requested via `audio_sources`.
+        let want_system = !matches!(audio_sources, AudioSources::MicOnly);
+        let want_mic = !matches!(audio_sources, AudioSources::SystemOnly);
+        let system_audio_path = if want_system {
+            Some(write_sine_wav(
+                &meeting_dir.join("system.wav"),
+                duration_ms,
+            )?)
+        } else {
+            None
         };
-        let mut writer = hound::WavWriter::create(&audio_path, spec)
-            .map_err(|e| CaptureError::Capture(e.to_string()))?;
-
-        // Compute number of samples for the duration.
-        let num_samples = (16_000 * duration_ms / 1000) as usize;
-        let freq = 440.0;
-        for i in 0..num_samples {
-            let t = i as f32 / 16_000.0_f32;
-            let sample = (2.0_f32 * PI * freq * t).sin();
-            let amplitude = (sample * 0.3 * i16::MAX as f32) as i16; // 30% volume
-            writer
-                .write_sample(amplitude)
-                .map_err(|e| CaptureError::Capture(e.to_string()))?;
-        }
-        writer
-            .finalize()
-            .map_err(|e| CaptureError::Capture(e.to_string()))?;
+        let mic_audio_path = if want_mic {
+            Some(write_sine_wav(&meeting_dir.join("mic.wav"), duration_ms)?)
+        } else {
+            None
+        };
 
         // Write self-contained synthetic screenshot placeholders. The fake
         // must NOT depend on tests/fixtures being an ancestor of meeting_dir
@@ -825,7 +824,8 @@ impl Capture for FakeCapture {
         }
 
         Ok(CaptureResult {
-            audio_path,
+            system_audio_path,
+            mic_audio_path,
             screenshot_paths,
             duration_ms,
         })
@@ -834,6 +834,33 @@ impl Capture for FakeCapture {
     fn is_fake(&self) -> bool {
         true
     }
+}
+
+/// Write a synthetic 440 Hz sine WAV (16 kHz mono) of `duration_ms` and
+/// return its path. Used by `FakeCapture` for each requested audio track.
+fn write_sine_wav(path: &Path, duration_ms: u64) -> Result<PathBuf, CaptureError> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer =
+        hound::WavWriter::create(path, spec).map_err(|e| CaptureError::Capture(e.to_string()))?;
+    let num_samples = (16_000 * duration_ms / 1000) as usize;
+    let freq = 440.0_f32;
+    for i in 0..num_samples {
+        let t = i as f32 / 16_000.0_f32;
+        let sample = (2.0_f32 * PI * freq * t).sin();
+        let amplitude = (sample * 0.3 * i16::MAX as f32) as i16;
+        writer
+            .write_sample(amplitude)
+            .map_err(|e| CaptureError::Capture(e.to_string()))?;
+    }
+    writer
+        .finalize()
+        .map_err(|e| CaptureError::Capture(e.to_string()))?;
+    Ok(path.to_path_buf())
 }
 
 #[cfg(test)]

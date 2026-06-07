@@ -54,10 +54,18 @@ pub struct CaptureSession {
 }
 
 /// Result returned by `stop_capture`. Contains paths to captured artifacts.
+///
+/// Audio is delivered as two separate tracks (slice 11, Decision §2):
+/// `system_audio_path` holds remote participants (SCStream `.audio`) and
+/// `mic_audio_path` holds the local user (SCStream `.microphone`). Each is
+/// `Some` exactly when its source was requested via `AudioSources`; at least
+/// one is always `Some` for a successful capture. Both are 16 kHz mono WAVs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureResult {
-    /// Path to the captured audio WAV file.
-    pub audio_path: PathBuf,
+    /// System-audio (remote) track; `None` when not requested (`MicOnly`).
+    pub system_audio_path: Option<PathBuf>,
+    /// Microphone (local) track; `None` when not requested (`SystemOnly`).
+    pub mic_audio_path: Option<PathBuf>,
     /// Paths to captured screenshot JPEG files.
     pub screenshot_paths: Vec<PathBuf>,
     /// Duration of the recording in milliseconds.
@@ -141,15 +149,39 @@ mod tests {
     #[test]
     fn capture_result_paths() {
         let r = CaptureResult {
-            audio_path: PathBuf::from("/tmp/audio.wav"),
+            system_audio_path: Some(PathBuf::from("/tmp/system.wav")),
+            mic_audio_path: Some(PathBuf::from("/tmp/mic.wav")),
             screenshot_paths: vec![
                 PathBuf::from("/tmp/screenshots/001.jpg"),
                 PathBuf::from("/tmp/screenshots/002.jpg"),
             ],
             duration_ms: 60_000,
         };
-        assert_eq!(r.audio_path.display().to_string(), "/tmp/audio.wav");
+        assert_eq!(
+            r.system_audio_path
+                .as_deref()
+                .unwrap()
+                .display()
+                .to_string(),
+            "/tmp/system.wav"
+        );
+        assert_eq!(
+            r.mic_audio_path.as_deref().unwrap().display().to_string(),
+            "/tmp/mic.wav"
+        );
         assert_eq!(r.screenshot_paths.len(), 2);
+    }
+
+    #[test]
+    fn capture_result_allows_single_track() {
+        let r = CaptureResult {
+            system_audio_path: Some(PathBuf::from("/tmp/system.wav")),
+            mic_audio_path: None,
+            screenshot_paths: vec![],
+            duration_ms: 1_000,
+        };
+        assert!(r.system_audio_path.is_some());
+        assert!(r.mic_audio_path.is_none());
     }
 
     #[test]

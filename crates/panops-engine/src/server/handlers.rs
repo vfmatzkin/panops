@@ -404,7 +404,14 @@ impl IpcServer for IpcImpl {
             let result = capture.stop_capture(&session).map_err(IpcError::from)?;
 
             Ok(RecordingStopped {
-                audio_path: result.audio_path.display().to_string(),
+                system_audio_path: result
+                    .system_audio_path
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
+                mic_audio_path: result
+                    .mic_audio_path
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
                 screenshot_paths: result
                     .screenshot_paths
                     .iter()
