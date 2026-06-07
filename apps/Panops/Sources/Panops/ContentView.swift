@@ -16,12 +16,14 @@ final class AppViewModel: ObservableObject {
     @Published var activeRecordingMeetingId: String?
     @Published var meetings: [MeetingSummary] = []
     @Published var selectedMeeting: Meeting?
+    @Published var notesProgress: JobProgressEvent?
 
     private let client: IpcClient
     private var pollingTask: Task<Void, Never>?
     private let eventStream: EventStreamActor
     private var wsSubscriptionTask: Task<Void, Never>?
-    nonisolated private static let pollingDeadlineSeconds: TimeInterval = 5 * 60
+    private var notesLastProgressAt: Date?
+    nonisolated private static let progressSilenceTimeoutSeconds: TimeInterval = 5 * 60
     nonisolated private static let wsSetupTimeoutNanoseconds: UInt64 = 3_000_000_000
 
     private enum WsSetupResult: Sendable {
@@ -75,6 +77,9 @@ final class AppViewModel: ObservableObject {
     func generate() async {
         guard case .idle(let audio?) = state else { return }
         do {
+            notesProgress = nil
+            notesLastProgressAt = Date()
+
             // Ensure WebSocket subscription is active (lazy)
             // If WebSocket fails, fall back to filesystem polling (fix #5)
             let wsOk = await ensureWsSubscription()
@@ -97,12 +102,15 @@ final class AppViewModel: ObservableObject {
                                 notesPath: result.primaryFile
                             )
                         case .jobError(_, let payload):
+                            self?.recordNotesProgressHeartbeat()
                             self?.finishGenerationError(
                                 meetingId: meetingId,
                                 jobId: jobId,
                                 kind: payload.kind,
                                 message: payload.message
                             )
+                        case .jobProgress(let progress):
+                            self?.updateNotesProgress(progress)
                         case .unknown:
                             break
                         }
@@ -113,9 +121,13 @@ final class AppViewModel: ObservableObject {
             // cancelled by the terminal WebSocket callback when one arrives.
             startPolling(meetingId: meetingId, jobId: wsOk ? jobId : nil)
         } catch let IpcClientError.rpcError(_, message) {
+            notesProgress = nil
+            notesLastProgressAt = nil
             state = .error(kind: "rpc_error", message: message)
         } catch {
             Self.logFullError("notes.generate", error)
+            notesProgress = nil
+            notesLastProgressAt = nil
             state = .error(kind: "internal", message: "Could not reach the engine.")
         }
     }
@@ -301,29 +313,50 @@ final class AppViewModel: ObservableObject {
 
     private func finishGenerationDone(meetingId: String, jobId: String? = nil, notesPath: String) {
         guard case .working(let currentMeetingId, _) = state, currentMeetingId == meetingId else { return }
+        recordNotesProgressHeartbeat()
         pollingTask?.cancel()
         pollingTask = nil
         if let jobId {
             Task { await eventStream.unregisterCallback(jobId: jobId) }
         }
+        notesProgress = nil
+        notesLastProgressAt = nil
         state = .done(notesPath: notesPath)
         Task { await refreshMeetings() }
     }
 
     private func finishGenerationError(meetingId: String, jobId: String? = nil, kind: String, message: String) {
         guard case .working(let currentMeetingId, _) = state, currentMeetingId == meetingId else { return }
+        recordNotesProgressHeartbeat()
         pollingTask?.cancel()
         pollingTask = nil
         if let jobId {
             Task { await eventStream.unregisterCallback(jobId: jobId) }
         }
+        notesProgress = nil
+        notesLastProgressAt = nil
         state = .error(kind: kind, message: message)
+    }
+
+    private func updateNotesProgress(_ progress: JobProgressEvent) {
+        notesProgress = progress
+        recordNotesProgressHeartbeat()
+    }
+
+    private func recordNotesProgressHeartbeat() {
+        notesLastProgressAt = Date()
+    }
+
+    private func notesProgressStalledMessage() -> String {
+        let minutes = Int(Self.progressSilenceTimeoutSeconds / 60)
+        return "notes.generate stalled: no progress for \(minutes) minutes"
     }
 
     private func startPolling(meetingId: String, jobId: String? = nil) {
         // Fallback polling if WebSocket isn't available, and safety-net polling
         // if WebSocket disconnects before a terminal event is delivered.
         pollingTask?.cancel()
+        notesLastProgressAt = Date()
         let client = self.client
         pollingTask = Task.detached { [weak self] in
             let mainActorRef = self
@@ -343,8 +376,7 @@ final class AppViewModel: ObservableObject {
                 return
             }
             let notesPath = (meeting.dirPath as NSString).appendingPathComponent("notes.md")
-            let deadline = Date().addingTimeInterval(Self.pollingDeadlineSeconds)
-            while !Task.isCancelled, Date() < deadline {
+            while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if FileManager.default.fileExists(atPath: notesPath) {
                     await MainActor.run {
@@ -356,14 +388,22 @@ final class AppViewModel: ObservableObject {
                     }
                     return
                 }
-            }
-            await MainActor.run {
-                mainActorRef?.finishGenerationError(
-                    meetingId: meetingId,
-                    jobId: jobId,
-                    kind: "timeout",
-                    message: "notes.generate did not complete within \(Int(Self.pollingDeadlineSeconds / 60)) minutes"
-                )
+                let hasStalled = await MainActor.run { () -> Bool in
+                    let lastProgressAt = mainActorRef?.notesLastProgressAt ?? Date()
+                    return Date().timeIntervalSince(lastProgressAt) >= Self.progressSilenceTimeoutSeconds
+                }
+                if hasStalled {
+                    await MainActor.run {
+                        mainActorRef?.finishGenerationError(
+                            meetingId: meetingId,
+                            jobId: jobId,
+                            kind: "timeout",
+                            message: mainActorRef?.notesProgressStalledMessage()
+                                ?? "notes.generate stalled: no progress"
+                        )
+                    }
+                    return
+                }
             }
         }
     }
@@ -386,6 +426,8 @@ final class AppViewModel: ObservableObject {
         selectedMeetingId = nil
         activeRecordingMeetingId = nil
         selectedMeeting = nil
+        notesProgress = nil
+        notesLastProgressAt = nil
         state = .idle(audio: nil)
     }
 
@@ -561,15 +603,52 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
 
     @ViewBuilder
     private func workingView(audioName: String) -> some View {
+        let progress = vm.notesProgress
         VStack(spacing: 16) {
-            HStack(spacing: 12) {
-                ProgressView()
-                Text("Generating notes…").font(.headline)
+            VStack(spacing: 8) {
+                if let progress,
+                   let current = progress.current,
+                   let total = progress.total,
+                   total > 0 {
+                    ProgressView(value: max(0.0, min(Double(current) / Double(total), 1.0)))
+                        .frame(maxWidth: 280)
+                } else {
+                    ProgressView()
+                }
+
+                Text(notesProgressLabel(progress)).font(.headline)
+                if let message = progress?.message, !message.isEmpty {
+                    Text(message)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
             Text(audioName).foregroundStyle(.secondary)
             Spacer()
         }
         .padding()
+    }
+
+    private func notesProgressLabel(_ progress: JobProgressEvent?) -> String {
+        guard let progress else { return "Generating notes…" }
+
+        switch progress.stage {
+        case "loading":
+            return "Loading audio…"
+        case "transcribing":
+            if let current = progress.current, let total = progress.total {
+                return "Transcribing \(current)/\(total)…"
+            }
+            return "Transcribing…"
+        case "diarizing":
+            return "Identifying speakers…"
+        case "generating_notes":
+            return "Writing notes…"
+        case "exporting":
+            return "Saving…"
+        default:
+            return "Generating notes…"
+        }
     }
 
     @ViewBuilder

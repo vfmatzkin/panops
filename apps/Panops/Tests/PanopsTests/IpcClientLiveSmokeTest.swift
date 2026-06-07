@@ -130,7 +130,7 @@ struct IpcClientLiveSmokeTest {
                         return .done(jobId: jId, meetingId: result.meetingId)
                     case .jobError(let jId, let payload) where jId == jobId:
                         return .error(jobId: jId, kind: payload.kind, message: payload.message)
-                    case .jobDone, .jobError, .unknown:
+                    case .jobDone, .jobError, .jobProgress, .unknown:
                         break
                     }
                 }

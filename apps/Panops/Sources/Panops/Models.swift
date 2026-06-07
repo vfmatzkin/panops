@@ -65,10 +65,28 @@ struct JobErrorPayload: Decodable {
     }
 }
 
+/// `job.progress` event payload.
+struct JobProgressEvent: Decodable, Equatable {
+    let jobId: String
+    let stage: String
+    let current: Int?
+    let total: Int?
+    let message: String?
+
+    enum CodingKeys: String, CodingKey {
+        case jobId = "job_id"
+        case stage
+        case current
+        case total
+        case message
+    }
+}
+
 /// Tagged union over the event types we consume.
 enum IpcEvent: Decodable {
     case jobDone(jobId: String, result: JobDoneResult)
     case jobError(jobId: String, error: JobErrorPayload)
+    case jobProgress(JobProgressEvent)
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -90,6 +108,8 @@ enum IpcEvent: Decodable {
             let jobId = try c.decode(String.self, forKey: .jobId)
             let error = try c.decode(JobErrorPayload.self, forKey: .error)
             self = .jobError(jobId: jobId, error: error)
+        case "job.progress":
+            self = .jobProgress(try JobProgressEvent(from: decoder))
         default:
             self = .unknown(type: type)
         }
