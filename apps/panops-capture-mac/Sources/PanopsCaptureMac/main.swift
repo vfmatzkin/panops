@@ -176,11 +176,20 @@ while !shutdownRequested, let line = readLine(strippingNewline: true) {
     }
 }
 
-// Cleanup on EOF or signal - finalize any open recordings
-if let session = current {
+FileHandle.standardError.write(Data("panops-capture-mac EOF; exiting\n".utf8))
+
+// Cleanup on EOF - finalize any open recordings synchronously
+// Since we're exiting anyway, just call stop from main thread (not async)
+func synchronousCleanup() {
+    guard let session = current else { return }
     FileHandle.standardError.write(Data("cleanup: stopping capture for \(session.meetingId)\n".utf8))
-    // Run stop synchronously to finalize WAV files before exit
-    let result = DispatchWorkItem {
+
+    // Run stop on the main sync queue to wait for completion
+    let semaphore = DispatchSemaphore(value: 0)
+    let queue = DispatchQueue.main
+
+    queue.async {
+        // Create a new Task with @mainActor context
         Task { @MainActor in
             do {
                 let _ = try await session.recorder.stop()
@@ -188,10 +197,15 @@ if let session = current {
             } catch {
                 FileHandle.standardError.write(Data("cleanup stop failed: \(error)\n".utf8))
             }
+            semaphore.signal()
         }
     }
-    DispatchQueue.main.async(execute: result)
-    // Give it a moment to complete before force-exiting
-    sleep(1)
+
+    // Wait for the task to complete
+    _ = semaphore.wait(timeout: .distantFuture)
 }
+
+synchronousCleanup()
+
 FileHandle.standardError.write(Data("panops-capture-mac cleanup complete; exiting\n".utf8))
+
