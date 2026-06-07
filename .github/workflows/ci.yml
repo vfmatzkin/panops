@@ -83,6 +83,11 @@ jobs:
         run: |
           swift build --configuration release
           swift test
+      - name: Build LLM sidecar
+        working-directory: apps/panops-llm-mac
+        run: |
+          swift build --configuration release
+          swift test
 
   # Heavy: real Whisper + sherpa-onnx diarization + Silero VAD inference.
   # Runs on `push: main`, the weekly cron, and manual workflow_dispatch.
@@ -194,9 +199,15 @@ jobs:
       - name: Build WhisperKit sidecar
         working-directory: apps/panops-asr-mac
         run: swift build --configuration release
-      - name: Export sidecar path
+      - name: Export ASR sidecar path
         run: |
           echo "PANOPS_ASR_SIDECAR_BIN=${{ github.workspace }}/apps/panops-asr-mac/.build/release/panops-asr-mac" >> "$GITHUB_ENV"
+      - name: Build LLM sidecar
+        working-directory: apps/panops-llm-mac
+        run: swift build --configuration release
+      - name: Export LLM sidecar path
+        run: |
+          echo "PANOPS_LLM_SIDECAR_BIN=${{ github.workspace }}/apps/panops-llm-mac/.build/release/panops-llm-mac" >> "$GITHUB_ENV"
       - name: Run heavy tests
         run: cargo nextest run --workspace --locked
       - name: Doc tests
