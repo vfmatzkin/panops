@@ -1,9 +1,10 @@
 //! Resolve which `AsrProvider` impl the engine uses at startup.
 //!
-//! On macOS, if `PANOPS_ASR_SIDECAR_BIN` is set AND that path is an
-//! executable file, use the WhisperKit sidecar (`panops_mac::WhisperKitAsr`)
-//! for CoreML+Metal-accelerated transcription. Otherwise fall back to
-//! `WhisperRsAsr` (whisper.cpp CPU/BLAS).
+//! On macOS, resolve the WhisperKit sidecar (`panops_mac::WhisperKitAsr`) for
+//! CoreML+Metal-accelerated transcription in this order: (1) `PANOPS_ASR_SIDECAR_BIN`
+//! if set to an executable file (dev/CI gate); else (2) a `panops-asr-mac`
+//! binary sitting next to the engine in a packaged `.app` bundle (production,
+//! slice 16). If neither resolves, fall back to `WhisperRsAsr` (whisper.cpp CPU/BLAS).
 //!
 //! Slice 10 design:
 //! `docs/superpowers/specs/2026-05-12-slice-10-whisperkit-asr-sidecar-design.md`.
