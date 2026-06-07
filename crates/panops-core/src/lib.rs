@@ -25,7 +25,7 @@ pub use meeting_store::{
     MeetingStore, MeetingStoreError, ScreenshotDraft, ScreenshotRow, SegmentDraft, SegmentRow,
     SpeakerDraft, SpeakerRow,
 };
-pub use merge::merge_speaker_turns;
+pub use merge::{merge_speaker_turns, merge_two_track};
 pub use notes::dialect::MarkdownDialect;
 pub use notes::error::NotesError;
 pub use notes::pipeline::NotesGenerator;
