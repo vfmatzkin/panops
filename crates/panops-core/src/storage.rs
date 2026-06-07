@@ -64,7 +64,10 @@ pub struct MeetingSummary {
     pub id: String,
     pub title: String,
     pub started_at: String,
+    pub ended_at: Option<String>,
     pub duration_ms: u64,
+    pub language: String,
+    pub has_notes: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use jsonrpsee::core::client::{ClientT, Subscription, SubscriptionClientT};
 use jsonrpsee::rpc_params;
+use panops_core::notes::ir::StructuredNotes;
 use panops_engine::server::run_serve_in_process;
 use panops_protocol::{Event, JobAccepted};
 use tempfile::tempdir;
@@ -117,6 +118,23 @@ async fn notes_generate_without_meeting_id_auto_creates_one() {
         primary_file.starts_with(data_dir.join("meetings").join(&meeting_id)),
         "primary_file {primary_file:?} should live under canonical meeting dir"
     );
+    let notes_json_path = primary_file
+        .parent()
+        .expect("notes primary file should have parent dir")
+        .join("notes.json");
+    assert!(
+        notes_json_path.exists(),
+        "structured notes sidecar should exist: {notes_json_path:?}"
+    );
+    let notes_json = std::fs::read_to_string(&notes_json_path).expect("read notes.json");
+    let structured: StructuredNotes =
+        serde_json::from_str(&notes_json).expect("notes.json round-trips to StructuredNotes");
+    assert_eq!(structured.schema_version, StructuredNotes::SCHEMA_VERSION);
+    assert_eq!(
+        structured.frontmatter.title,
+        "Quarterly budget review kickoff"
+    );
+    assert!(!structured.sections.is_empty());
 
     let _ = shutdown_tx.send(true);
     let _ = server.await;

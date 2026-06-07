@@ -514,7 +514,10 @@ impl Storage for InMemoryStorage {
                 id: m.id.clone(),
                 title: m.title.clone(),
                 started_at: m.started_at.clone(),
+                ended_at: m.ended_at.clone(),
                 duration_ms: m.duration_ms.unwrap_or(0),
+                language: m.language.clone(),
+                has_notes: inner.notes.values().any(|n| n.meeting_id == m.id),
             })
             .collect();
         rows.sort_by(|a, b| b.started_at.cmp(&a.started_at));

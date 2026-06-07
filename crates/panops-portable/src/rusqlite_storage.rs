@@ -295,7 +295,14 @@ impl Storage for RusqliteStorage {
         let conn = lock(&self.conn)?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, started_at, COALESCE(duration_ms, 0)
+                "SELECT
+                     id,
+                     title,
+                     started_at,
+                     ended_at,
+                     COALESCE(duration_ms, 0),
+                     language,
+                     EXISTS (SELECT 1 FROM note WHERE note.meeting_id = meeting.id)
                  FROM meeting ORDER BY started_at DESC",
             )
             .map_err(StorageError::sql)?;
@@ -305,9 +312,12 @@ impl Storage for RusqliteStorage {
                     id: r.get(0)?,
                     title: r.get(1)?,
                     started_at: r.get(2)?,
+                    ended_at: r.get(3)?,
                     // Clamp negative durations to 0 (same defense as
                     // `map_meeting_row` — the DB file is not trusted).
-                    duration_ms: r.get::<_, i64>(3)?.max(0) as u64,
+                    duration_ms: r.get::<_, i64>(4)?.max(0) as u64,
+                    language: r.get(5)?,
+                    has_notes: r.get(6)?,
                 })
             })
             .map_err(StorageError::sql)?;

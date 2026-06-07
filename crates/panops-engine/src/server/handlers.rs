@@ -11,7 +11,7 @@
 //! RPC boundary" section.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use jsonrpsee::PendingSubscriptionSink;
@@ -22,6 +22,7 @@ use panops_core::capture::CaptureSession;
 use panops_core::merge::merge_speaker_turns;
 use panops_core::notes::dialect::MarkdownDialect;
 use panops_core::notes::input::{MeetingMetadata, NotesInput};
+use panops_core::notes::ir::StructuredNotes;
 use panops_core::notes::pipeline::NotesGenerator;
 use panops_core::notes::raw_transcript::write_raw_transcript;
 use panops_protocol::{
@@ -216,18 +217,7 @@ impl IpcServer for IpcImpl {
             })?
             .map_err(|e| ipc_error_to_obj(e.into()))?;
 
-        // Convert from `panops_core::storage::MeetingSummary` to the
-        // wire-shape `panops_protocol::MeetingSummary`. Same field set
-        // today; the explicit map keeps us free to diverge later.
-        Ok(rows
-            .into_iter()
-            .map(|s| MeetingSummary {
-                id: s.id,
-                title: s.title,
-                started_at: s.started_at,
-                duration_ms: s.duration_ms,
-            })
-            .collect())
+        Ok(rows.into_iter().map(MeetingSummary::from).collect())
     }
 
     async fn meeting_start(&self, params: MeetingConfig) -> Result<String, ErrorObjectOwned> {
@@ -904,6 +894,10 @@ pub(super) fn run_notes_pipeline(
         IpcError::from(e)
     })?;
 
+    if let Err(e) = write_structured_notes_json(&notes, &out_dir) {
+        tracing::warn!(error = %e, "notes.generate: write notes.json failed; continuing");
+    }
+
     // Persist the note row. Genuinely best-effort: the markdown file
     // is already on disk at `artifact.primary_file`. If the registry
     // insert fails (e.g. FK violation because the meeting was
@@ -956,6 +950,18 @@ pub(super) fn run_notes_pipeline(
         meeting_id: resolved_meeting_id,
         transcript_txt_path,
     })
+}
+
+/// Additive structured-notes sidecar (`notes.json`): exposes the
+/// `StructuredNotes` IR to richer clients while `notes.md` remains the
+/// primary artifact.
+fn write_structured_notes_json(notes: &StructuredNotes, out_dir: &Path) -> Result<PathBuf, String> {
+    let json =
+        serde_json::to_string_pretty(notes).map_err(|e| format!("serialize notes.json: {e}"))?;
+    let notes_json_path = out_dir.join("notes.json");
+    std::fs::write(&notes_json_path, json)
+        .map_err(|e| format!("write {notes_json_path:?}: {e}"))?;
+    Ok(notes_json_path)
 }
 
 /// Map `IpcError` to a JSON-RPC server error (-32000) carrying the
@@ -1183,6 +1189,61 @@ mod readiness_tests {
             }
             other => panic!("expected Internal, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod notes_json_sidecar_tests {
+    use super::*;
+    use chrono::{NaiveDate, TimeZone, Utc};
+    use panops_core::notes::ir::{NotesFrontmatter, NotesSection};
+
+    fn sample_notes() -> StructuredNotes {
+        StructuredNotes {
+            schema_version: StructuredNotes::SCHEMA_VERSION,
+            frontmatter: NotesFrontmatter {
+                title: "Sidebar IR test".into(),
+                date: NaiveDate::from_ymd_opt(2026, 6, 7).unwrap(),
+                started_at: chrono::FixedOffset::east_opt(0)
+                    .unwrap()
+                    .with_ymd_and_hms(2026, 6, 7, 12, 0, 0)
+                    .unwrap(),
+                duration_ms: 60_000,
+                speakers: vec!["speaker_0".into()],
+                languages: vec!["en".into()],
+                tags: vec!["test".into()],
+                template: "default".into(),
+                dialect: MarkdownDialect::Basic,
+                panops_version: "0.1.0".into(),
+                source_audio: None,
+            },
+            sections: vec![NotesSection {
+                index: 1,
+                title: "Summary".into(),
+                time_range_ms: (0, 60_000),
+                narrative_md: "The generated sidecar round-trips.".into(),
+                key_points: vec!["Structured notes are preserved".into()],
+                action_items: Vec::new(),
+                screenshots: Vec::new(),
+            }],
+            language: "en".into(),
+            generated_at: Utc.with_ymd_and_hms(2026, 6, 7, 12, 1, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn write_structured_notes_json_creates_round_trippable_sidecar() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let notes = sample_notes();
+
+        let path = write_structured_notes_json(&notes, dir.path()).expect("write notes.json");
+
+        assert_eq!(path, dir.path().join("notes.json"));
+        assert!(path.exists(), "notes.json should exist at {path:?}");
+        let body = std::fs::read_to_string(&path).expect("read notes.json");
+        let back: StructuredNotes =
+            serde_json::from_str(&body).expect("notes.json parses as StructuredNotes");
+        assert_eq!(back, notes);
     }
 }
 

@@ -130,6 +130,21 @@ fn list_returns_started_at_desc<S: Storage>(adapter: &S) {
     let _ = adapter.create_meeting(draft("a", "A", "2026-05-01T10:00:00+00:00"));
     let _ = adapter.create_meeting(draft("b", "B", "2026-05-03T10:00:00+00:00"));
     let _ = adapter.create_meeting(draft("c", "C", "2026-05-02T10:00:00+00:00"));
+    adapter
+        .update_meeting_language("b", "es")
+        .expect("language update should succeed");
+    adapter
+        .update_meeting_ended("b", "2026-05-03T10:30:00+00:00", 1_800_000)
+        .expect("ended update should succeed");
+    adapter
+        .create_note(NoteDraft {
+            id: "n_list_b".into(),
+            meeting_id: "b".into(),
+            dialect: "basic".into(),
+            content_md: "# listed".into(),
+            primary_path: "/tmp/b/notes.md".into(),
+        })
+        .expect("note create should succeed");
 
     let rows = adapter.list_meetings().expect("list should succeed");
     let our: Vec<&str> = rows
@@ -142,6 +157,20 @@ fn list_returns_started_at_desc<S: Storage>(adapter: &S) {
         vec!["b", "c", "a"],
         "list_meetings should return started_at DESC; got {our:?}"
     );
+
+    let b = rows.iter().find(|r| r.id == "b").expect("b summary");
+    assert_eq!(b.title, "B");
+    assert_eq!(b.started_at, "2026-05-03T10:00:00+00:00");
+    assert_eq!(b.ended_at.as_deref(), Some("2026-05-03T10:30:00+00:00"));
+    assert_eq!(b.duration_ms, 1_800_000);
+    assert_eq!(b.language, "es");
+    assert!(b.has_notes, "summary should flag existing note row");
+
+    let a = rows.iter().find(|r| r.id == "a").expect("a summary");
+    assert!(a.ended_at.is_none());
+    assert_eq!(a.duration_ms, 0);
+    assert_eq!(a.language, "auto");
+    assert!(!a.has_notes, "summary should be false without note rows");
 }
 
 fn update_meeting_ended_writes_duration<S: Storage>(adapter: &S) {
