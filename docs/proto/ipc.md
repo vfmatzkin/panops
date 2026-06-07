@@ -42,6 +42,7 @@ The `ipc.` namespace + `.` separator are wired via jsonrpsee `#[rpc(server, name
 | `primary_file` | string | Absolute path to the rendered `notes.md`. |
 | `assets` | `[string]` | Additional written assets (screenshots, etc.). |
 | `meeting_id` | string | **Slice 06.** Always set; either the value passed in `params.meeting_id` or the id of the auto-created meeting. |
+| `transcript_txt_path` | string | Absolute path to the raw `transcript.txt` sidecar. Omitted when the best-effort sidecar write failed. |
 
 ### `Meeting` and `MeetingSummary`
 

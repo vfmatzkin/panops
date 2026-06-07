@@ -773,13 +773,19 @@ pub(super) fn run_notes_pipeline(
     // grep-friendly view of the raw Whisper segments alongside notes.md, so the
     // LLM synthesis can be compared against the source. Best-effort, mirroring
     // the transcript.json write above — a failure logs but never aborts.
-    match write_raw_transcript(&transcript.segments, &out_dir) {
-        Ok(p) => tracing::info!(file = ?p, "notes.generate: wrote raw transcript sidecar"),
-        Err(e) => tracing::warn!(
-            error = %e,
-            "notes.generate: write transcript.txt failed; continuing"
-        ),
-    }
+    let transcript_txt_path = match write_raw_transcript(&transcript.segments, &out_dir) {
+        Ok(p) => {
+            tracing::info!(file = ?p, "notes.generate: wrote raw transcript sidecar");
+            Some(p.display().to_string())
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "notes.generate: write transcript.txt failed; continuing"
+            );
+            None
+        }
+    };
 
     let dialect = match params.dialect {
         Some(NotesDialect::Basic) => MarkdownDialect::Basic,
@@ -867,6 +873,7 @@ pub(super) fn run_notes_pipeline(
             .map(|p| p.display().to_string())
             .collect(),
         meeting_id: resolved_meeting_id,
+        transcript_txt_path,
     })
 }
 
