@@ -67,7 +67,9 @@ pub fn build_section_narrative_prompt(
          {transcript}\n\
          Markdown dialect for `narrative_md`:\n\
          {cheat}\n\
-         Output language: {language}\n\n\
+         CRITICAL: write the ENTIRE output (title, narrative_md, key_points,\n\
+         action_items) in {language}. Do NOT translate to English; keep the\n\
+         speakers' original language.\n\n\
          Speaker attribution rule (STRICT): never attribute a quote to a speaker_id\n\
          that does not appear in the transcript. When in doubt, use passive voice.\n\n\
          Non-duplication rule (STRICT): `narrative_md`, `key_points`, and `action_items`\n\
@@ -111,10 +113,11 @@ pub fn build_frontmatter_prompt(
     let user = format!(
         "Section summaries:\n\n\
          {s}\n\
-         Meeting language: {language}\n\
+         CRITICAL: write the title in {language}. Do NOT translate to English;\n\
+         keep the speakers' original language.\n\
          Meeting duration: {duration_ms} ms\n\n\
          Return JSON matching exactly:\n\
-         {{\n  \"title\": \"string (<=80 chars, descriptive)\",\n  \"tags\": [\"lowercase-kebab-case\", ...] (max 10)\n}}"
+         {{\n  \"title\": \"string (<=80 chars, descriptive, in {language})\",\n  \"tags\": [\"lowercase-kebab-case\", ...] (max 10)\n}}"
     );
     LlmRequest {
         system: Some(FRONTMATTER_SYSTEM.to_string()),
@@ -286,7 +289,9 @@ pub fn build_merge_section_prompt(
          {summaries_text}\n\
          Markdown dialect for `narrative_md`:\n\
          {cheat}\n\
-         Output language: {language}\n\n\
+         CRITICAL: write the ENTIRE output (title, narrative_md, key_points,\n\
+         action_items) in {language}. Do NOT translate to English; keep the\n\
+         speakers' original language.\n\n\
          Merge these sub-chunks into a single unified section summary.\n\
          - Combine narratives into flowing prose (no bullet lists).\n\
          - Deduplicate key_points: keep distinct facts, merge overlapping.\n\
@@ -395,6 +400,38 @@ mod tests {
         assert!(p.user.contains("must NOT restate the same facts"));
         assert!(p.user.contains("NO bullet lists"));
         assert!(p.user.contains("NOT in narrative_md"));
+    }
+
+    #[test]
+    fn section_narrative_prompt_pins_output_language() {
+        let segs = vec![seg(0, 5000, Some(0), "hola")];
+        let p = build_section_narrative_prompt(&segs, MarkdownDialect::NotionEnhanced, "es");
+        assert!(p.user.contains("CRITICAL: write the ENTIRE output"));
+        assert!(p.user.contains("in es."));
+        assert!(p.user.contains("Do NOT translate to English"));
+    }
+
+    #[test]
+    fn frontmatter_prompt_pins_output_language() {
+        let summaries = vec![SectionSummary {
+            title: "Intro".into(),
+            key_points: vec![],
+        }];
+        let p = build_frontmatter_prompt(&summaries, "es", 60_000);
+        assert!(p.user.contains("CRITICAL: write the title in es."));
+        assert!(p.user.contains("Do NOT translate to English"));
+        assert!(p.user.contains("descriptive, in es)"));
+    }
+
+    #[test]
+    fn merge_section_prompt_pins_output_language() {
+        let summaries = vec![serde_json::json!({
+            "title": "Parte 1", "narrative_md": "primera parte", "key_points": [], "action_items": []
+        })];
+        let p = build_merge_section_prompt(&summaries, MarkdownDialect::Basic, "es");
+        assert!(p.user.contains("CRITICAL: write the ENTIRE output"));
+        assert!(p.user.contains("in es."));
+        assert!(p.user.contains("Do NOT translate to English"));
     }
 
     #[test]
