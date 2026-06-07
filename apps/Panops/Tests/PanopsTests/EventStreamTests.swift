@@ -62,6 +62,47 @@ struct EventStreamTests {
         #expect(jobId == "error-job-456")
     }
 
+    @Test("EventStreamActor_routes_jobProgress_then_terminal_done_to_callback")
+    func routesJobProgressThenTerminalDoneToCallback() async throws {
+        let actor = EventStreamActor()
+        let state = TestState<[IpcEvent]>()
+        state.value = []
+
+        await actor.registerCallback(jobId: "progress-job-789", handler: { event in
+            state.value?.append(event)
+        })
+
+        await actor.testRoute(event: .jobProgress(JobProgressEvent(
+            jobId: "progress-job-789",
+            stage: "transcribing",
+            current: 1,
+            total: 3,
+            message: "mic track"
+        )))
+        await actor.testRoute(event: .jobDone(
+            jobId: "progress-job-789",
+            result: JobDoneResult(
+                primaryFile: "/tmp/notes.md",
+                assets: [],
+                meetingId: "meeting-1"
+            )
+        ))
+
+        #expect(state.value?.count == 2, "progress should not unregister terminal callback")
+        guard case .jobProgress(let progress) = state.value?.first else {
+            Issue.record("expected first event to be .jobProgress, got \(String(describing: state.value?.first))")
+            return
+        }
+        #expect(progress.jobId == "progress-job-789")
+        #expect(progress.stage == "transcribing")
+
+        guard case .jobDone(let jobId, _) = state.value?.last else {
+            Issue.record("expected last event to be .jobDone, got \(String(describing: state.value?.last))")
+            return
+        }
+        #expect(jobId == "progress-job-789")
+    }
+
     @Test("EventStreamActor_ignores_unknown_events")
     func ignoresUnknownEvents() async throws {
         let actor = EventStreamActor()

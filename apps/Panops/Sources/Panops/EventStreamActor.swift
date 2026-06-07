@@ -1,7 +1,7 @@
 import Foundation
 
 /// Central dispatcher for IPC events from WebSocket subscription.
-/// Routes `job.done`/`job.error` to registered callbacks keyed by `job_id`.
+/// Routes `job.progress`/`job.done`/`job.error` to registered callbacks keyed by `job_id`.
 /// Buffers recent events to prevent lost-wakeup race: if a job.done/job.error
 /// arrives before registerCallback is called, the event is replayed on register.
 /// Slice 12 implementation per spec D7.
@@ -11,7 +11,7 @@ actor EventStreamActor {
     /// the spawned Task outlives `stop()` and keeps routing until the stream ends.
     private var loopTask: Task<Void, Never>?
     private var callbacks: [String: @Sendable (IpcEvent) -> Void] = [:]
-    /// Buffer of recent job.done/job.error events, stored in insertion order.
+    /// Buffer of recent terminal job.done/job.error events, stored in insertion order.
     /// Bounded to prevent unbounded growth if callbacks are never registered.
     private var eventBuffer: [(jobId: String, event: IpcEvent)] = []
     private static let maxBufferSize = 64
@@ -30,8 +30,9 @@ actor EventStreamActor {
     }
 
     /// Register a callback for a specific job_id.
-    /// The callback is invoked when `job.done` or `job.error` arrives for that job.
-    /// If the event was already received (lost-wakeup race), replay immediately.
+    /// The callback is invoked when `job.progress`, `job.done`, or `job.error`
+    /// arrives for that job. If a terminal event was already received
+    /// (lost-wakeup race), replay immediately.
     func registerCallback(jobId: String, handler: @escaping @Sendable (IpcEvent) -> Void) {
         // Replay buffered event if already received (lost-wakeup race fix)
         if let idx = eventBuffer.firstIndex(where: { $0.jobId == jobId }) {
@@ -59,7 +60,8 @@ actor EventStreamActor {
     }
 
     /// Route an event to its registered callback (if any).
-    /// If no callback is registered yet, buffer the event for replay.
+    /// If no callback is registered yet, buffer terminal events for replay.
+    /// Progress events are non-terminal and are only delivered live.
     private func route(event: IpcEvent) {
         switch event {
         case .jobDone(let jobId, _), .jobError(let jobId, _):
@@ -75,6 +77,8 @@ actor EventStreamActor {
                 }
                 eventBuffer.append((jobId: jobId, event: event))
             }
+        case .jobProgress(let progress):
+            callbacks[progress.jobId]?(event)
         case .unknown:
             // Ignore unknown events
             break

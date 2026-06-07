@@ -63,6 +63,82 @@ struct IpcClientCodecTests {
         #expect(result.meetingId == "m1")
     }
 
+    @Test("job.progress event decodes")
+    func jobProgressEvent_decodes() throws {
+        let json = #"""
+        {
+          "type": "job.progress",
+          "job_id": "abc-123",
+          "stage": "transcribing",
+          "current": 1,
+          "total": 3,
+          "message": "mic track"
+        }
+        """#
+        let event = try decoder.decode(IpcEvent.self, from: json.data(using: .utf8)!)
+        guard case .jobProgress(let progress) = event else {
+            Issue.record("expected .jobProgress, got \(event)")
+            return
+        }
+        #expect(progress == JobProgressEvent(
+            jobId: "abc-123",
+            stage: "transcribing",
+            current: 1,
+            total: 3,
+            message: "mic track"
+        ))
+    }
+
+    @Test("job.progress event decodes with optional fields omitted")
+    func jobProgressEvent_decodesWithOptionalFieldsOmitted() throws {
+        let json = #"""
+        {
+          "type": "job.progress",
+          "job_id": "abc-123",
+          "stage": "generating_notes"
+        }
+        """#
+        let event = try decoder.decode(IpcEvent.self, from: json.data(using: .utf8)!)
+        guard case .jobProgress(let progress) = event else {
+            Issue.record("expected .jobProgress, got \(event)")
+            return
+        }
+        #expect(progress.jobId == "abc-123")
+        #expect(progress.stage == "generating_notes")
+        #expect(progress.current == nil)
+        #expect(progress.total == nil)
+        #expect(progress.message == nil)
+    }
+
+    @Test("job.progress notification decodes")
+    func jobProgressNotification_decodes() throws {
+        let json = #"""
+        {
+          "jsonrpc": "2.0",
+          "method": "events",
+          "params": {
+            "subscription": 1,
+            "result": {
+              "type": "job.progress",
+              "job_id": "j",
+              "stage": "exporting",
+              "message": "notes.md"
+            }
+          }
+        }
+        """#
+        let notification = try decoder.decode(JsonRpcNotification.self, from: json.data(using: .utf8)!)
+        guard case .jobProgress(let progress) = notification.params.result else {
+            Issue.record("expected .jobProgress, got \(notification.params.result)")
+            return
+        }
+        #expect(progress.jobId == "j")
+        #expect(progress.stage == "exporting")
+        #expect(progress.current == nil)
+        #expect(progress.total == nil)
+        #expect(progress.message == "notes.md")
+    }
+
     @Test("job.error event decodes all kinds", arguments: [
         "input_not_found", "invalid_input", "provider_unavailable", "internal", "cancelled"
     ])
