@@ -3,15 +3,15 @@ import SwiftUI
 /// Container view for a selected meeting's content.
 /// Reads transcript.json, notes.md, and enumerates screenshots/ directory.
 /// Missing files → placeholders (expected when Slice 11 data doesn't exist).
-struct MeetingDetailView: View {
+struct MeetingDetailView<Controller: RecordingController & ObservableObject>: View {
     let meeting: Meeting
-    let recordingController: MockRecordingController?
+    let recordingController: Controller?
     @State private var transcript: Transcript?
     @State private var notesContent: String?
     @State private var screenshots: [URL]?
     @State private var isLoading = true
 
-    init(meeting: Meeting, recordingController: MockRecordingController? = nil) {
+    init(meeting: Meeting, recordingController: Controller? = nil) {
         self.meeting = meeting
         self.recordingController = recordingController
     }
@@ -23,7 +23,7 @@ struct MeetingDetailView: View {
             Divider()
             // Record bar (if controller provided)
             if let controller = recordingController {
-                RecordBar(controller: controller)
+                RecordBar(controller: controller, meetingId: meeting.id)
                 Divider()
             }
             // Content sections

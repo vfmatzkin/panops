@@ -1,15 +1,17 @@
 import Foundation
+import Combine
 
-/// Protocol for recording control. Slice 12 provides MockRecordingController.
-/// Slice 11 will provide LiveRecordingController that calls IPC methods.
+/// Protocol for recording control.
+@MainActor
 protocol RecordingController: AnyObject {
     var isRecording: Bool { get }
     func start(meetingId: String) async throws
     func stop() async throws -> URL?  // Returns audio file path
 }
 
-/// Mock implementation for Slice 12. Placeholder until Slice 11.
-/// Toggles isRecording but shows alert indicating recording not implemented.
+/// Mock implementation for previews/tests.
+/// Toggles isRecording and can still surface the old placeholder alert.
+@MainActor
 final class MockRecordingController: RecordingController, ObservableObject {
     @Published private(set) var isRecording = false
     @Published var showPlaceholderAlert = false

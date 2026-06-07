@@ -96,6 +96,61 @@ enum IpcEvent: Decodable {
     }
 }
 
+/// Audio source selection for `ipc.recording.start`.
+enum AudioSourcesWire: String, Codable {
+    case systemOnly = "system_only"
+    case micOnly = "mic_only"
+    case systemAndMic = "system_and_mic"
+}
+
+/// Outgoing params for `ipc.recording.start`.
+struct RecordingStartParams: Encodable {
+    let meetingId: String
+    let audioSources: AudioSourcesWire
+    let screenshotIntervalMs: UInt64
+    let screenshotThreshold: Float
+
+    enum CodingKeys: String, CodingKey {
+        case meetingId = "meeting_id"
+        case audioSources = "audio_sources"
+        case screenshotIntervalMs = "screenshot_interval_ms"
+        case screenshotThreshold = "screenshot_threshold"
+    }
+}
+
+/// Synchronous response from `ipc.recording.start`.
+struct RecordingAccepted: Decodable {
+    let recordingId: String
+
+    enum CodingKeys: String, CodingKey {
+        case recordingId = "recording_id"
+    }
+}
+
+/// Outgoing params for `ipc.recording.stop`.
+struct RecordingStopParams: Encodable {
+    let recordingId: String
+
+    enum CodingKeys: String, CodingKey {
+        case recordingId = "recording_id"
+    }
+}
+
+/// Synchronous response from `ipc.recording.stop`.
+struct RecordingStopped: Decodable {
+    let systemAudioPath: String?
+    let micAudioPath: String?
+    let screenshotPaths: [String]
+    let durationMs: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case systemAudioPath = "system_audio_path"
+        case micAudioPath = "mic_audio_path"
+        case screenshotPaths = "screenshot_paths"
+        case durationMs = "duration_ms"
+    }
+}
+
 /// Minimal JSON-RPC 2.0 envelopes (request and response).
 /// jsonrpsee uses positional params: each method takes exactly one
 /// argument, wrapped in a 1-element array on the wire.
