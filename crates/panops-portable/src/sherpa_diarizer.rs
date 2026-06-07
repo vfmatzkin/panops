@@ -31,8 +31,15 @@ impl Diarizer for SherpaDiarizer {
             return Err(DiarError::AudioNotFound(audio_path.to_path_buf()));
         }
 
+        // Accept any CoreAudio-decodable container (WAV, MOV, MP4, M4A, …):
+        // a ready 16 kHz WAV is read directly, anything else is transcoded to
+        // a temp 16 kHz WAV first — same media path the ASR pipeline uses, so
+        // diarization works on the same inputs transcription does.
+        let wav = crate::audio::ensure_wav16k(audio_path)
+            .map_err(|e| DiarError::InvalidAudio(e.to_string()))?;
+
         let (samples, sample_rate) = read_audio_file(
-            audio_path
+            wav.path()
                 .to_str()
                 .ok_or_else(|| DiarError::InvalidAudio("non-UTF-8 audio path".to_string()))?,
         )
