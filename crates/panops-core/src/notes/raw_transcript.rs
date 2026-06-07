@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use crate::Segment;
 
 /// Filename of the raw-transcript sidecar, written next to `notes.md`.
-pub const RAW_TRANSCRIPT_FILENAME: &str = "transcript.txt";
+pub(crate) const RAW_TRANSCRIPT_FILENAME: &str = "transcript.txt";
 
 /// Render raw ASR segments to a grep-friendly transcript body.
 ///
