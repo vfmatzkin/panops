@@ -47,8 +47,16 @@ The `ipc.` namespace + `.` separator are wired via jsonrpsee `#[rpc(server, name
 ### `Meeting` and `MeetingSummary`
 
 ```json
-// MeetingSummary (slice 05; shape unchanged)
-{ "id": "...", "title": "...", "started_at": "RFC3339", "duration_ms": 0 }
+// MeetingSummary (slice 05; +language/ended_at/has_notes for the workspace UI)
+{
+  "id": "...",
+  "title": "...",
+  "started_at": "RFC3339",
+  "duration_ms": 0,
+  "ended_at": null | "RFC3339",
+  "language": "en" | "es" | "auto" | ...,
+  "has_notes": false | true
+}
 
 // Meeting (slice 06; new)
 {
@@ -62,7 +70,7 @@ The `ipc.` namespace + `.` separator are wired via jsonrpsee `#[rpc(server, name
 }
 ```
 
-In-progress meetings render `ended_at: null` and `duration_ms: null` on `Meeting`; `MeetingSummary.duration_ms` defaults to `0` to keep the slice-05 wire shape stable.
+In-progress meetings render `ended_at: null` and `duration_ms: null` on `Meeting`; `MeetingSummary.duration_ms` defaults to `0`. The `language`/`ended_at`/`has_notes` additions to `MeetingSummary` (for the date-grouped sidebar + status pills) are **additive** — existing decoders ignore unknown fields, so the slice-05 four-field consumers keep working.
 
 ### `MeetingConfig` (input to `meeting.start`)
 

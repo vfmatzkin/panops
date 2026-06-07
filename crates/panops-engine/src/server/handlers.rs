@@ -959,8 +959,13 @@ fn write_structured_notes_json(notes: &StructuredNotes, out_dir: &Path) -> Resul
     let json =
         serde_json::to_string_pretty(notes).map_err(|e| format!("serialize notes.json: {e}"))?;
     let notes_json_path = out_dir.join("notes.json");
-    std::fs::write(&notes_json_path, json)
-        .map_err(|e| format!("write {notes_json_path:?}: {e}"))?;
+    // Write to a temp sibling then rename, so a crash mid-write can't leave a
+    // partial notes.json a consumer fails to parse (notes.md is the primary
+    // artifact; same .partial+rename pattern as model downloads in model.rs).
+    let partial = out_dir.join("notes.json.partial");
+    std::fs::write(&partial, json).map_err(|e| format!("write {partial:?}: {e}"))?;
+    std::fs::rename(&partial, &notes_json_path)
+        .map_err(|e| format!("rename {partial:?} -> {notes_json_path:?}: {e}"))?;
     Ok(notes_json_path)
 }
 
