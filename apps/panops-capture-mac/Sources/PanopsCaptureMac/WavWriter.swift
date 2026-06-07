@@ -12,7 +12,15 @@ final class WavWriter {
         self.url = url
         FileManager.default.createFile(atPath: url.path, contents: Data())
         self.handle = try FileHandle(forWritingTo: url)
-        try handle.write(contentsOf: Self.header(dataBytes: 0))
+        // If the header write fails, `init` throws and `deinit` never runs
+        // (Swift skips deinit for a partially-initialized object), so close the
+        // handle here to avoid leaking the file descriptor.
+        do {
+            try handle.write(contentsOf: Self.header(dataBytes: 0))
+        } catch {
+            try? handle.close()
+            throw error
+        }
     }
 
     func append(_ samples: [Int16]) throws {
