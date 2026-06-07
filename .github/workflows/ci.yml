@@ -194,13 +194,27 @@ jobs:
       - name: Build WhisperKit sidecar
         working-directory: apps/panops-asr-mac
         run: swift build --configuration release
-      - name: Export sidecar path
+      - name: Export ASR sidecar path
         run: |
           echo "PANOPS_ASR_SIDECAR_BIN=${{ github.workspace }}/apps/panops-asr-mac/.build/release/panops-asr-mac" >> "$GITHUB_ENV"
       - name: Run heavy tests
         run: cargo nextest run --workspace --locked
       - name: Doc tests
         run: cargo test --workspace --locked --doc
+
+  # panops-llm-mac declares swift-tools-version 6.2 (FoundationModels), so it
+  # needs the macos-26 image (Xcode 26.x / Swift 6.2). The default macos-latest
+  # runner ships Swift 6.1 and cannot build it. Build-only (no swift test):
+  # FoundationModels runtime availability in CI is unverified — mirrors the
+  # asr-mac build-only pattern in heavy-test.
+  build-llm-sidecar:
+    name: build-llm-sidecar (macos-26)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build LLM sidecar
+        working-directory: apps/panops-llm-mac
+        run: swift build --configuration release
 
   deny:
     name: cargo-deny
