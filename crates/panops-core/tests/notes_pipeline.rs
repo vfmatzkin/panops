@@ -581,6 +581,39 @@ fn long_section_merge_text_response_falls_back_without_aborting() {
 }
 
 #[test]
+fn all_sections_failing_llm_returns_error_not_empty_notes() {
+    use panops_core::conformance::fakes::FailingLlm;
+    use panops_core::notes::error::NotesError;
+
+    // Provider unavailable at runtime (e.g. FoundationModels with Apple
+    // Intelligence off): every `complete` call errors. With no successful
+    // section narrative, the notes file would be all `## N. Section` stubs.
+    // The pipeline must surface a clear error instead of reporting success.
+    let segments = vec![
+        seg(0, 60_000, 0, "hello and welcome to the meeting"),
+        seg(60_000, 120_000, 1, "let us discuss the quarterly roadmap"),
+    ];
+    let llm = FailingLlm::provider("Model is unavailable. Apple Intelligence is not enabled.");
+    let generator = NotesGenerator {
+        llm: &llm,
+        dialect: MarkdownDialect::Basic,
+    };
+
+    let err = generator
+        .generate(notes_input(segments, 120_000))
+        .expect_err("provider down on every call must not yield empty-section notes as success");
+
+    assert!(
+        matches!(err, NotesError::LlmUnavailable { .. }),
+        "expected LlmUnavailable, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("unavailable"),
+        "error message should be actionable; got: {err}"
+    );
+}
+
+#[test]
 fn verifier_replaces_section_narrative_when_llm_invents_speaker_id() {
     // Transcript only has speaker_0. LLM hallucinates speaker_99.
     // Verifier must catch the violation and the pipeline falls back to a

@@ -12,6 +12,7 @@ use panops_core::exporter::NotesExporter;
 use panops_core::llm::LlmProvider;
 use panops_core::merge::merge_speaker_turns;
 use panops_core::notes::dialect::MarkdownDialect;
+use panops_core::notes::error::NotesError;
 use panops_core::notes::input::{MeetingMetadata, NotesInput};
 use panops_core::notes::ir::Screenshot;
 use panops_core::notes::pipeline::NotesGenerator;
@@ -308,7 +309,27 @@ fn run_notes(
         llm: llm.as_ref(),
         dialect,
     };
-    let notes = generator.generate(input).map_err(|e| (2, e.to_string()))?;
+    // A fully-unavailable LLM (every section call failed — e.g. the
+    // FoundationModels sidecar with Apple Intelligence off) would otherwise
+    // write an all-stub notes file as success (#183). Surface a clear,
+    // provider-aware, actionable error with a non-zero exit instead.
+    let notes = generator.generate(input).map_err(|e| match &e {
+        NotesError::LlmUnavailable { .. } => {
+            let hint = match llm_provider.as_str() {
+                "foundation" => {
+                    "FoundationModels: enable Apple Intelligence in System Settings, \
+                     or use --llm-provider ollama"
+                }
+                "ollama" => {
+                    "Ollama: ensure `ollama serve` is running and the model is pulled, \
+                     or use --llm-provider auto"
+                }
+                _ => "check the LLM provider is reachable, or use --llm-provider ollama",
+            };
+            (2, format!("notes LLM unavailable ({hint})"))
+        }
+        _ => (2, e.to_string()),
+    })?;
 
     let art = MarkdownExporter
         .export(&notes, &out_dir)

@@ -164,6 +164,16 @@ mod from_domain {
                     message: "empty transcript".into(),
                 },
                 NotesError::Llm(le) => le.into(),
+                NotesError::LlmUnavailable {
+                    failed,
+                    total,
+                    last_error,
+                } => IpcError::ProviderUnavailable {
+                    message: format!(
+                        "notes LLM unavailable: all {failed} of {total} section generation \
+                         calls failed ({last_error})"
+                    ),
+                },
                 NotesError::SchemaMismatch { stage, detail } => IpcError::Internal {
                     message: format!("schema mismatch in stage {stage}: {detail}"),
                 },
@@ -410,6 +420,18 @@ mod from_domain_tests {
     fn notes_llm_recurses_into_llm_mapping() {
         let e: IpcError = NotesError::Llm(LlmError::Cancelled).into();
         assert_eq!(e, IpcError::Cancelled);
+    }
+
+    #[test]
+    fn notes_llm_unavailable_maps_to_provider_unavailable() {
+        let e: IpcError = NotesError::LlmUnavailable {
+            failed: 3,
+            total: 3,
+            last_error: "Model is unavailable".into(),
+        }
+        .into();
+        assert!(matches!(e, IpcError::ProviderUnavailable { ref message }
+                if message.contains("unavailable") && message.contains("3 of 3")));
     }
 
     #[test]
