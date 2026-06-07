@@ -4,6 +4,7 @@ import SwiftUI
 struct RecordBar<Controller: RecordingController & ObservableObject>: View {
     @ObservedObject var controller: Controller
     let meetingId: String
+    let onRecordingStarted: (String) async throws -> Void
     let onRecordingStopped: (URL?) async throws -> Void
     @State private var isBusy = false
     @State private var errorMessage: String?
@@ -12,10 +13,12 @@ struct RecordBar<Controller: RecordingController & ObservableObject>: View {
     init(
         controller: Controller,
         meetingId: String,
+        onRecordingStarted: @escaping (String) async throws -> Void = { _ in },
         onRecordingStopped: @escaping (URL?) async throws -> Void = { _ in }
     ) {
         self._controller = ObservedObject(wrappedValue: controller)
         self.meetingId = meetingId
+        self.onRecordingStarted = onRecordingStarted
         self.onRecordingStopped = onRecordingStopped
     }
 
@@ -78,19 +81,16 @@ struct RecordBar<Controller: RecordingController & ObservableObject>: View {
 
         do {
             if wasRecording {
+                // The controller already validates returned artifact paths
+                // (LiveRecordingController.validateArtifactPaths), so no
+                // duplicate PathValidator check here.
                 let audioURL = try await controller.stop()
-                if let audioURL {
-                    guard PathValidator.isUnderPanopsDataDir(audioURL.path) else {
-                        throw RecordingPathValidationError.unsafePath(audioURL.path)
-                    }
-                    lastAudioURL = audioURL
-                } else {
-                    lastAudioURL = nil
-                }
+                lastAudioURL = audioURL
                 try await onRecordingStopped(audioURL)
             } else {
                 lastAudioURL = nil
                 try await controller.start(meetingId: meetingId)
+                try await onRecordingStarted(meetingId)
             }
         } catch {
             AppViewModel.logFullError(wasRecording ? "recording.stop" : "recording.start", error)

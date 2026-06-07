@@ -6,6 +6,7 @@ import SwiftUI
 struct MeetingDetailView<Controller: RecordingController & ObservableObject>: View {
     let meeting: Meeting
     let recordingController: Controller?
+    let onRecordingStarted: (String) async throws -> Void
     let onRecordingStopped: (URL?) async throws -> Void
     @State private var transcript: Transcript?
     @State private var notesContent: String?
@@ -15,10 +16,12 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
     init(
         meeting: Meeting,
         recordingController: Controller? = nil,
+        onRecordingStarted: @escaping (String) async throws -> Void = { _ in },
         onRecordingStopped: @escaping (URL?) async throws -> Void = { _ in }
     ) {
         self.meeting = meeting
         self.recordingController = recordingController
+        self.onRecordingStarted = onRecordingStarted
         self.onRecordingStopped = onRecordingStopped
     }
 
@@ -32,6 +35,7 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
                 RecordBar(
                     controller: controller,
                     meetingId: meeting.id,
+                    onRecordingStarted: onRecordingStarted,
                     onRecordingStopped: onRecordingStopped
                 )
                 Divider()

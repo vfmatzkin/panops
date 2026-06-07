@@ -52,12 +52,16 @@ final class LiveRecordingController: RecordingController, ObservableObject {
 
     func stop() async throws -> URL? {
         guard let activeRecordingId = recordingId else { return nil }
-        defer {
-            recordingId = nil
-            isRecording = false
-        }
 
+        // Clear state only AFTER the engine confirms the stop. If
+        // `recordingStop` throws (transient/engine error), keep recordingId +
+        // isRecording so the user can retry Stop instead of orphaning the
+        // engine-side recording (the error is surfaced by the caller). On
+        // success we clear even if path validation then fails — the recording
+        // did stop.
         let stopped = try await ipcClient.recordingStop(recordingId: activeRecordingId)
+        recordingId = nil
+        isRecording = false
         try validateArtifactPaths(stopped)
 
         let audioPath = stopped.systemAudioPath ?? stopped.micAudioPath
