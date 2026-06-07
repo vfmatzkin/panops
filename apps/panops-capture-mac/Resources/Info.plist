@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>ar.tzk.panops.capture-mac</string>
+    <key>CFBundleName</key>
+    <string>panops-capture-mac</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1</string>
+    <!-- Usage strings shown in the TCC prompts. The capture sidecar (not the
+         .app) is the process that opens the mic and ScreenCaptureKit, so the
+         grant binds to THIS binary's code signature. Keep panops local-only. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>panops records your microphone to transcribe your side of the meeting. Audio stays on this Mac.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>panops captures meeting audio and periodic screenshots to build notes. Everything stays on this Mac.</string>
+</dict>
+</plist>
