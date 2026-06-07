@@ -18,22 +18,23 @@ pub struct ModelInfo {
 pub const MODELS: &[ModelInfo] = &[
     ModelInfo {
         name: "ggml-tiny-q5_1",
-        // upstream: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin
-        url: "https://github.com/vfmatzkin/panops/releases/download/models-v1/ggml-tiny-q5_1.bin",
+        // Mirroring to a project-hosted models-v1 release is deferred to #8
+        // (needs the release created + an upstream runtime fallback first).
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin",
         sha256: "818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7",
         approx_size_mb: 31,
     },
     ModelInfo {
         name: "ggml-base-q5_1",
-        // upstream: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin
-        url: "https://github.com/vfmatzkin/panops/releases/download/models-v1/ggml-base-q5_1.bin",
+        // Mirror to models-v1 release deferred — #8.
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin",
         sha256: "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898",
         approx_size_mb: 57,
     },
     ModelInfo {
         name: "ggml-large-v3-turbo-q5_0",
-        // upstream: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin
-        url: "https://github.com/vfmatzkin/panops/releases/download/models-v1/ggml-large-v3-turbo-q5_0.bin",
+        // Mirror to models-v1 release deferred — #8.
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
         sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
         approx_size_mb: 547,
     },
@@ -42,15 +43,15 @@ pub const MODELS: &[ModelInfo] = &[
 pub const DIAR_MODELS: &[ModelInfo] = &[
     ModelInfo {
         name: "sherpa-onnx-pyannote-segmentation-3-0",
-        // upstream: https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
-        url: "https://github.com/vfmatzkin/panops/releases/download/models-v1/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+        // Mirror to models-v1 release deferred — #8.
+        url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
         sha256: "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488",
         approx_size_mb: 7,
     },
     ModelInfo {
         name: "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k",
-        // upstream: https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
-        url: "https://github.com/vfmatzkin/panops/releases/download/models-v1/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx",
+        // Mirror to models-v1 release deferred — #8.
+        url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx",
         sha256: "1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b",
         approx_size_mb: 38,
     },
@@ -58,8 +59,8 @@ pub const DIAR_MODELS: &[ModelInfo] = &[
 
 pub const VAD_MODELS: &[ModelInfo] = &[ModelInfo {
     name: "ggml-silero-v6.2.0",
-    // upstream: https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin
-    url: "https://github.com/vfmatzkin/panops/releases/download/models-v1/ggml-silero-v6.2.0.bin",
+    // Mirror to models-v1 release deferred — #8.
+    url: "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
     // SHA256 captured 2026-05-09 by `shasum -a 256` after manual download.
     sha256: "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
     approx_size_mb: 1,
