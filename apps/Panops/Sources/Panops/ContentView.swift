@@ -218,6 +218,24 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// Create a meeting through the existing `ipc.meeting.start` path, start
+    /// live capture for it, select it in the sidebar, and refresh the list.
+    func startNewRecording<Controller: RecordingController>(using recordingController: Controller) async throws {
+        let meetingId = try await client.meetingStart()
+        do {
+            try await recordingController.start(meetingId: meetingId)
+        } catch {
+            await refreshMeetings()
+            throw error
+        }
+
+        selectedMeetingId = meetingId
+        selectedMeeting = nil
+        state = .idle(audio: nil)
+        await refreshMeetings()
+        await loadSelectedMeeting()
+    }
+
     /// Load meeting detail when selected.
     func loadSelectedMeeting() async {
         guard let id = selectedMeetingId else {
@@ -232,6 +250,17 @@ final class AppViewModel: ObservableObject {
         } catch {
             Self.logFullError("meeting.get", error)
             selectedMeeting = nil
+        }
+    }
+
+    /// Close the meeting row after a live recording stops, then refresh list
+    /// and detail so ended_at/duration_ms are visible immediately.
+    func finishLiveRecording(meetingId: String) async throws {
+        let stoppedMeeting = try await client.meetingStop(id: meetingId)
+        await refreshMeetings()
+        if selectedMeetingId == meetingId {
+            selectedMeeting = stoppedMeeting
+            state = .idle(audio: nil)
         }
     }
 
@@ -358,6 +387,8 @@ final class AppViewModel: ObservableObject {
 struct ContentView<Controller: RecordingController & ObservableObject>: View {
     @ObservedObject var vm: AppViewModel
     @ObservedObject var recordingController: Controller
+    @State private var isStartingNewRecording = false
+    @State private var toolbarRecordingError: String?
 
     var body: some View {
         NavigationSplitView {
@@ -378,18 +409,61 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
         }
         .frame(minWidth: 720, minHeight: 480)
         .toolbar {
-            if vm.selectedMeeting != nil {
-                Button("New") {
-                    vm.startNewGenerationFlow()
+            ToolbarItemGroup {
+                if vm.selectedMeeting != nil {
+                    Button("New") {
+                        vm.startNewGenerationFlow()
+                    }
+                    .help("Start a new notes-generation flow")
                 }
-                .help("Start a new notes-generation flow")
+
+                Button("New Recording") {
+                    Task { @MainActor in
+                        await startNewRecording()
+                    }
+                }
+                .disabled(isStartingNewRecording || recordingController.isRecording || isEngineNotConnected)
+                .help("Create a meeting and start live recording")
             }
+        }
+        .alert("Recording error", isPresented: toolbarRecordingErrorPresented) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(toolbarRecordingError ?? "")
         }
         .task {
             await vm.refreshMeetings()
         }
         .onChange(of: vm.selectedMeetingId) { _, _ in
             Task { await vm.loadSelectedMeeting() }
+        }
+    }
+
+    private var isEngineNotConnected: Bool {
+        if case .engineNotConnected = vm.state {
+            return true
+        }
+        return false
+    }
+
+    private var toolbarRecordingErrorPresented: Binding<Bool> {
+        Binding(
+            get: { toolbarRecordingError != nil },
+            set: { if !$0 { toolbarRecordingError = nil } }
+        )
+    }
+
+    private func startNewRecording() async {
+        guard !isStartingNewRecording else { return }
+        isStartingNewRecording = true
+        defer { isStartingNewRecording = false }
+
+        do {
+            toolbarRecordingError = nil
+            try await vm.startNewRecording(using: recordingController)
+        } catch {
+            AppViewModel.logFullError("recording.new", error)
+            toolbarRecordingError = "Couldn't start recording."
         }
     }
 
@@ -413,7 +487,13 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
         VStack(spacing: 24) {
             // Show selected meeting detail if available
             if let meeting = vm.selectedMeeting {
-                MeetingDetailView(meeting: meeting, recordingController: recordingController)
+                MeetingDetailView(
+                    meeting: meeting,
+                    recordingController: recordingController,
+                    onRecordingStopped: { _ in
+                        try await vm.finishLiveRecording(meetingId: meeting.id)
+                    }
+                )
             } else {
                 VStack(spacing: 16) {
                     Text("Panops").font(.largeTitle)

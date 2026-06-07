@@ -1,39 +1,76 @@
 import Foundation
 import Combine
 
+protocol LiveRecordingIpcClient: Sendable {
+    func recordingStart(
+        meetingId: String,
+        audioSources: AudioSourcesWire,
+        screenshotIntervalMs: UInt64,
+        screenshotThreshold: Float
+    ) async throws -> RecordingAccepted
+
+    func recordingStop(recordingId: String) async throws -> RecordingStopped
+}
+
+extension IpcClient: LiveRecordingIpcClient {}
+
+enum RecordingPathValidationError: Error {
+    case unsafePath(String)
+}
+
 /// Live recording controller backed by the panops engine IPC.
 @MainActor
 final class LiveRecordingController: RecordingController, ObservableObject {
     @Published private(set) var isRecording = false
 
-    private let ipcClient: IpcClient
+    private let ipcClient: any LiveRecordingIpcClient
     private var recordingId: String?
 
-    init(ipcClient: IpcClient) {
+    init(ipcClient: any LiveRecordingIpcClient) {
         self.ipcClient = ipcClient
     }
 
     func start(meetingId: String) async throws {
         guard !isRecording else { return }
-
-        let accepted = try await ipcClient.recordingStart(
-            meetingId: meetingId,
-            audioSources: .systemAndMic,
-            screenshotIntervalMs: 500,
-            screenshotThreshold: 0.15
-        )
-        recordingId = accepted.recordingId
         isRecording = true
+        recordingId = nil
+
+        do {
+            let accepted = try await ipcClient.recordingStart(
+                meetingId: meetingId,
+                audioSources: .systemAndMic,
+                screenshotIntervalMs: 500,
+                screenshotThreshold: 0.15
+            )
+            recordingId = accepted.recordingId
+        } catch {
+            isRecording = false
+            recordingId = nil
+            throw error
+        }
     }
 
     func stop() async throws -> URL? {
-        guard let recordingId else { return nil }
+        guard let activeRecordingId = recordingId else { return nil }
+        defer {
+            recordingId = nil
+            isRecording = false
+        }
 
-        let stopped = try await ipcClient.recordingStop(recordingId: recordingId)
-        self.recordingId = nil
-        isRecording = false
+        let stopped = try await ipcClient.recordingStop(recordingId: activeRecordingId)
+        try validateArtifactPaths(stopped)
 
         let audioPath = stopped.systemAudioPath ?? stopped.micAudioPath
         return audioPath.map { URL(fileURLWithPath: $0) }
+    }
+
+    private func validateArtifactPaths(_ stopped: RecordingStopped) throws {
+        let paths = [stopped.systemAudioPath, stopped.micAudioPath].compactMap { $0 }
+            + stopped.screenshotPaths
+        for path in paths {
+            guard PathValidator.isUnderPanopsDataDir(path) else {
+                throw RecordingPathValidationError.unsafePath(path)
+            }
+        }
     }
 }
