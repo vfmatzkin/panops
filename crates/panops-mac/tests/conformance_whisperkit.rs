@@ -76,7 +76,13 @@ fn whisperkit_passes_english_conformance() {
     let audio_dir = fixtures.join("audio");
     let cases: &[(&str, Option<f32>)] = &[
         ("en_30s", Some(0.20)),
-        ("multi_speaker_60s", None), // matches canonical FIXTURES: WER unbounded for diarized fixture
+        ("multi_speaker_60s", None), // No WER cap: multi-voice TTS (Samantha+Daniel) has
+                                     // inherently higher error rate than single-voice; fixture
+                                     // tests speaker re-identification (A-B-A pattern), not
+                                     // transcript accuracy. Assertions that DO run: segments
+                                     // present, timestamps monotonic, language="en". Adding a
+                                     // numeric cap would require running the heavy WhisperKit
+                                     // sidecar to measure actual WER, risking CI flakiness.
     ];
     for (stem, wer_max) in cases {
         let audio = audio_dir.join(format!("{stem}.wav"));
