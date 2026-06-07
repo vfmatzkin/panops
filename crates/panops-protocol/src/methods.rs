@@ -223,9 +223,12 @@ pub struct RecordingStopParams {
 }
 
 /// Result of `ipc.recording.stop`. Returns paths to captured artifacts.
+/// Two audio tracks (slice 11): each is non-null exactly when its source
+/// was requested.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RecordingStopped {
-    pub audio_path: String,
+    pub system_audio_path: Option<String>,
+    pub mic_audio_path: Option<String>,
     pub screenshot_paths: Vec<String>,
     pub duration_ms: u64,
 }
@@ -479,7 +482,8 @@ mod tests {
     #[test]
     fn recording_stopped_round_trips() {
         let r = RecordingStopped {
-            audio_path: "/tmp/audio.wav".into(),
+            system_audio_path: Some("/tmp/system.wav".into()),
+            mic_audio_path: Some("/tmp/mic.wav".into()),
             screenshot_paths: vec!["/tmp/screenshots/001.jpg".into()],
             duration_ms: 60_000,
         };

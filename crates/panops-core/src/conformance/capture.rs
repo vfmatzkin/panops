@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use crate::capture::{Capture, CaptureConfig, CaptureError, CaptureSession};
+use crate::capture::{AudioSources, Capture, CaptureConfig, CaptureError, CaptureSession};
 
 /// Run the full conformance suite against a `Capture` implementation.
 ///
@@ -23,6 +23,7 @@ pub fn run_suite<C: Capture>(adapter: &C, fixtures_dir: &Path) {
     start_returns_session(adapter, fixtures_dir);
     stop_returns_valid_audio(adapter, fixtures_dir);
     stop_returns_screenshot_paths(adapter, fixtures_dir);
+    stop_track_presence_matches_sources(adapter);
     stop_session_not_found(adapter);
     is_fake_marker(adapter, true); // Fakes should return true
 }
@@ -68,11 +69,22 @@ fn start_returns_session<C: Capture>(adapter: &C, _fixtures_dir: &Path) {
     let _ = std::fs::remove_dir_all(&meeting_dir);
 }
 
+/// Assert that a path is a valid 16 kHz mono WAV and return its sample count.
+fn assert_wav_16k_mono(path: &Path) -> u64 {
+    assert!(path.exists(), "audio_path {} should exist", path.display());
+    let reader = hound::WavReader::open(path).expect("audio should be valid WAV");
+    let spec = reader.spec();
+    assert_eq!(spec.sample_rate, 16_000, "audio must be 16 kHz");
+    assert_eq!(spec.channels, 1, "audio must be mono");
+    reader.len() as u64
+}
+
 fn stop_returns_valid_audio<C: Capture>(adapter: &C, _fixtures_dir: &Path) {
     let meeting_id = "test_meeting_audio";
     let meeting_dir = temp_meeting_dir();
     std::fs::create_dir_all(&meeting_dir).expect("create temp meeting dir");
 
+    // Default config is SystemAndMic, so both tracks must be present.
     let config = CaptureConfig::default();
     let session = adapter
         .start_capture(meeting_id, &meeting_dir, &config)
@@ -82,21 +94,20 @@ fn stop_returns_valid_audio<C: Capture>(adapter: &C, _fixtures_dir: &Path) {
         .stop_capture(&session)
         .expect("stop_capture should succeed");
 
-    // Audio path must be a valid WAV that `hound` can parse.
-    assert!(
-        result.audio_path.exists(),
-        "audio_path {} should exist",
-        result.audio_path.display()
-    );
-    let reader = hound::WavReader::open(&result.audio_path).expect("audio should be valid WAV");
-    let spec = reader.spec();
-    assert_eq!(spec.sample_rate, 16_000, "audio must be 16 kHz");
-    assert_eq!(spec.channels, 1, "audio must be mono");
+    let system = result
+        .system_audio_path
+        .as_deref()
+        .expect("SystemAndMic must yield a system track");
+    let mic = result
+        .mic_audio_path
+        .as_deref()
+        .expect("SystemAndMic must yield a mic track");
+    let samples = assert_wav_16k_mono(system);
+    assert_wav_16k_mono(mic);
 
     // Duration should match what the adapter reports.
-    let samples_count = reader.len() as u64;
-    let computed_ms = (samples_count * 1000) / (16_000);
     assert!(result.duration_ms > 0, "duration_ms should be positive");
+    let computed_ms = (samples * 1000) / 16_000;
     // Allow small tolerance for rounding differences.
     let diff = (result.duration_ms as i64 - computed_ms as i64).abs();
     assert!(
@@ -108,6 +119,37 @@ fn stop_returns_valid_audio<C: Capture>(adapter: &C, _fixtures_dir: &Path) {
 
     // Clean up temp dir.
     let _ = std::fs::remove_dir_all(&meeting_dir);
+}
+
+fn stop_track_presence_matches_sources<C: Capture>(adapter: &C) {
+    let cases = [
+        (AudioSources::SystemOnly, true, false),
+        (AudioSources::MicOnly, false, true),
+        (AudioSources::SystemAndMic, true, true),
+    ];
+    for (sources, want_system, want_mic) in cases {
+        let meeting_dir = temp_meeting_dir();
+        std::fs::create_dir_all(&meeting_dir).expect("create temp meeting dir");
+        let config = CaptureConfig {
+            audio_sources: sources,
+            ..CaptureConfig::default()
+        };
+        let session = adapter
+            .start_capture("presence_test", &meeting_dir, &config)
+            .expect("start_capture should succeed");
+        let result = adapter.stop_capture(&session).expect("stop_capture");
+        assert_eq!(
+            result.system_audio_path.is_some(),
+            want_system,
+            "system track presence for {sources:?}"
+        );
+        assert_eq!(
+            result.mic_audio_path.is_some(),
+            want_mic,
+            "mic track presence for {sources:?}"
+        );
+        let _ = std::fs::remove_dir_all(&meeting_dir);
+    }
 }
 
 fn stop_returns_screenshot_paths<C: Capture>(adapter: &C, _fixtures_dir: &Path) {

@@ -107,8 +107,9 @@ async fn recording_start_stop_round_trip() {
     .await
     .expect("recording.stop");
 
-    // Verify audio path exists and is a valid WAV.
-    assert!(!stopped.audio_path.is_empty());
+    // FakeCapture default config is SystemAndMic → both tracks present.
+    assert!(stopped.system_audio_path.is_some(), "system track present");
+    assert!(stopped.mic_audio_path.is_some(), "mic track present");
     assert!(stopped.duration_ms > 0, "duration should be positive");
 
     // Verify screenshot paths are present (FakeCapture copies fixtures).
@@ -187,7 +188,9 @@ async fn recording_start_with_audio_sources_wire() {
     .await
     .expect("recording.stop");
 
-    assert!(!stopped.audio_path.is_empty());
+    // audio_sources = mic_only → only the mic track is present.
+    assert!(stopped.system_audio_path.is_none(), "no system track");
+    assert!(stopped.mic_audio_path.is_some(), "mic track present");
 
     let _ = shutdown_tx.send(true);
     let _ = server.await;
