@@ -793,7 +793,10 @@ pub(super) fn run_notes_pipeline(
         meeting_metadata: MeetingMetadata {
             started_at,
             duration_ms: transcript.audio_duration_ms,
-            source_path: Some(audio_path.clone()),
+            // Use the actually-transcribed source (the capture WAV on the
+            // two-track path, the file on the single-track path) so the notes
+            // frontmatter never points at a bypassed `params.audio` file.
+            source_path: Some(transcript.audio_path.clone()),
             language_hint: params.language.clone(),
         },
     };
