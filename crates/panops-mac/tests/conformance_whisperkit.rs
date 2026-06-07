@@ -1,23 +1,14 @@
 //! Conformance harness for `WhisperKitAsr`. Self-skips when
 //! `PANOPS_ASR_SIDECAR_BIN` is unset OR `PANOPS_SKIP_HEAVY=1`.
-//! Runs in the CI heavy-test job and locally when the sidecar binary
-//! is built.
-//!
-//! NOTE: WhisperKit's small/base models auto-detect Spanish audio
-//! (`es_30s.wav`) as English when `language_hint=None`, despite
-//! producing a correct Spanish transcription when given the explicit
-//! hint. The full `run_suite` would therefore fail on `es_30s`.
-//! Slice 10 runs the per-fixture variant (`run_one_fixture`) on the
-//! two English-only fixtures and skips the Spanish + mixed ones.
-//! Filed as debt for follow-up: explore `detectLanguage: true` in
-//! `DecodingOptions`, or bump to small / medium model variants.
+//! Runs in the CI heavy-test job and locally when the built sidecar binary
+//! is available.
 
 #![cfg(target_os = "macos")]
 
 use std::path::{Path, PathBuf};
 
 use panops_core::asr::AsrProvider;
-use panops_core::conformance::asr::run_one_fixture;
+use panops_core::conformance::asr::run_suite;
 use panops_mac::WhisperKitAsr;
 
 fn sidecar_bin() -> Option<PathBuf> {
@@ -49,14 +40,14 @@ fn whisperkit_is_not_fake() {
 }
 
 #[test]
-fn whisperkit_passes_english_conformance() {
+fn whisperkit_passes_full_conformance() {
     if heavy_skipped() {
-        eprintln!("skipping whisperkit_passes_english_conformance (PANOPS_SKIP_HEAVY=1)");
+        eprintln!("skipping whisperkit_passes_full_conformance (PANOPS_SKIP_HEAVY=1)");
         return;
     }
     let Some(bin) = sidecar_bin() else {
         eprintln!(
-            "skipping whisperkit_passes_english_conformance: \
+            "skipping whisperkit_passes_full_conformance: \
              set PANOPS_ASR_SIDECAR_BIN to the built panops-asr-mac binary"
         );
         return;
@@ -64,29 +55,8 @@ fn whisperkit_passes_english_conformance() {
     let asr = WhisperKitAsr::new(bin);
     let fixtures = fixtures_dir();
 
-    // English-only fixtures: WhisperKit base auto-detects "en" reliably.
-    // Fixtures live under `tests/fixtures/audio/` (mirrors `run_suite`'s
-    // internal path resolution in `panops_core::conformance::asr::run_one`).
-    //
-    // Per-fixture `wer_max` matches what `run_suite` enforces in the
-    // canonical conformance harness — no looser bar for WhisperKit on
-    // these English fixtures than for WhisperRsAsr. `None` would weaken
-    // the slice's main correctness guarantee, which defeats the point
-    // of running the harness here.
-    let audio_dir = fixtures.join("audio");
-    let cases: &[(&str, Option<f32>)] = &[
-        ("en_30s", Some(0.20)),
-        ("multi_speaker_60s", None), // No WER cap: multi-voice TTS (Samantha+Daniel) has
-                                     // inherently higher error rate than single-voice; fixture
-                                     // tests speaker re-identification (A-B-A pattern), not
-                                     // transcript accuracy. Assertions that DO run: segments
-                                     // present, timestamps monotonic, language="en". Adding a
-                                     // numeric cap would require running the heavy WhisperKit
-                                     // sidecar to measure actual WER, risking CI flakiness.
-    ];
-    for (stem, wer_max) in cases {
-        let audio = audio_dir.join(format!("{stem}.wav"));
-        let transcript = audio_dir.join(format!("{stem}.transcript.txt"));
-        run_one_fixture(&asr, &audio, &transcript, &["en"], *wer_max);
-    }
+    // Full suite: en_30s, es_30s, mixed_60s, multi_speaker_60s.
+    // Fix #125: explicitly enable detectLanguage when no hint provided,
+    // improving Spanish auto-detection on tiny/base models.
+    run_suite(&asr, &fixtures);
 }
