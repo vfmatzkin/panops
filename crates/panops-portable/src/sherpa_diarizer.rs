@@ -35,8 +35,12 @@ impl Diarizer for SherpaDiarizer {
         // a ready 16 kHz WAV is read directly, anything else is transcoded to
         // a temp 16 kHz WAV first — same media path the ASR pipeline uses, so
         // diarization works on the same inputs transcription does.
-        let wav = crate::audio::ensure_wav16k(audio_path)
-            .map_err(|e| DiarError::InvalidAudio(e.to_string()))?;
+        // Map variants explicitly so a filesystem path only ever lands in the
+        // typed `AudioNotFound` (never expanded into a free-form error string).
+        let wav = crate::audio::ensure_wav16k(audio_path).map_err(|e| match e {
+            panops_core::asr::AsrError::AudioNotFound(p) => DiarError::AudioNotFound(p),
+            other => DiarError::InvalidAudio(other.to_string()),
+        })?;
 
         let (samples, sample_rate) = read_audio_file(
             wav.path()
