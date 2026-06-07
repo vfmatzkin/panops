@@ -20,12 +20,22 @@ use crate::capture::{AudioSources, Capture, CaptureConfig, CaptureError, Capture
 /// Screenshots are read from `fixtures_dir` (if needed by the adapter),
 /// but all output goes to a temp location that is cleaned up after the test.
 pub fn run_suite<C: Capture>(adapter: &C, fixtures_dir: &Path) {
+    run_suite_with(adapter, fixtures_dir, true); // Fakes should return true
+}
+
+/// Like [`run_suite`] but asserts a specific `is_fake()` value.
+///
+/// The in-process `FakeCapture` passes `true`; a real adapter exercised
+/// against a fake sidecar binary (e.g. `ScreenCaptureKitCapture`) passes
+/// `false` — it must not opt out of the production marker just because its
+/// sidecar is stubbed for CI.
+pub fn run_suite_with<C: Capture>(adapter: &C, fixtures_dir: &Path, expected_is_fake: bool) {
     start_returns_session(adapter, fixtures_dir);
     stop_returns_valid_audio(adapter, fixtures_dir);
     stop_returns_screenshot_paths(adapter, fixtures_dir);
     stop_track_presence_matches_sources(adapter);
     stop_session_not_found(adapter);
-    is_fake_marker(adapter, true); // Fakes should return true
+    is_fake_marker(adapter, expected_is_fake);
 }
 
 fn temp_meeting_dir() -> std::path::PathBuf {
