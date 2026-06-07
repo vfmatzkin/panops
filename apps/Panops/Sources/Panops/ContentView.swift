@@ -518,6 +518,11 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
                 MeetingDetailView(
                     meeting: meeting,
                     recordingController: recordingController,
+                    onRecordingStarted: { id in
+                        await MainActor.run {
+                            vm.activeRecordingMeetingId = id
+                        }
+                    },
                     onRecordingStopped: { _ in
                         try await vm.finishActiveLiveRecording()
                     }
