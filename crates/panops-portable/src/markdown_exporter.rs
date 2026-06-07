@@ -271,10 +271,13 @@ fn yaml_scalar(s: &str) -> String {
             '\n' => escaped.push_str("\\n"),
             '\r' => escaped.push_str("\\r"),
             '\t' => escaped.push_str("\\t"),
-            // Any remaining C0 control char (U+0000–U+001F) is invalid in a
-            // YAML double-quoted scalar unless escaped; emit `\xNN` with two
-            // lowercase hex digits (e.g. 0x01 -> \x01, 0x07 -> \x07).
-            c if (c as u32) < 0x20 => escaped.push_str(&format!("\\x{:02x}", c as u32)),
+            // Any remaining C0 control char (U+0000-U+001F) or DEL (U+007F)
+            // is invalid raw in a YAML double-quoted scalar; emit the broadly
+            // supported 4-hex \uNNNN escape (more portable than \xNN, which
+            // is YAML-1.2-only and rejected by some parsers such as PyYAML).
+            c if (c as u32) < 0x20 || (c as u32) == 0x7f => {
+                escaped.push_str(&format!("\\u{:04x}", c as u32))
+            }
             c => escaped.push(c),
         }
     }
@@ -448,15 +451,16 @@ mod tests {
     }
 
     #[test]
-    fn control_chars_are_hex_escaped_inside_double_quotes() {
-        // U+0001 (SOH) and U+0007 (BEL) have no dedicated escape and would be
-        // invalid raw inside a YAML double-quoted scalar; they must emit as
-        // \x01 / \x07 (two lowercase hex digits).
+    fn control_chars_are_unicode_escaped_inside_double_quotes() {
+        // U+0001 (SOH), U+0007 (BEL), and DEL (U+007F) have no dedicated escape
+        // and would be invalid raw inside a YAML double-quoted scalar; they emit
+        // as \uNNNN (4 lowercase hex digits, the broadly portable form).
         let mut value = String::from("a");
         value.push('\u{0001}');
         value.push('\u{0007}');
+        value.push('\u{007f}');
         value.push('b');
-        assert_eq!(yaml_scalar(&value), "\"a\\x01\\x07b\"");
+        assert_eq!(yaml_scalar(&value), "\"a\\u0001\\u0007\\u007fb\"");
     }
 
     #[test]
