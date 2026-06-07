@@ -64,18 +64,43 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
     init(plan: TrackPlan, systemPath: String?, micPath: String?) throws {
         self.plan = plan
         super.init()
+
+        // Build writers in a temp array first, then assign only if all succeed
+        // This prevents FileHandle leak if one track initialization fails
+        var writers: [String: WavWriter] = [:]
         if plan.wantsSystem, let p = systemPath {
-            systemWriter = try WavWriter(url: URL(fileURLWithPath: p))
+            let writer = try WavWriter(url: URL(fileURLWithPath: p))
+            writers["system"] = writer
         }
         if plan.wantsMic, let p = micPath {
-            micWriter = try WavWriter(url: URL(fileURLWithPath: p))
+            let writer = try WavWriter(url: URL(fileURLWithPath: p))
+            writers["mic"] = writer
         }
+
+        self.systemWriter = writers["system"]
+        self.micWriter = writers["mic"]
     }
 
     /// Configure + start the `SCStream`. The optional `screenshotter` is added
     /// as the `.screen` output (frame-tap, avoiding a second stream).
     func start(screenshotter: Screenshotter?) async throws {
-        let content = try await SCShareableContent.current
+        let content: SCShareableContent
+        do {
+            content = try await SCShareableContent.current
+        } catch {
+            // SCStreamError with code 1001/1002 is TCC denial (screen/mic)
+            // Use the rawValue to compare against expected TCC codes
+            if let scError = error as? SCStreamError {
+                let errorCode = Int(scError.code.rawValue)
+                switch errorCode {
+                case 1001: throw CaptureFailure.permissionDenied("screen recording")
+                case 1002: throw CaptureFailure.permissionDenied("microphone")
+                default: break
+                }
+            }
+            // Re-throw non-TCC errors
+            throw error
+        }
         guard let display = content.displays.first else {
             throw CaptureFailure.noDisplay
         }
@@ -178,7 +203,12 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         }
 
         guard let samples = Self.resample(input, with: converter) else { return }
-        try? writer.append(samples)
+        do {
+            try writer.append(samples)
+        } catch {
+            // Log the error to stderr - this indicates I/O failure (disk full, etc)
+            FileHandle.standardError.write(Data("WAV write error: \(error)\n".utf8))
+        }
     }
 
     /// Wrap a ScreenCaptureKit audio `CMSampleBuffer` as an `AVAudioPCMBuffer`
