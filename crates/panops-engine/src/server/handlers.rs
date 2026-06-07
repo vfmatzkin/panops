@@ -509,6 +509,7 @@ fn transcribe_two_track(
     system_wav: Option<&std::path::Path>,
     mic_wav: Option<&std::path::Path>,
     language: Option<&str>,
+    no_diarize: bool,
 ) -> Result<panops_core::Transcript, IpcError> {
     let mut mic_segments = Vec::new();
     let mut system_segments = Vec::new();
@@ -535,7 +536,9 @@ fn transcribe_two_track(
             model = m;
         }
         system_segments = segs;
-        system_turns = heavy.diar.diarize(system).map_err(IpcError::from)?;
+        if !no_diarize {
+            system_turns = heavy.diar.diarize(system).map_err(IpcError::from)?;
+        }
     }
 
     let segments = panops_core::merge_two_track(mic_segments, system_segments, &system_turns);
@@ -547,7 +550,7 @@ fn transcribe_two_track(
             .map(|p| p.to_path_buf())
             .unwrap_or_default(),
         audio_duration_ms: duration_ms,
-        diarized: true,
+        diarized: !no_diarize,
         segments,
     })
 }
@@ -685,6 +688,7 @@ pub(super) fn run_notes_pipeline(
             system_wav.exists().then_some(system_wav.as_path()),
             mic_wav.exists().then_some(mic_wav.as_path()),
             params.language.as_deref(),
+            params.no_diarize.unwrap_or(false),
         )?
     } else {
         let (samples, sample_rate) =
