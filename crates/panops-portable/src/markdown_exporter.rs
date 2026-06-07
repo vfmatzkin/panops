@@ -290,9 +290,16 @@ fn is_safe_plain_scalar(s: &str) -> bool {
     matches_plain_pattern(s) && !is_yaml_reserved(s) && !looks_like_number(s)
 }
 
-/// Matches `^[A-Za-z][A-Za-z0-9 ._/-]*$`: first char is an ASCII letter, the
-/// rest are ASCII alphanumerics or one of space, `.`, `_`, `/`, `-`.
+/// Matches `^[A-Za-z][A-Za-z0-9 ._/-]*$` AND has no trailing space: first char
+/// is an ASCII letter (this also excludes a leading space), the rest are ASCII
+/// alphanumerics or one of space, `.`, `_`, `/`, `-`. A trailing space is
+/// rejected because a YAML parser strips trailing whitespace from a plain
+/// scalar — `"Hello "` would silently round-trip to `"Hello"` — so such values
+/// are quoted instead.
 fn matches_plain_pattern(s: &str) -> bool {
+    if s.ends_with(' ') {
+        return false;
+    }
     let mut chars = s.chars();
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() => {}
@@ -376,6 +383,16 @@ mod tests {
     #[test]
     fn empty_string_is_double_quoted() {
         assert_eq!(yaml_scalar(""), "\"\"");
+    }
+
+    #[test]
+    fn trailing_space_is_double_quoted() {
+        // A plain YAML scalar strips trailing whitespace, so "Hello " must be
+        // quoted to survive a round-trip (otherwise it becomes "Hello").
+        assert_eq!(yaml_scalar("Hello "), "\"Hello \"");
+        assert_eq!(yaml_scalar("Daily standup  "), "\"Daily standup  \"");
+        // Interior spaces remain fine for a plain scalar.
+        assert_eq!(yaml_scalar("Daily standup"), "Daily standup");
     }
 
     #[test]
