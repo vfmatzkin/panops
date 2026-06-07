@@ -586,6 +586,15 @@ actor IpcClient {
         )
     }
 
+    /// `ipc.meeting.stop(id)` — marks a meeting ended and returns the
+    /// updated Meeting row with `ended_at` / `duration_ms` populated.
+    func meetingStop(id: String) async throws -> Meeting {
+        return try await sendRequest(
+            method: "ipc.meeting.stop",
+            params: MeetingStopParams(id: id)
+        )
+    }
+
     /// `ipc.meeting.list` — fetches all meeting summaries.
     /// Slice 12: sidebar needs meeting list for navigation.
     func meetingList() async throws -> [MeetingSummary] {

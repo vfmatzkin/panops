@@ -6,14 +6,20 @@ import SwiftUI
 struct MeetingDetailView<Controller: RecordingController & ObservableObject>: View {
     let meeting: Meeting
     let recordingController: Controller?
+    let onRecordingStopped: (URL?) async throws -> Void
     @State private var transcript: Transcript?
     @State private var notesContent: String?
     @State private var screenshots: [URL]?
     @State private var isLoading = true
 
-    init(meeting: Meeting, recordingController: Controller? = nil) {
+    init(
+        meeting: Meeting,
+        recordingController: Controller? = nil,
+        onRecordingStopped: @escaping (URL?) async throws -> Void = { _ in }
+    ) {
         self.meeting = meeting
         self.recordingController = recordingController
+        self.onRecordingStopped = onRecordingStopped
     }
 
     var body: some View {
@@ -23,7 +29,11 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
             Divider()
             // Record bar (if controller provided)
             if let controller = recordingController {
-                RecordBar(controller: controller, meetingId: meeting.id)
+                RecordBar(
+                    controller: controller,
+                    meetingId: meeting.id,
+                    onRecordingStopped: onRecordingStopped
+                )
                 Divider()
             }
             // Content sections
@@ -52,7 +62,11 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
                 }
             }
         }
-        .task(id: meeting.id) { await loadMeetingData() }
+        .task(id: loadToken) { await loadMeetingData() }
+    }
+
+    private var loadToken: String {
+        "\(meeting.id)|\(meeting.endedAt ?? "")|\(meeting.durationMs ?? 0)"
     }
 
     private var headerView: some View {

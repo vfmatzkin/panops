@@ -4,9 +4,20 @@ import SwiftUI
 struct RecordBar<Controller: RecordingController & ObservableObject>: View {
     @ObservedObject var controller: Controller
     let meetingId: String
+    let onRecordingStopped: (URL?) async throws -> Void
     @State private var isBusy = false
     @State private var errorMessage: String?
     @State private var lastAudioURL: URL?
+
+    init(
+        controller: Controller,
+        meetingId: String,
+        onRecordingStopped: @escaping (URL?) async throws -> Void = { _ in }
+    ) {
+        self._controller = ObservedObject(wrappedValue: controller)
+        self.meetingId = meetingId
+        self.onRecordingStopped = onRecordingStopped
+    }
 
     var body: some View {
         HStack(spacing: 16) {
@@ -62,20 +73,28 @@ struct RecordBar<Controller: RecordingController & ObservableObject>: View {
     private func toggleRecording() async {
         guard !isBusy else { return }
         isBusy = true
+        let wasRecording = controller.isRecording
         defer { isBusy = false }
 
         do {
-            if controller.isRecording {
-                lastAudioURL = try await controller.stop()
+            if wasRecording {
+                let audioURL = try await controller.stop()
+                if let audioURL {
+                    guard PathValidator.isUnderPanopsDataDir(audioURL.path) else {
+                        throw RecordingPathValidationError.unsafePath(audioURL.path)
+                    }
+                    lastAudioURL = audioURL
+                } else {
+                    lastAudioURL = nil
+                }
+                try await onRecordingStopped(audioURL)
             } else {
                 lastAudioURL = nil
                 try await controller.start(meetingId: meetingId)
             }
-        } catch let IpcClientError.rpcError(_, message) {
-            errorMessage = message
         } catch {
-            AppViewModel.logFullError("recording.toggle", error)
-            errorMessage = "Could not reach the engine."
+            AppViewModel.logFullError(wasRecording ? "recording.stop" : "recording.start", error)
+            errorMessage = wasRecording ? "Couldn't stop recording." : "Couldn't start recording."
         }
     }
 }

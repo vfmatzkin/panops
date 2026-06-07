@@ -237,6 +237,11 @@ struct MeetingGetParams: Encodable {
     let id: String
 }
 
+/// Outgoing params for `ipc.meeting.stop`.
+struct MeetingStopParams: Encodable {
+    let id: String
+}
+
 /// Response from `ipc.meeting.get`. Mirrors `panops-protocol::Meeting`.
 /// `dir_path` is where notes.md eventually lands; slice 09 polls
 /// `<dirPath>/notes.md` on disk to detect completion (the IPC's
