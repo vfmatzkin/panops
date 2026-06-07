@@ -13,6 +13,7 @@ final class AppViewModel: ObservableObject {
 
     @Published var state: State = .idle(audio: nil)
     @Published var selectedMeetingId: String?
+    @Published var activeRecordingMeetingId: String?
     @Published var meetings: [MeetingSummary] = []
     @Published var selectedMeeting: Meeting?
 
@@ -225,10 +226,19 @@ final class AppViewModel: ObservableObject {
         do {
             try await recordingController.start(meetingId: meetingId)
         } catch {
+            let recordingStartError = error
+            do {
+                // No recording was accepted, so remove the provisional row and
+                // meeting directory rather than leaving a bogus open meeting.
+                try await client.meetingDelete(id: meetingId)
+            } catch {
+                Self.logFullError("meeting.delete.cleanup", error)
+            }
             await refreshMeetings()
-            throw error
+            throw recordingStartError
         }
 
+        activeRecordingMeetingId = meetingId
         selectedMeetingId = meetingId
         selectedMeeting = nil
         state = .idle(audio: nil)
@@ -257,11 +267,21 @@ final class AppViewModel: ObservableObject {
     /// and detail so ended_at/duration_ms are visible immediately.
     func finishLiveRecording(meetingId: String) async throws {
         let stoppedMeeting = try await client.meetingStop(id: meetingId)
+        if activeRecordingMeetingId == meetingId {
+            activeRecordingMeetingId = nil
+        }
         await refreshMeetings()
         if selectedMeetingId == meetingId {
             selectedMeeting = stoppedMeeting
             state = .idle(audio: nil)
         }
+    }
+
+    /// Close whichever meeting owns the active recording, regardless of the
+    /// sidebar selection when the user presses Stop.
+    func finishActiveLiveRecording() async throws {
+        guard let meetingId = activeRecordingMeetingId else { return }
+        try await finishLiveRecording(meetingId: meetingId)
     }
 
     private func showSelectedMeetingAfterTerminalState() {
@@ -364,6 +384,7 @@ final class AppViewModel: ObservableObject {
         wsSubscriptionTask = nil
         Task { await eventStream.stop() }
         selectedMeetingId = nil
+        activeRecordingMeetingId = nil
         selectedMeeting = nil
         state = .idle(audio: nil)
     }
@@ -422,7 +443,7 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
                         await startNewRecording()
                     }
                 }
-                .disabled(isStartingNewRecording || recordingController.isRecording || isEngineNotConnected)
+                .disabled(isStartingNewRecording || recordingController.isRecording || isEngineNotConnected || isGeneratingNotes)
                 .help("Create a meeting and start live recording")
             }
         }
@@ -441,6 +462,13 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
 
     private var isEngineNotConnected: Bool {
         if case .engineNotConnected = vm.state {
+            return true
+        }
+        return false
+    }
+
+    private var isGeneratingNotes: Bool {
+        if case .working = vm.state {
             return true
         }
         return false
@@ -491,7 +519,7 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
                     meeting: meeting,
                     recordingController: recordingController,
                     onRecordingStopped: { _ in
-                        try await vm.finishLiveRecording(meetingId: meeting.id)
+                        try await vm.finishActiveLiveRecording()
                     }
                 )
             } else {
