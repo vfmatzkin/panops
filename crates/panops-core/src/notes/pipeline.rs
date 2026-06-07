@@ -7,7 +7,11 @@
 //! 5. Render is owned by `NotesExporter`, not this pipeline.
 //!
 //! A failed per-section LLM call falls back to a transcript-block narrative
-//! with a `<!-- panops: llm error -->` marker; the pipeline does not abort.
+//! with a `<!-- panops: llm error -->` marker; the pipeline does not abort as
+//! long as at least one section was generated. If EVERY section's LLM call
+//! fails (provider unavailable at runtime — e.g. FoundationModels with Apple
+//! Intelligence off), the pipeline aborts with `NotesError::LlmUnavailable`
+//! instead of emitting an all-stub notes file as success.
 //! A failed frontmatter LLM call falls back to `title = "Untitled meeting"`
 //! and an empty tag list; the pipeline does not abort.
 
@@ -60,8 +64,9 @@ impl NotesGenerator<'_> {
             .filter_map(|s| s.speaker_id)
             .collect();
 
-        // Stage 2 (parallel)
-        let section_drafts: Vec<SectionDraft> = raw_sections
+        // Stage 2 (parallel). Each result carries `Some(error)` when that
+        // section's narrative came from a failed LLM `complete` call.
+        let section_results: Vec<(SectionDraft, Option<String>)> = raw_sections
             .par_iter()
             .map(|raw| {
                 let segs: Vec<Segment> = raw
@@ -72,6 +77,27 @@ impl NotesGenerator<'_> {
                 self.process_section(raw.time_range_ms, segs, &language, &allowed_speakers)
             })
             .collect();
+
+        // If EVERY section's narrative came from a failed LLM call, the model
+        // is unavailable at runtime and the notes file would be all
+        // `## N. Section` stubs with default frontmatter — worthless. Fail
+        // loudly instead of reporting success. One reachable section (even a
+        // non-LLM fallback like a verifier rejection) keeps partial output.
+        let total_sections = section_results.len();
+        let llm_errors: Vec<&String> = section_results
+            .iter()
+            .filter_map(|(_, e)| e.as_ref())
+            .collect();
+        if total_sections > 0 && llm_errors.len() == total_sections {
+            return Err(NotesError::LlmUnavailable {
+                failed: llm_errors.len(),
+                total: total_sections,
+                last_error: llm_errors.last().map(|s| s.to_string()).unwrap_or_default(),
+            });
+        }
+
+        let section_drafts: Vec<SectionDraft> =
+            section_results.into_iter().map(|(d, _)| d).collect();
 
         // Stage 3 — clamp out-of-range timestamps, then anchor.
         // duration_ms == 0 is a malformed-input edge case (e.g. all-zero-duration
@@ -164,13 +190,19 @@ impl NotesGenerator<'_> {
 
     /// Process a single section: either single LLM call (if transcript fits)
     /// or chunked multi-call with merge (if transcript exceeds threshold).
+    ///
+    /// Returns the draft plus `Some(error)` when the narrative came from a
+    /// failed LLM `complete` call (provider error), so the caller can detect
+    /// a fully-unavailable provider. Non-LLM fallbacks (text-not-json,
+    /// verifier rejection, merge-reduction) return `None`: the provider is
+    /// reachable, just producing unusable output.
     fn process_section(
         &self,
         time_range_ms: (u64, u64),
         segs: Vec<Segment>,
         language: &str,
         allowed_speakers: &HashSet<u32>,
-    ) -> SectionDraft {
+    ) -> (SectionDraft, Option<String>) {
         let transcript_chars = estimate_transcript_chars(&segs);
         let single_req = build_section_narrative_prompt(&segs, self.dialect, language);
         let single_req_chars = rendered_llm_request_chars(&single_req);
@@ -211,11 +243,14 @@ impl NotesGenerator<'_> {
                             chunk_index = i + 1,
                             "chunk summary LLM returned text, expected json"
                         );
-                        return SectionDraft::fallback(
-                            time_range_ms,
-                            segs,
-                            "LLM unavailable",
-                            self.dialect,
+                        return (
+                            SectionDraft::fallback(
+                                time_range_ms,
+                                segs,
+                                "LLM unavailable",
+                                self.dialect,
+                            ),
+                            None,
                         );
                     }
                     Err(e) => {
@@ -224,11 +259,15 @@ impl NotesGenerator<'_> {
                             error = %e,
                             "chunk summary LLM call failed"
                         );
-                        return SectionDraft::fallback(
-                            time_range_ms,
-                            segs,
-                            "LLM unavailable",
-                            self.dialect,
+                        let msg = e.to_string();
+                        return (
+                            SectionDraft::fallback(
+                                time_range_ms,
+                                segs,
+                                "LLM unavailable",
+                                self.dialect,
+                            ),
+                            Some(msg),
                         );
                     }
                 }
@@ -245,23 +284,37 @@ impl NotesGenerator<'_> {
                         &draft.action_items,
                         allowed_speakers,
                     ) {
-                        verifier::VerifierReport::Ok => draft,
+                        verifier::VerifierReport::Ok => (draft, None),
                         verifier::VerifierReport::DisallowedSpeakers(ids) => {
                             tracing::warn!(
                                 section_ms = ?time_range_ms,
                                 disallowed = ?ids,
                                 "merged section referenced speakers not in transcript; using fallback"
                             );
-                            SectionDraft::fallback(
-                                time_range_ms,
-                                segs,
-                                "verifier: disallowed speaker reference",
-                                self.dialect,
+                            (
+                                SectionDraft::fallback(
+                                    time_range_ms,
+                                    segs,
+                                    "verifier: disallowed speaker reference",
+                                    self.dialect,
+                                ),
+                                None,
                             )
                         }
                     }
                 }
-                Err(err) => SectionDraft::fallback(time_range_ms, segs, &err, self.dialect),
+                Err(merge_err) => {
+                    let llm_error = merge_err.llm_failed.then(|| merge_err.message.clone());
+                    (
+                        SectionDraft::fallback(
+                            time_range_ms,
+                            segs,
+                            &merge_err.message,
+                            self.dialect,
+                        ),
+                        llm_error,
+                    )
+                }
             }
         }
     }
@@ -270,9 +323,11 @@ impl NotesGenerator<'_> {
         &self,
         mut summaries: Vec<Value>,
         language: &str,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, MergeError> {
         if summaries.is_empty() {
-            return Err("merge LLM call failed: no chunk summaries".to_string());
+            return Err(MergeError::reduction(
+                "merge LLM call failed: no chunk summaries",
+            ));
         }
         if summaries.len() == 1 {
             return Ok(summaries.remove(0));
@@ -327,11 +382,11 @@ impl NotesGenerator<'_> {
                     Ok(LlmResponse::Json(v)) => next_round.push(v),
                     Ok(LlmResponse::Text(_)) => {
                         tracing::warn!("merge LLM returned text, expected json");
-                        return Err("LLM unavailable".to_string());
+                        return Err(MergeError::reduction("LLM unavailable"));
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "merge LLM call failed");
-                        return Err("LLM unavailable".to_string());
+                        return Err(MergeError::llm("LLM unavailable"));
                     }
                 }
             }
@@ -341,10 +396,9 @@ impl NotesGenerator<'_> {
                 .map(estimate_chunk_summary_chars)
                 .sum::<usize>();
             if next_round.len() == summaries.len() && after_estimate >= before_estimate {
-                return Err(
-                    "merge LLM call failed: chunk summaries cannot be reduced within context threshold"
-                        .to_string(),
-                );
+                return Err(MergeError::reduction(
+                    "merge LLM call failed: chunk summaries cannot be reduced within context threshold",
+                ));
             }
             summaries = next_round;
         }
@@ -352,14 +406,16 @@ impl NotesGenerator<'_> {
         Ok(summaries.remove(0))
     }
 
-    /// Single-section LLM call (original path, unchanged).
+    /// Single-section LLM call. Returns the draft plus `Some(error)` when the
+    /// `complete` call itself failed (provider error), or `None` when the
+    /// provider responded — even if the response was unusable and fell back.
     fn process_single_section(
         &self,
         time_range_ms: (u64, u64),
         segs: Vec<Segment>,
         req: LlmRequest,
         allowed_speakers: &HashSet<u32>,
-    ) -> SectionDraft {
+    ) -> (SectionDraft, Option<String>) {
         match self.llm.complete(req) {
             Ok(LlmResponse::Json(v)) => {
                 let draft = SectionDraft::from_json(time_range_ms, v);
@@ -368,29 +424,64 @@ impl NotesGenerator<'_> {
                     &draft.action_items,
                     allowed_speakers,
                 ) {
-                    verifier::VerifierReport::Ok => draft,
+                    verifier::VerifierReport::Ok => (draft, None),
                     verifier::VerifierReport::DisallowedSpeakers(ids) => {
                         tracing::warn!(
                             section_ms = ?time_range_ms,
                             disallowed = ?ids,
                             "section narrative referenced speakers not in transcript; using fallback"
                         );
-                        SectionDraft::fallback(
-                            time_range_ms,
-                            segs,
-                            "verifier: disallowed speaker reference",
-                            self.dialect,
+                        (
+                            SectionDraft::fallback(
+                                time_range_ms,
+                                segs,
+                                "verifier: disallowed speaker reference",
+                                self.dialect,
+                            ),
+                            None,
                         )
                     }
                 }
             }
-            Ok(LlmResponse::Text(_)) => SectionDraft::fallback(
-                time_range_ms,
-                segs,
-                "llm returned text, expected json",
-                self.dialect,
+            Ok(LlmResponse::Text(_)) => (
+                SectionDraft::fallback(
+                    time_range_ms,
+                    segs,
+                    "llm returned text, expected json",
+                    self.dialect,
+                ),
+                None,
             ),
-            Err(e) => SectionDraft::fallback(time_range_ms, segs, &e.to_string(), self.dialect),
+            Err(e) => {
+                let msg = e.to_string();
+                let draft = SectionDraft::fallback(time_range_ms, segs, &msg, self.dialect);
+                (draft, Some(msg))
+            }
+        }
+    }
+}
+
+/// Failure from [`NotesGenerator::merge_chunk_summaries`]. `llm_failed`
+/// distinguishes a provider `complete` error (counts toward runtime
+/// unavailability) from a context-reduction failure or a text-not-json
+/// response (provider reachable, output unusable).
+struct MergeError {
+    message: String,
+    llm_failed: bool,
+}
+
+impl MergeError {
+    fn llm(message: &str) -> Self {
+        Self {
+            message: message.to_string(),
+            llm_failed: true,
+        }
+    }
+
+    fn reduction(message: &str) -> Self {
+        Self {
+            message: message.to_string(),
+            llm_failed: false,
         }
     }
 }
