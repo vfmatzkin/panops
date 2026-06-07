@@ -39,8 +39,8 @@ struct LiveRecordingControllerTests {
         }
     }
 
-    @Test("stop failure resets recording state")
-    func stopFailureResetsRecordingState() async throws {
+    @Test("stop failure keeps recording state for retry")
+    func stopFailureKeepsRecordingStateForRetry() async throws {
         let fake = FakeLiveRecordingIpcClient(stopError: TestRecordingError.stopFailed)
         let controller = LiveRecordingController(ipcClient: fake)
 
@@ -51,15 +51,22 @@ struct LiveRecordingControllerTests {
             _ = try await controller.stop()
             Issue.record("stop should throw")
         } catch {
-            #expect(controller.isRecording == false)
+            // State is kept on IPC failure so the user can retry Stop rather
+            // than orphaning the engine-side recording.
+            #expect(controller.isRecording == true)
             let stopCalls = await fake.stopCallCount()
             #expect(stopCalls == 1)
         }
 
-        let secondStop = try await controller.stop()
-        let stopCalls = await fake.stopCallCount()
-        #expect(secondStop == nil)
-        #expect(stopCalls == 1)
+        // Preserved state means a retry actually re-attempts the stop.
+        do {
+            _ = try await controller.stop()
+            Issue.record("retry stop should throw again")
+        } catch {
+            let stopCalls = await fake.stopCallCount()
+            #expect(stopCalls == 2)
+        }
+        #expect(controller.isRecording == true)
     }
 }
 
