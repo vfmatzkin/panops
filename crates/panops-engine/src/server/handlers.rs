@@ -460,6 +460,98 @@ impl IpcServer for IpcImpl {
     }
 }
 
+/// Run VAD + recursive ASR over one already-loaded track, returning its
+/// stitched segments (absolute timestamps) and the model name. Mirrors the
+/// legacy single-track loop so both the file-import path and the slice-11
+/// two-track path share one transcription routine.
+fn transcribe_track(
+    heavy: &crate::server::HeavyAdapters,
+    samples: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+) -> Result<(Vec<panops_core::Segment>, Option<String>), IpcError> {
+    let regions = heavy
+        .vad
+        .detect_speech(samples, sample_rate)
+        .map_err(IpcError::from)?;
+    let merged = panops_portable::audio::merge_adjacent_regions(regions, 5_000);
+    let total_audio_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
+    let mut segments = Vec::new();
+    let mut model = None;
+    for region in merged.iter() {
+        let clamped = region.clamp_to(total_audio_ms);
+        if clamped.start_ms >= clamped.end_ms {
+            continue;
+        }
+        let result = panops_portable::recursive_asr::transcribe_recursive(
+            heavy.asr.as_ref(),
+            samples,
+            sample_rate,
+            clamped,
+            language,
+        )
+        .map_err(IpcError::from)?;
+        if model.is_none() {
+            model = result.model;
+        }
+        segments.extend(result.segments);
+    }
+    Ok((segments, model))
+}
+
+/// Two-track capture pipeline (slice 11). Transcribes whichever of the two
+/// capture tracks are present, pins the mic track to the local speaker
+/// (id 0, "You"), diarizes only the system track for remote speakers
+/// (ids >= 1, offset past the local id), and merges both by timestamp via
+/// [`panops_core::merge_two_track`]. At least one track must be present.
+fn transcribe_two_track(
+    heavy: &crate::server::HeavyAdapters,
+    system_wav: Option<&std::path::Path>,
+    mic_wav: Option<&std::path::Path>,
+    language: Option<&str>,
+) -> Result<panops_core::Transcript, IpcError> {
+    let mut mic_segments = Vec::new();
+    let mut system_segments = Vec::new();
+    let mut system_turns = Vec::new();
+    let mut model = None;
+    let mut duration_ms = 0u64;
+
+    if let Some(mic) = mic_wav {
+        let (samples, sr) =
+            panops_portable::audio::load_audio_mono16k(mic).map_err(IpcError::from)?;
+        duration_ms = duration_ms.max((samples.len() as u64 * 1000) / u64::from(sr));
+        let (segs, m) = transcribe_track(heavy, &samples, sr, language)?;
+        if model.is_none() {
+            model = m;
+        }
+        mic_segments = segs;
+    }
+    if let Some(system) = system_wav {
+        let (samples, sr) =
+            panops_portable::audio::load_audio_mono16k(system).map_err(IpcError::from)?;
+        duration_ms = duration_ms.max((samples.len() as u64 * 1000) / u64::from(sr));
+        let (segs, m) = transcribe_track(heavy, &samples, sr, language)?;
+        if model.is_none() {
+            model = m;
+        }
+        system_segments = segs;
+        system_turns = heavy.diar.diarize(system).map_err(IpcError::from)?;
+    }
+
+    let segments = panops_core::merge_two_track(mic_segments, system_segments, &system_turns);
+    Ok(panops_core::Transcript {
+        schema_version: panops_core::Transcript::SCHEMA_VERSION,
+        model: model.unwrap_or_else(|| "vad-multilingual".to_string()),
+        audio_path: system_wav
+            .or(mic_wav)
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default(),
+        audio_duration_ms: duration_ms,
+        diarized: true,
+        segments,
+    })
+}
+
 /// Synchronous core of `notes.generate`. Runs on the blocking pool and
 /// mirrors `panops-engine`'s CLI `run_notes` flow: ASR -> optional
 /// diarization merge -> `NotesGenerator` -> `MarkdownExporter`. All
@@ -566,75 +658,58 @@ pub(super) fn run_notes_pipeline(
         }
     };
 
-    // Slice 07: VAD-aware multilingual transcription.
+    // Slice 07/11: VAD-aware multilingual transcription.
     //
-    // Pipeline:
+    // Slice 11 adds the two-track live-capture path. A capture meeting
+    // writes two tracks into its meeting dir — `system.wav` (remote
+    // participants) and `mic.wav` (the local user). When either is
+    // present we take `transcribe_two_track`: the mic track is pinned to
+    // the local speaker (id 0, "You") and only the system track is
+    // diarized for remote speakers (ids >= 1), then both are merged by
+    // timestamp. File-import meetings (no capture WAVs) keep the legacy
+    // single-track path unchanged:
     //   1. Load samples once (16 kHz mono).
     //   2. Run VAD to find speech regions.
     //   3. Merge adjacent regions (gap < 5s) so each region is long
-    //      enough for Whisper's per-call language detection (>= 30s
-    //      ideally; merging helps when natural pauses are short).
-    //   4. For each merged region, call asr.transcribe(slice, sr, lang_hint)
-    //      with lang_hint=None to trigger per-region auto-detect.
-    //   5. Stitch transcripts back with absolute-time offsets.
-    let (samples, sample_rate) =
-        panops_portable::audio::load_audio_mono16k(&audio_path).map_err(IpcError::from)?;
+    //      enough for Whisper's per-call language detection.
+    //   4. Transcribe each merged region with per-region auto-detect.
+    //   5. Stitch transcripts back with absolute-time offsets, then
+    //      optionally diarize the whole file with sherpa.
+    let system_wav = canonical_out_dir.join("system.wav");
+    let mic_wav = canonical_out_dir.join("mic.wav");
+    let two_track = system_wav.exists() || mic_wav.exists();
 
-    let regions = heavy
-        .vad
-        .detect_speech(&samples, sample_rate)
-        .map_err(|e| {
-            tracing::error!(error = %e, "vad detect_speech failed");
-            IpcError::from(e)
-        })?;
-    let merged = panops_portable::audio::merge_adjacent_regions(regions, 5_000);
-
-    let mut stitched_segments: Vec<panops_core::Segment> = Vec::new();
-    let mut stitched_model: Option<String> = None;
-    let total_audio_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
-    for region in merged.iter() {
-        let clamped = region.clamp_to(total_audio_ms);
-        if clamped.start_ms >= clamped.end_ms {
-            tracing::warn!(
-                start_ms = region.start_ms,
-                end_ms = region.end_ms,
-                "degenerate VAD region after bounds clamping, skipping"
-            );
-            continue;
-        }
-        let result = panops_portable::recursive_asr::transcribe_recursive(
-            heavy.asr.as_ref(),
-            &samples,
-            sample_rate,
-            clamped,
+    let transcript = if two_track {
+        transcribe_two_track(
+            heavy,
+            system_wav.exists().then_some(system_wav.as_path()),
+            mic_wav.exists().then_some(mic_wav.as_path()),
             params.language.as_deref(),
-        )
-        .map_err(|e| {
-            tracing::error!(error = %e, "transcribe_recursive failed");
-            IpcError::from(e)
-        })?;
-        if stitched_model.is_none() {
-            stitched_model = result.model;
+        )?
+    } else {
+        let (samples, sample_rate) =
+            panops_portable::audio::load_audio_mono16k(&audio_path).map_err(IpcError::from)?;
+        let total_audio_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
+        let (segments, model) =
+            transcribe_track(heavy, &samples, sample_rate, params.language.as_deref())?;
+
+        let mut transcript = panops_core::Transcript {
+            schema_version: panops_core::Transcript::SCHEMA_VERSION,
+            model: model.unwrap_or_else(|| "vad-multilingual".to_string()),
+            audio_path: audio_path.clone(),
+            audio_duration_ms: total_audio_ms,
+            diarized: false,
+            segments,
+        };
+
+        let no_diarize = params.no_diarize.unwrap_or(false);
+        if !no_diarize {
+            let turns = heavy.diar.diarize(&audio_path).map_err(IpcError::from)?;
+            transcript.segments = merge_speaker_turns(transcript.segments, &turns);
+            transcript.diarized = true;
         }
-        stitched_segments.extend(result.segments);
-    }
-
-    let final_model = stitched_model.unwrap_or_else(|| "vad-multilingual".to_string());
-    let mut transcript = panops_core::Transcript {
-        schema_version: panops_core::Transcript::SCHEMA_VERSION,
-        model: final_model,
-        audio_path: audio_path.clone(),
-        audio_duration_ms: total_audio_ms,
-        diarized: false,
-        segments: stitched_segments,
+        transcript
     };
-
-    let no_diarize = params.no_diarize.unwrap_or(false);
-    if !no_diarize {
-        let turns = heavy.diar.diarize(&audio_path).map_err(IpcError::from)?;
-        transcript.segments = merge_speaker_turns(transcript.segments, &turns);
-        transcript.diarized = true;
-    }
     // Slice 06: write into the canonical `meetings/<uuid>/` layout
     // (resolved above). The on-disk `screenshots/` subdir was already
     // created during meeting.start (or during auto-create above) so
