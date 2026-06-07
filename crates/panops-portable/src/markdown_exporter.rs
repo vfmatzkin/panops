@@ -255,22 +255,115 @@ fn format_mmss(ms: u64) -> String {
 }
 
 fn yaml_scalar(s: &str) -> String {
-    let needs_quoting = s.is_empty()
-        || s.contains(['\n', '\r', '"', '\\', '#', '\''])
-        || s.contains(": ")
-        || s.starts_with([
-            ':', '-', '!', '|', '>', '[', ']', '{', '}', '*', '&', '?', '@', '`',
-        ]);
-    if needs_quoting {
-        let escaped = s
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r");
-        format!("\"{escaped}\"")
-    } else {
-        s.to_string()
+    // Quote-by-default: emit a plain (unquoted) scalar ONLY when the value is
+    // unambiguously safe. Everything else is double-quoted with escaping, which
+    // a YAML parser always reads back as the exact source string. This closes
+    // the YAML 1.1 number-format edge cases (1_000, .inf, 0xDE_AD, ...) in one
+    // rule instead of enumerating every shape that must be quoted.
+    if is_safe_plain_scalar(s) {
+        return s.to_string();
     }
+    let mut escaped = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            // Any remaining C0 control char (U+0000-U+001F) or DEL (U+007F)
+            // is invalid raw in a YAML double-quoted scalar; emit the broadly
+            // supported 4-hex \uNNNN escape (more portable than \xNN, which
+            // is YAML-1.2-only and rejected by some parsers such as PyYAML).
+            c if (c as u32) < 0x20 || (c as u32) == 0x7f => {
+                escaped.push_str(&format!("\\u{:04x}", c as u32))
+            }
+            c => escaped.push(c),
+        }
+    }
+    format!("\"{escaped}\"")
+}
+
+/// A value is safe to emit as a plain scalar only when it matches the strict
+/// pattern `^[A-Za-z][A-Za-z0-9 ._/-]*$`, is not a YAML reserved word, and is
+/// not number-like. The leading-letter requirement already excludes most
+/// numbers; the reserved-word and number checks catch the letter-leading edges
+/// (`true`, `inf`, `nan`, ...) that would otherwise slip through unquoted.
+fn is_safe_plain_scalar(s: &str) -> bool {
+    matches_plain_pattern(s) && !is_yaml_reserved(s) && !looks_like_number(s)
+}
+
+/// Matches `^[A-Za-z][A-Za-z0-9 ._/-]*$` AND has no trailing space: first char
+/// is an ASCII letter (this also excludes a leading space), the rest are ASCII
+/// alphanumerics or one of space, `.`, `_`, `/`, `-`. A trailing space is
+/// rejected because a YAML parser strips trailing whitespace from a plain
+/// scalar — `"Hello "` would silently round-trip to `"Hello"` — so such values
+/// are quoted instead.
+fn matches_plain_pattern(s: &str) -> bool {
+    if s.ends_with(' ') {
+        return false;
+    }
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '_' | '/' | '-'))
+}
+
+/// YAML reserved words (case-insensitive) that a parser would coerce to a
+/// boolean, null, or float rather than a string.
+fn is_yaml_reserved(s: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "true", "false", "null", "yes", "no", "on", "off", "y", "n", "~", ".inf", "-.inf", ".nan",
+    ];
+    let lower = s.to_lowercase();
+    KEYWORDS.contains(&lower.as_str())
+}
+
+/// Returns true if the value could be read back as a YAML number. Three
+/// detection paths, checked in order:
+///
+/// 1. **Parse** — `i64::parse` or `f64::parse` succeeds (decimal integers,
+///    floats, scientific notation, a leading or trailing dot, optional sign).
+/// 2. **Radix prefix** — an optionally-signed `0x` / `0o` / `0b` prefix with
+///    digits valid for that base. Rust's `parse` rejects these, so they are
+///    matched explicitly.
+/// 3. **Underscore grouping** — YAML 1.1 digit separators (`1_000`,
+///    `1_000.5`), which Rust's `parse` also rejects.
+///
+/// `f64::parse` accepts the bare tokens `inf` / `nan`, so those are flagged
+/// here. The dotted YAML spellings `.inf` / `-.inf` / `.nan` are instead caught
+/// by [`is_yaml_reserved`]. That overlap is intentional: between them the two
+/// checks cover every infinity / NaN spelling, and either one alone is enough
+/// to force quoting — neither needs to depend on the other's exact coverage.
+fn looks_like_number(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.parse::<i64>().is_ok() || trimmed.parse::<f64>().is_ok() {
+        return true;
+    }
+    // Radix prefixes, optionally signed (Rust's `parse` rejects these).
+    let body = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
+    let lower = body.to_ascii_lowercase();
+    for (prefix, radix) in [("0x", 16u32), ("0o", 8), ("0b", 2)] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            return !rest.is_empty() && rest.chars().all(|c| c == '_' || c.is_digit(radix));
+        }
+    }
+    // Underscore digit grouping (YAML 1.1: `1_000`, `1_000.5`). Rust's `parse`
+    // rejects underscores, so detect them explicitly.
+    if trimmed.contains('_') {
+        let cleaned = body.replace('_', "");
+        let dot_count = cleaned.matches('.').count();
+        let digits_only = cleaned.replace('.', "");
+        return dot_count <= 1
+            && !digits_only.is_empty()
+            && digits_only.chars().all(|c| c.is_ascii_digit());
+    }
+    false
 }
 
 fn yaml_list(items: &[String]) -> String {
@@ -293,6 +386,16 @@ mod tests {
     #[test]
     fn empty_string_is_double_quoted() {
         assert_eq!(yaml_scalar(""), "\"\"");
+    }
+
+    #[test]
+    fn trailing_space_is_double_quoted() {
+        // A plain YAML scalar strips trailing whitespace, so "Hello " must be
+        // quoted to survive a round-trip (otherwise it becomes "Hello").
+        assert_eq!(yaml_scalar("Hello "), "\"Hello \"");
+        assert_eq!(yaml_scalar("Daily standup  "), "\"Daily standup  \"");
+        // Interior spaces remain fine for a plain scalar.
+        assert_eq!(yaml_scalar("Daily standup"), "Daily standup");
     }
 
     #[test]
@@ -325,6 +428,122 @@ mod tests {
     fn leading_special_char_triggers_double_quoting() {
         assert_eq!(yaml_scalar(":starts-with-colon"), "\":starts-with-colon\"");
         assert_eq!(yaml_scalar("-starts-with-dash"), "\"-starts-with-dash\"");
+        assert_eq!(
+            yaml_scalar("%starts-with-percent"),
+            "\"%starts-with-percent\""
+        );
+    }
+
+    #[test]
+    fn trailing_colon_triggers_double_quoting() {
+        assert_eq!(yaml_scalar("key:"), "\"key:\"");
+    }
+
+    #[test]
+    fn whitespace_only_string_is_double_quoted() {
+        assert_eq!(yaml_scalar("   "), "\"   \"");
+        assert_eq!(yaml_scalar("\t"), "\"\\t\"");
+    }
+
+    #[test]
+    fn tab_is_escaped_inside_double_quotes() {
+        assert_eq!(yaml_scalar("col1\tcol2"), "\"col1\\tcol2\"");
+    }
+
+    #[test]
+    fn control_chars_are_unicode_escaped_inside_double_quotes() {
+        // U+0001 (SOH), U+0007 (BEL), and DEL (U+007F) have no dedicated escape
+        // and would be invalid raw inside a YAML double-quoted scalar; they emit
+        // as \uNNNN (4 lowercase hex digits, the broadly portable form).
+        let mut value = String::from("a");
+        value.push('\u{0001}');
+        value.push('\u{0007}');
+        value.push('\u{007f}');
+        value.push('b');
+        assert_eq!(yaml_scalar(&value), "\"a\\u0001\\u0007\\u007fb\"");
+    }
+
+    #[test]
+    fn yaml_boolean_keywords_are_double_quoted() {
+        assert_eq!(yaml_scalar("true"), "\"true\"");
+        assert_eq!(yaml_scalar("false"), "\"false\"");
+        assert_eq!(yaml_scalar("True"), "\"True\"");
+        assert_eq!(yaml_scalar("FALSE"), "\"FALSE\"");
+    }
+
+    #[test]
+    fn yaml_null_keywords_are_double_quoted() {
+        assert_eq!(yaml_scalar("null"), "\"null\"");
+        assert_eq!(yaml_scalar("Null"), "\"Null\"");
+        assert_eq!(yaml_scalar("~"), "\"~\"");
+    }
+
+    #[test]
+    fn yaml_yes_no_keywords_are_double_quoted() {
+        assert_eq!(yaml_scalar("yes"), "\"yes\"");
+        assert_eq!(yaml_scalar("no"), "\"no\"");
+        assert_eq!(yaml_scalar("on"), "\"on\"");
+        assert_eq!(yaml_scalar("off"), "\"off\"");
+        assert_eq!(yaml_scalar("y"), "\"y\"");
+        assert_eq!(yaml_scalar("n"), "\"n\"");
+    }
+
+    #[test]
+    fn numbers_are_double_quoted() {
+        // Integers
+        assert_eq!(yaml_scalar("0"), "\"0\"");
+        assert_eq!(yaml_scalar("123"), "\"123\"");
+        assert_eq!(yaml_scalar("-42"), "\"-42\"");
+        assert_eq!(yaml_scalar("+7"), "\"+7\"");
+        // Floats
+        assert_eq!(yaml_scalar("3.14"), "\"3.14\"");
+        assert_eq!(yaml_scalar(".5"), "\".5\"");
+        assert_eq!(yaml_scalar("5."), "\"5.\"");
+        assert_eq!(yaml_scalar("-0.5"), "\"-0.5\"");
+        // Hex
+        assert_eq!(yaml_scalar("0x1A"), "\"0x1A\"");
+        // Octal
+        assert_eq!(yaml_scalar("0o755"), "\"0o755\"");
+        // Binary
+        assert_eq!(yaml_scalar("0b1010"), "\"0b1010\"");
+        // Scientific notation
+        assert_eq!(yaml_scalar("1e5"), "\"1e5\"");
+        assert_eq!(yaml_scalar("1.5e-3"), "\"1.5e-3\"");
+    }
+
+    #[test]
+    fn number_shaped_strings_are_double_quoted() {
+        // Leading digits or dots fail the safe-plain pattern, so quote-by-default
+        // wraps them even though they aren't valid numbers on their own.
+        assert_eq!(yaml_scalar("0x"), "\"0x\""); // incomplete hex
+        assert_eq!(yaml_scalar("1.2.3"), "\"1.2.3\""); // multiple dots
+    }
+
+    #[test]
+    fn letter_leading_strings_stay_unquoted() {
+        // These match the safe-plain pattern and aren't number-like, so they
+        // remain plain scalars.
+        assert_eq!(yaml_scalar("abc123"), "abc123"); // letters before digits
+        assert_eq!(yaml_scalar("v1.0"), "v1.0"); // letter prefix
+    }
+
+    #[test]
+    fn yaml_1_1_number_formats_are_double_quoted() {
+        assert_eq!(yaml_scalar("1_000"), "\"1_000\""); // underscore grouping
+        assert_eq!(yaml_scalar(".inf"), "\".inf\""); // YAML infinity
+        assert_eq!(yaml_scalar(".nan"), "\".nan\""); // YAML not-a-number
+        assert_eq!(yaml_scalar("0xDEAD"), "\"0xDEAD\""); // unsigned hex
+    }
+
+    #[test]
+    fn title_with_colon_is_double_quoted() {
+        assert_eq!(yaml_scalar("Q3: planning"), "\"Q3: planning\"");
+    }
+
+    #[test]
+    fn leading_zero_string_is_double_quoted() {
+        // A string like "007" must round-trip as a string, not octal/decimal.
+        assert_eq!(yaml_scalar("007"), "\"007\"");
     }
 
     #[test]
