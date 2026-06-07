@@ -533,6 +533,13 @@ actor IpcClient {
         }
     }
 
+    /// `ipc.server.info` — fetches active engine/provider status.
+    func serverInfo() async throws -> ServerInfo {
+        return try await sendRequestNoParams(
+            method: "ipc.server.info"
+        )
+    }
+
     /// `ipc.notes.generate` — synchronous response is the job_id.
     /// JobDone arrives later; slice 09 detects completion via polling
     /// `meeting.get(meetingId)` rather than WS events.

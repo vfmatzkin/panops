@@ -35,7 +35,10 @@ done
 fn resolver_accepts_available_sidecar() -> TestResult {
     let (_dir, bin) = write_fake_sidecar(true)?;
     let rt = tokio::runtime::Runtime::new()?;
-    let llm = panops_engine::llm_resolver::pick_llm(rt.handle().clone(), Some(bin));
+    let (llm, info) = panops_engine::llm_resolver::pick_llm(rt.handle().clone(), Some(bin));
+    assert_eq!(info.provider, "apple-foundation");
+    assert_eq!(info.model, "on-device");
+    assert!(info.local);
     drop(llm);
     Ok(())
 }
@@ -44,7 +47,10 @@ fn resolver_accepts_available_sidecar() -> TestResult {
 fn resolver_falls_back_when_probe_unavailable() -> TestResult {
     let (_dir, bin) = write_fake_sidecar(false)?;
     let rt = tokio::runtime::Runtime::new()?;
-    let llm = panops_engine::llm_resolver::pick_llm(rt.handle().clone(), Some(bin));
+    let (llm, info) = panops_engine::llm_resolver::pick_llm(rt.handle().clone(), Some(bin));
+    assert_eq!(info.provider, "ollama");
+    assert_eq!(info.model, "gemma3:4b");
+    assert!(info.local);
     drop(llm);
     Ok(())
 }
@@ -55,7 +61,10 @@ fn resolver_falls_back_when_sidecar_is_not_executable() -> TestResult {
     let bin = dir.path().join("not-executable");
     std::fs::write(&bin, "#!/bin/sh\nexit 0\n")?;
     let rt = tokio::runtime::Runtime::new()?;
-    let llm = panops_engine::llm_resolver::pick_llm(rt.handle().clone(), Some(bin));
+    let (llm, info) = panops_engine::llm_resolver::pick_llm(rt.handle().clone(), Some(bin));
+    assert_eq!(info.provider, "ollama");
+    assert_eq!(info.model, "gemma3:4b");
+    assert!(info.local);
     drop(llm);
     Ok(())
 }
@@ -65,7 +74,10 @@ fn resolver_falls_back_when_sidecar_path_does_not_exist() -> TestResult {
     let dir = tempfile::tempdir()?;
     let missing = dir.path().join("missing-panops-llm-mac");
     let rt = tokio::runtime::Runtime::new()?;
-    let llm = panops_engine::llm_resolver::pick_llm(rt.handle().clone(), Some(missing));
+    let (llm, info) = panops_engine::llm_resolver::pick_llm(rt.handle().clone(), Some(missing));
+    assert_eq!(info.provider, "ollama");
+    assert_eq!(info.model, "gemma3:4b");
+    assert!(info.local);
     drop(llm);
     Ok(())
 }

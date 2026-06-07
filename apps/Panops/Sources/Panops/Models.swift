@@ -1,5 +1,17 @@
 import Foundation
 
+/// Response from `ipc.server.info`.
+struct ServerInfo: Decodable, Equatable {
+    let llm: LlmInfo
+}
+
+/// Active LLM provider advertised by the engine.
+struct LlmInfo: Decodable, Equatable {
+    let provider: String
+    let model: String
+    let local: Bool
+}
+
 /// Outgoing params for `ipc.notes.generate`.
 struct NotesGenerateParams: Encodable {
     let audio: String

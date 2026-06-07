@@ -28,7 +28,7 @@ use panops_core::notes::raw_transcript::write_raw_transcript;
 use panops_protocol::{
     AudioSourcesWire, Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, JobProgressEvent,
     Meeting, MeetingConfig, MeetingSummary, NotesDialect, NotesGenerateParams, NotesGenerateResult,
-    RecordingAccepted, RecordingStartParams, RecordingStopParams, RecordingStopped,
+    RecordingAccepted, RecordingStartParams, RecordingStopParams, RecordingStopped, ServerInfo,
 };
 use tokio::sync::broadcast;
 
@@ -66,6 +66,9 @@ pub(super) trait Ipc {
 
     #[method(name = "meeting.list")]
     async fn meeting_list(&self) -> Result<Vec<MeetingSummary>, ErrorObjectOwned>;
+
+    #[method(name = "server.info")]
+    async fn server_info(&self) -> Result<ServerInfo, ErrorObjectOwned>;
 
     #[method(name = "meeting.start")]
     async fn meeting_start(&self, params: MeetingConfig) -> Result<String, ErrorObjectOwned>;
@@ -218,6 +221,12 @@ impl IpcServer for IpcImpl {
             .map_err(|e| ipc_error_to_obj(e.into()))?;
 
         Ok(rows.into_iter().map(MeetingSummary::from).collect())
+    }
+
+    async fn server_info(&self) -> Result<ServerInfo, ErrorObjectOwned> {
+        Ok(ServerInfo {
+            llm: self.services.llm_info.clone(),
+        })
     }
 
     async fn meeting_start(&self, params: MeetingConfig) -> Result<String, ErrorObjectOwned> {
