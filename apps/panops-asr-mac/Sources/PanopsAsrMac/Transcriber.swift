@@ -67,7 +67,13 @@ actor Transcriber {
     }
 
     func transcribe(audioPath: String, languageHint: String?) async throws -> WireTranscript {
-        let opts = DecodingOptions(language: languageHint)
+        // Force language when explicitly provided (skip auto-detect).
+        // When no hint, explicitly enable language detection (fixes
+        // tiny/base misdetecting Spanish as English per issue #125).
+        let opts = DecodingOptions(
+            language: languageHint,
+            detectLanguage: languageHint == nil ? true : false
+        )
         let results = try await whisperKit.transcribe(
             audioPath: audioPath, decodeOptions: opts
         )

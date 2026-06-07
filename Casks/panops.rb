@@ -1,6 +1,8 @@
 cask "panops" do
+  # Version and sha256 are updated at release time per docs/release-v0.1.md.
+  # Run `scripts/package.sh v0.1.0` and use the output sha256.
   version "0.1.0"
-  sha256 "REPLACE_WITH_TARBALL_SHA256"
+  sha256 "REPLACE_WITH_TARBALL_SHA256_FROM_PACKAGE_SH_OUTPUT"  # e.g. "a1b2c3d4..."
 
   url "https://github.com/vfmatzkin/panops/releases/download/v#{version}/Panops-#{version}.tar.gz"
   name "Panops"
