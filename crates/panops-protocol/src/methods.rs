@@ -170,7 +170,13 @@ pub struct MeetingSummary {
     /// crate stays free of date-time deps; non-Rust consumers don't need
     /// a Rust-specific time crate to consume it.
     pub started_at: String,
+    /// RFC3339 when the meeting has ended; `None` for in-progress meetings.
+    pub ended_at: Option<String>,
     pub duration_ms: u64,
+    /// BCP-47 language hint, or "auto".
+    pub language: String,
+    /// Whether at least one note row exists for this meeting.
+    pub has_notes: bool,
 }
 
 /// Full meeting record returned by `meeting.get` / `meeting.start` /
@@ -189,6 +195,21 @@ pub struct Meeting {
     /// Absolute path to the meeting directory (where notes / future
     /// audio + screenshots live).
     pub dir_path: String,
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<panops_core::storage::MeetingSummary> for MeetingSummary {
+    fn from(value: panops_core::storage::MeetingSummary) -> Self {
+        Self {
+            id: value.id,
+            title: value.title,
+            started_at: value.started_at,
+            ended_at: value.ended_at,
+            duration_ms: value.duration_ms,
+            language: value.language,
+            has_notes: value.has_notes,
+        }
+    }
 }
 
 /// Input shape for `meeting.start`. Both fields optional; server
@@ -499,7 +520,10 @@ mod tests {
             id: "m1".into(),
             title: "Test".into(),
             started_at: "2026-05-02T10:00:00Z".into(),
+            ended_at: Some("2026-05-02T10:01:00Z".into()),
             duration_ms: 60_000,
+            language: "en".into(),
+            has_notes: true,
         };
         let back: MeetingSummary =
             serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();

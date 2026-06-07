@@ -13,7 +13,7 @@ use jsonrpsee::rpc_params;
 use panops_core::conformance::fakes::{
     FakeNotesExporter, KnownRegionsFake, KnownTurnsFake, MockLlm, TranscriptFileFake,
 };
-use panops_core::storage::MeetingDraft;
+use panops_core::storage::{MeetingDraft, NoteDraft};
 use panops_engine::server::{EngineServices, run_serve_in_process};
 use panops_protocol::MeetingSummary;
 use tempfile::tempdir;
@@ -45,8 +45,23 @@ async fn meeting_list_returns_rows_inserted_via_storage() {
             id: "b".into(),
             title: "B".into(),
             started_at: "2026-05-03T10:00:00+00:00".into(),
-            language: "en".into(),
+            language: "es".into(),
             dir_path: data_dir.join("meetings/b").to_string_lossy().into_owned(),
+        })
+        .unwrap();
+    storage
+        .update_meeting_ended("b", "2026-05-03T10:15:00+00:00", 900_000)
+        .unwrap();
+    storage
+        .create_note(NoteDraft {
+            id: "n_b".into(),
+            meeting_id: "b".into(),
+            dialect: "basic".into(),
+            content_md: "# Notes".into(),
+            primary_path: data_dir
+                .join("meetings/b/notes.md")
+                .to_string_lossy()
+                .into_owned(),
         })
         .unwrap();
 
@@ -81,8 +96,18 @@ async fn meeting_list_returns_rows_inserted_via_storage() {
     assert_eq!(result[0].title, "B");
     assert_eq!(result[1].id, "a");
     assert_eq!(result[1].title, "A");
+    assert_eq!(
+        result[0].ended_at.as_deref(),
+        Some("2026-05-03T10:15:00+00:00")
+    );
+    assert_eq!(result[0].duration_ms, 900_000);
+    assert_eq!(result[0].language, "es");
+    assert!(result[0].has_notes);
     // In-progress meetings render duration_ms as 0 (not Option<u64>).
-    assert_eq!(result[0].duration_ms, 0);
+    assert!(result[1].ended_at.is_none());
+    assert_eq!(result[1].duration_ms, 0);
+    assert_eq!(result[1].language, "en");
+    assert!(!result[1].has_notes);
 
     let _ = shutdown_tx.send(true);
     let _ = server.await;
