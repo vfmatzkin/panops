@@ -40,6 +40,7 @@ use panops_core::exporter::NotesExporter;
 use panops_core::llm::LlmProvider;
 use panops_core::storage::Storage;
 use panops_core::vad::Vad;
+use panops_protocol::LlmInfo;
 use tokio::sync::{Semaphore, watch};
 
 use crate::server::handlers::{IpcImpl, IpcServer};
@@ -85,6 +86,7 @@ pub(super) struct HeavyAdapters {
 /// in `run_notes_pipeline`.
 pub struct EngineServices {
     pub llm: Arc<dyn LlmProvider + Send + Sync>,
+    pub llm_info: LlmInfo,
     /// Storage port (slice 06). Cheap to open (SQLite file open is
     /// microseconds), so it lives in the **direct** lane next to
     /// `llm`, NOT in the `heavy` `OnceLock`.
@@ -119,6 +121,7 @@ impl EngineServices {
         }));
         Self {
             llm,
+            llm_info: LlmInfo::local_ollama(),
             storage,
             data_dir,
             heavy,
@@ -136,14 +139,25 @@ impl EngineServices {
     /// the pending shape. Integration tests use [`Self::ready`].
     /// `HeavyAdapters` stays `pub(super)` so it can't leak out of
     /// `server::*`.
+    #[cfg(test)]
     pub(crate) fn pending(
         llm: Arc<dyn LlmProvider + Send + Sync>,
+        storage: Arc<dyn Storage>,
+        data_dir: PathBuf,
+    ) -> (Self, Arc<OnceLock<Result<HeavyAdapters, String>>>) {
+        Self::pending_with_llm_info(llm, LlmInfo::local_ollama(), storage, data_dir)
+    }
+
+    pub(crate) fn pending_with_llm_info(
+        llm: Arc<dyn LlmProvider + Send + Sync>,
+        llm_info: LlmInfo,
         storage: Arc<dyn Storage>,
         data_dir: PathBuf,
     ) -> (Self, Arc<OnceLock<Result<HeavyAdapters, String>>>) {
         let heavy = Arc::new(OnceLock::new());
         let services = Self {
             llm,
+            llm_info,
             storage,
             data_dir,
             heavy: heavy.clone(),
@@ -205,8 +219,9 @@ pub fn run_serve(
         // with the accept loop, so the socket binds within the 5s
         // budget and `notes.generate` is gated with
         // `ProviderUnavailable` until the trio is ready.
-        let llm = crate::llm_resolver::pick_llm(llm_handle, llm_sidecar_path);
-        let (services, heavy_lock) = EngineServices::pending(llm, storage, data_dir);
+        let (llm, llm_info) = crate::llm_resolver::pick_llm(llm_handle, llm_sidecar_path);
+        let (services, heavy_lock) =
+            EngineServices::pending_with_llm_info(llm, llm_info, storage, data_dir);
         spawn_heavy_init(heavy_lock);
         run_serve_in_process(&path, services, None).await
     });

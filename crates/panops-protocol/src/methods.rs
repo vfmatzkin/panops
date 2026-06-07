@@ -114,6 +114,36 @@ pub struct JobAccepted {
     pub job_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LlmInfo {
+    pub provider: String,
+    pub model: String,
+    pub local: bool,
+}
+
+impl LlmInfo {
+    pub fn local_ollama() -> Self {
+        Self {
+            provider: "ollama".into(),
+            model: "gemma3:4b".into(),
+            local: true,
+        }
+    }
+
+    pub fn apple_foundation() -> Self {
+        Self {
+            provider: "apple-foundation".into(),
+            model: "on-device".into(),
+            local: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerInfo {
+    pub llm: LlmInfo,
+}
+
 /// Params for `ipc.notes.generate`.
 ///
 /// Param structs intentionally do NOT carry `#[serde(deny_unknown_fields)]`
@@ -281,6 +311,20 @@ pub struct RecordingStopped {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_info_round_trips_with_llm_info() {
+        let info = ServerInfo {
+            llm: LlmInfo::local_ollama(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert_eq!(
+            json,
+            r#"{"llm":{"provider":"ollama","model":"gemma3:4b","local":true}}"#
+        );
+        let back: ServerInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, info);
+    }
 
     #[test]
     fn notes_generate_params_minimal_round_trip() {

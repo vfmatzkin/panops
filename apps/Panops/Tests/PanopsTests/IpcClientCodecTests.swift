@@ -39,6 +39,17 @@ struct IpcClientCodecTests {
         #expect(!json.contains("\"language\":"), "expected language field to be omitted: \(json)")
     }
 
+    @Test("ServerInfo decodes LLM provider chip payload")
+    func serverInfoDecodes() throws {
+        let json = #"""
+        {"llm":{"provider":"ollama","model":"gemma3:4b","local":true}}
+        """#
+        let info = try decoder.decode(ServerInfo.self, from: json.data(using: .utf8)!)
+        #expect(info.llm.provider == "ollama")
+        #expect(info.llm.model == "gemma3:4b")
+        #expect(info.llm.local == true)
+    }
+
     @Test("job.done event decodes")
     func jobDoneEvent_decodes() throws {
         let json = #"""

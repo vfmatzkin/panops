@@ -17,6 +17,7 @@ final class AppViewModel: ObservableObject {
     @Published var meetings: [MeetingSummary] = []
     @Published var selectedMeeting: Meeting?
     @Published var notesProgress: JobProgressEvent?
+    @Published var llmInfo: LlmInfo?
 
     private let client: IpcClient
     private var pollingTask: Task<Void, Never>?
@@ -39,6 +40,7 @@ final class AppViewModel: ObservableObject {
 
     func connect() async throws {
         try await client.connect()
+        await loadServerInfoBestEffort()
         await refreshMeetingsWithStartupRetry()
     }
 
@@ -47,6 +49,7 @@ final class AppViewModel: ObservableObject {
     func retryConnect() async {
         do {
             try await client.connect()
+            await loadServerInfoBestEffort()
             await refreshMeetingsWithStartupRetry()
             state = .idle(audio: nil)
         } catch {
@@ -200,6 +203,18 @@ final class AppViewModel: ObservableObject {
             return result
         }
         return .timedOut
+    }
+
+    /// Fetch engine status once after IPC connection. Best-effort: older or
+    /// unhealthy engines simply omit the chip instead of blocking the app.
+    private func loadServerInfoBestEffort() async {
+        do {
+            let info = try await client.serverInfo()
+            llmInfo = info.llm
+        } catch {
+            Self.logFullError("ipc.server.info", error)
+            llmInfo = nil
+        }
     }
 
     /// Fetch meeting list from engine. Called on app launch and refresh.
@@ -447,6 +462,37 @@ final class AppViewModel: ObservableObject {
     }
 }
 
+struct LlmProviderChip: View {
+    let info: LlmInfo
+
+    private var label: String {
+        if info.local {
+            return "Local · \(info.provider)/\(info.model)"
+        }
+        return "⚠︎ Cloud · \(info.provider)/\(info.model)"
+    }
+
+    private var tint: Color {
+        info.local ? Color.secondary : Color.orange
+    }
+
+    private var fill: Color {
+        info.local ? Color.secondary.opacity(0.12) : Color.orange.opacity(0.15)
+    }
+
+    var body: some View {
+        Text(label)
+            .font(.caption)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .foregroundStyle(tint)
+            .background(Capsule().fill(fill))
+            .overlay(Capsule().stroke(tint.opacity(0.35), lineWidth: 1))
+            .help(label)
+    }
+}
+
 struct ContentView<Controller: RecordingController & ObservableObject>: View {
     @ObservedObject var vm: AppViewModel
     @ObservedObject var recordingController: Controller
@@ -473,6 +519,10 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
         .frame(minWidth: 720, minHeight: 480)
         .toolbar {
             ToolbarItemGroup {
+                if let llmInfo = vm.llmInfo {
+                    LlmProviderChip(info: llmInfo)
+                }
+
                 if vm.selectedMeeting != nil {
                     Button("New") {
                         vm.startNewGenerationFlow()

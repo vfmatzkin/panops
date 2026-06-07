@@ -3,7 +3,8 @@
 //! On macOS, if `PANOPS_LLM_SIDECAR_BIN` is set AND that path is an
 //! executable file, probe the FoundationModels sidecar (`panops_mac::FoundationLlm`).
 //! If `SystemLanguageModel.availability` reports available, use it;
-//! otherwise fall back to `GenaiLlm` (Ollama / provider env auto-detect).
+//! otherwise fall back to local Ollama via `GenaiLlm`. Cloud auto-detect is
+//! reserved for the explicit CLI `--llm-provider auto` path.
 //!
 //! Slice 15 design:
 //! `docs/superpowers/specs/2026-06-06-slice-15-foundationmodels-llm-sidecar-design.md`.
@@ -12,8 +13,9 @@ use std::sync::Arc;
 
 use panops_core::llm::LlmProvider;
 use panops_portable::genai_llm::GenaiLlm;
+use panops_protocol::LlmInfo;
 
-/// Resolve the LLM adapter as an `Arc<dyn LlmProvider + Send + Sync>`.
+/// Resolve the LLM adapter and its wire-facing description.
 ///
 /// `sidecar_path` is intentionally an explicit argument instead of a
 /// hidden read inside this function so `main.rs` owns the dev/CI-only
@@ -22,7 +24,7 @@ use panops_portable::genai_llm::GenaiLlm;
 pub fn pick_llm(
     handle: tokio::runtime::Handle,
     sidecar_path: Option<std::path::PathBuf>,
-) -> Arc<dyn LlmProvider + Send + Sync> {
+) -> (Arc<dyn LlmProvider + Send + Sync>, LlmInfo) {
     #[cfg(not(target_os = "macos"))]
     let _ = sidecar_path;
 
@@ -39,26 +41,26 @@ pub fn pick_llm(
                         sidecar = %sidecar.display(),
                         "selecting FoundationModels LLM sidecar"
                     );
-                    return Arc::new(llm);
+                    return (Arc::new(llm), LlmInfo::apple_foundation());
                 }
                 Ok(probe) => {
                     tracing::info!(
                         sidecar = %sidecar.display(),
                         reason = probe.reason.as_deref().unwrap_or("unavailable"),
-                        "FoundationModels unavailable; falling back to GenaiLlm"
+                        "FoundationModels unavailable; falling back to local Ollama"
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
                         sidecar = %sidecar.display(),
                         error = %e,
-                        "FoundationModels sidecar probe failed; falling back to GenaiLlm"
+                        "FoundationModels sidecar probe failed; falling back to local Ollama"
                     );
                 }
             }
         }
     }
-    Arc::new(genai_with_handle(handle))
+    (Arc::new(genai_with_handle(handle)), LlmInfo::local_ollama())
 }
 
 /// Read the dev/CI-only `PANOPS_LLM_SIDECAR_BIN` gate. The returned
@@ -94,17 +96,11 @@ pub fn foundation_llm_explicit(
 }
 
 fn genai_with_handle(handle: tokio::runtime::Handle) -> GenaiLlm {
-    let model = if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-        "claude-haiku-4-5-20251001"
-    } else if std::env::var("OPENAI_API_KEY").is_ok() {
-        "gpt-4o-mini"
-    } else if std::env::var("OLLAMA_HOST").is_ok() {
-        "gemma3:4b"
-    } else {
-        // Last-resort default. Matches `GenaiLlm::auto` so the IPC
-        // server is no more restrictive than the CLI's auto mode.
-        "gemma3:4b"
-    };
+    let model = "gemma3:4b";
+    tracing::info!(
+        model = model,
+        "notes LLM: using local ollama (set --llm-provider auto for cloud)"
+    );
     GenaiLlm::with_handle(model, handle)
 }
 
