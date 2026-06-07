@@ -36,7 +36,10 @@ pub fn merge_two_track(
         .map(|t| SpeakerTurn {
             start_ms: t.start_ms,
             end_ms: t.end_ms,
-            speaker_id: t.speaker_id + 1,
+            speaker_id: t
+                .speaker_id
+                .checked_add(1)
+                .expect("sherpa speaker_id overflow"),
         })
         .collect();
     let system = merge_speaker_turns(system_segments, &offset_turns);

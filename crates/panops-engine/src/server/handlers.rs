@@ -470,10 +470,10 @@ fn transcribe_track(
     sample_rate: u32,
     language: Option<&str>,
 ) -> Result<(Vec<panops_core::Segment>, Option<String>), IpcError> {
-    let regions = heavy
-        .vad
-        .detect_speech(samples, sample_rate)
-        .map_err(IpcError::from)?;
+    let regions = heavy.vad.detect_speech(samples, sample_rate).map_err(|e| {
+        tracing::error!(error = %e, "vad detect_speech failed");
+        IpcError::from(e)
+    })?;
     let merged = panops_portable::audio::merge_adjacent_regions(regions, 5_000);
     let total_audio_ms = (samples.len() as u64 * 1000) / u64::from(sample_rate);
     let mut segments = Vec::new();
@@ -490,7 +490,10 @@ fn transcribe_track(
             clamped,
             language,
         )
-        .map_err(IpcError::from)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "transcribe_recursive failed");
+            IpcError::from(e)
+        })?;
         if model.is_none() {
             model = result.model;
         }
@@ -511,6 +514,12 @@ fn transcribe_two_track(
     language: Option<&str>,
     no_diarize: bool,
 ) -> Result<panops_core::Transcript, IpcError> {
+    if system_wav.is_none() && mic_wav.is_none() {
+        return Err(IpcError::InvalidInput {
+            message: "two-track transcription requires at least one track".into(),
+        });
+    }
+
     let mut mic_segments = Vec::new();
     let mut system_segments = Vec::new();
     let mut system_turns = Vec::new();
@@ -683,6 +692,13 @@ pub(super) fn run_notes_pipeline(
     let two_track = system_wav.exists() || mic_wav.exists();
 
     let transcript = if two_track {
+        if !audio_path.starts_with(&canonical_out_dir) {
+            tracing::warn!(
+                audio_path = ?audio_path,
+                meeting_dir = ?canonical_out_dir,
+                "explicit audio file is being bypassed in favor of capture WAVs in the meeting dir"
+            );
+        }
         transcribe_two_track(
             heavy,
             system_wav.exists().then_some(system_wav.as_path()),
