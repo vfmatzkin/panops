@@ -4,10 +4,12 @@ ScreenCaptureKit live-capture sidecar for the panops engine. Slice 11 (Anchor B)
 Spec: `docs/superpowers/specs/2026-06-07-slice-11-live-capture-design.md`.
 
 Captures **system audio**, **microphone**, and **screen frames** through one
-`SCStream`, writing **two separate 16 kHz mono WAVs** (`system.wav` = remote
-participants, `mic.wav` = the local user — never mixed) plus deduplicated
-screenshot JPEGs into the meeting directory. Everything stays on this Mac; the
-sidecar performs zero network egress.
+`SCStream`, writing **two separate 16 kHz mono WAVs** (`system.wav` = all system
+audio output except this sidecar's own — during a call that is the remote
+participants, but it is whole-system audio, not per-app isolation; `mic.wav` =
+the local user's microphone — never mixed) plus deduplicated screenshot JPEGs
+into the meeting directory. Everything stays on this Mac; the sidecar performs
+zero network egress.
 
 ## Architecture
 
