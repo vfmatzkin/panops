@@ -255,22 +255,120 @@ fn format_mmss(ms: u64) -> String {
 }
 
 fn yaml_scalar(s: &str) -> String {
+    // YAML reserved words that would be parsed as booleans/null.
+    const YAML_KEYWORDS: &[&str] = &[
+        "true", "false", "null", "yes", "no", "on", "off", "y", "n", "~",
+    ];
+    // Characters that trigger quoting anywhere in the string.
+    const QUOTE_CHARS: &[char] = &['\n', '\r', '\t', '"', '\\', '#', '\''];
+    // Characters that trigger quoting if the string starts with them.
+    const LEADING_SPECIAL: &[char] = &[
+        ':', '-', '!', '|', '>', '[', ']', '{', '}', '*', '&', '?', '@', '`', '%',
+    ];
+
+    let lower = s.to_lowercase();
     let needs_quoting = s.is_empty()
-        || s.contains(['\n', '\r', '"', '\\', '#', '\''])
-        || s.contains(": ")
-        || s.starts_with([
-            ':', '-', '!', '|', '>', '[', ']', '{', '}', '*', '&', '?', '@', '`',
-        ]);
+        // Whitespace-only strings need quoting
+        || s.trim().is_empty()
+        // YAML keywords (booleans/null)
+        || YAML_KEYWORDS.contains(&lower.as_str())
+        // Strings that look like numbers (integers, floats, hex, octal)
+        || looks_like_number(s)
+        // Colon-space (mapping indicator) or trailing colon (key indicator)
+        || s.contains(": ") || s.ends_with(':')
+        // Special characters anywhere
+        || s.contains(QUOTE_CHARS)
+        // Special characters at start
+        || s.starts_with(LEADING_SPECIAL);
+
     if needs_quoting {
         let escaped = s
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
             .replace('\n', "\\n")
-            .replace('\r', "\\r");
+            .replace('\r', "\\r")
+            .replace('\t', "\\t");
         format!("\"{escaped}\"")
     } else {
         s.to_string()
     }
+}
+
+/// Returns true if the string would be parsed as a YAML number.
+fn looks_like_number(s: &str) -> bool {
+    // YAML parses integers, floats, hex, octal, and binary as numbers.
+    // We conservatively quote anything that might be parsed as a number.
+    if s.is_empty() {
+        return false;
+    }
+    // Hex: 0x...
+    if s.starts_with("0x") || s.starts_with("0X") {
+        return s.len() > 2 && s[2..].chars().all(|c| c.is_ascii_hexdigit());
+    }
+    // Octal: 0o... (YAML 1.2 uses 0o prefix)
+    if s.starts_with("0o") || s.starts_with("0O") {
+        return s.len() > 2 && s[2..].chars().all(|c| c.is_ascii_digit() && c < '8');
+    }
+    // Binary: 0b...
+    if s.starts_with("0b") || s.starts_with("0B") {
+        return s.len() > 2 && s[2..].chars().all(|c| c == '0' || c == '1');
+    }
+
+    // Check for plain integers and floats.
+    // A valid YAML float has exactly ONE dot.
+    let trimmed = s.trim();
+
+    // Count dots - more than one means it's not a valid number
+    let dot_count = trimmed.chars().filter(|c| *c == '.').count();
+    if dot_count > 1 {
+        return false;
+    }
+
+    // Handle optional sign prefix
+    let digits_part = if trimmed.starts_with('+') || trimmed.starts_with('-') {
+        &trimmed[1..]
+    } else {
+        trimmed
+    };
+
+    // Integer: all digits, no dot
+    if dot_count == 0 && digits_part.chars().all(|c| c.is_ascii_digit()) && !digits_part.is_empty()
+    {
+        return true;
+    }
+
+    // Float: exactly one dot, rest are digits (allow ".5" and "5.")
+    if dot_count == 1 {
+        let without_dot = digits_part.replace('.', "");
+        // Empty after removing dot means just "." which isn't valid, but
+        // ".5" or "5." are valid YAML floats
+        if without_dot.chars().all(|c| c.is_ascii_digit()) && !without_dot.is_empty() {
+            return true;
+        }
+    }
+
+    // Scientific notation (e.g., "1e5", "1.5e-3")
+    if trimmed.contains('e') || trimmed.contains('E') {
+        let parts: Vec<&str> = trimmed.split(['e', 'E']).collect();
+        if parts.len() == 2 {
+            let base = parts[0];
+            let exp = parts[1];
+            // Base part can be integer or float (one dot max)
+            let base_dot_count = base.chars().filter(|c| *c == '.').count();
+            let base_digits = base.replace(['.', '+', '-'], "");
+            let base_ok = base_dot_count <= 1
+                && base_digits.chars().all(|c| c.is_ascii_digit())
+                && !base_digits.is_empty();
+            // Exp part is integer (may have sign)
+            let exp_digits = exp.replace(['+', '-'], "");
+            let exp_ok = exp_digits.chars().all(|c| c.is_ascii_digit()) && !exp_digits.is_empty();
+            if base_ok && exp_ok {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn yaml_list(items: &[String]) -> String {
@@ -325,6 +423,83 @@ mod tests {
     fn leading_special_char_triggers_double_quoting() {
         assert_eq!(yaml_scalar(":starts-with-colon"), "\":starts-with-colon\"");
         assert_eq!(yaml_scalar("-starts-with-dash"), "\"-starts-with-dash\"");
+        assert_eq!(
+            yaml_scalar("%starts-with-percent"),
+            "\"%starts-with-percent\""
+        );
+    }
+
+    #[test]
+    fn trailing_colon_triggers_double_quoting() {
+        assert_eq!(yaml_scalar("key:"), "\"key:\"");
+    }
+
+    #[test]
+    fn whitespace_only_string_is_double_quoted() {
+        assert_eq!(yaml_scalar("   "), "\"   \"");
+        assert_eq!(yaml_scalar("\t"), "\"\\t\"");
+    }
+
+    #[test]
+    fn tab_is_escaped_inside_double_quotes() {
+        assert_eq!(yaml_scalar("col1\tcol2"), "\"col1\\tcol2\"");
+    }
+
+    #[test]
+    fn yaml_boolean_keywords_are_double_quoted() {
+        assert_eq!(yaml_scalar("true"), "\"true\"");
+        assert_eq!(yaml_scalar("false"), "\"false\"");
+        assert_eq!(yaml_scalar("True"), "\"True\"");
+        assert_eq!(yaml_scalar("FALSE"), "\"FALSE\"");
+    }
+
+    #[test]
+    fn yaml_null_keywords_are_double_quoted() {
+        assert_eq!(yaml_scalar("null"), "\"null\"");
+        assert_eq!(yaml_scalar("Null"), "\"Null\"");
+        assert_eq!(yaml_scalar("~"), "\"~\"");
+    }
+
+    #[test]
+    fn yaml_yes_no_keywords_are_double_quoted() {
+        assert_eq!(yaml_scalar("yes"), "\"yes\"");
+        assert_eq!(yaml_scalar("no"), "\"no\"");
+        assert_eq!(yaml_scalar("on"), "\"on\"");
+        assert_eq!(yaml_scalar("off"), "\"off\"");
+        assert_eq!(yaml_scalar("y"), "\"y\"");
+        assert_eq!(yaml_scalar("n"), "\"n\"");
+    }
+
+    #[test]
+    fn numbers_are_double_quoted() {
+        // Integers
+        assert_eq!(yaml_scalar("0"), "\"0\"");
+        assert_eq!(yaml_scalar("123"), "\"123\"");
+        assert_eq!(yaml_scalar("-42"), "\"-42\"");
+        assert_eq!(yaml_scalar("+7"), "\"+7\"");
+        // Floats
+        assert_eq!(yaml_scalar("3.14"), "\"3.14\"");
+        assert_eq!(yaml_scalar(".5"), "\".5\"");
+        assert_eq!(yaml_scalar("5."), "\"5.\"");
+        assert_eq!(yaml_scalar("-0.5"), "\"-0.5\"");
+        // Hex
+        assert_eq!(yaml_scalar("0x1A"), "\"0x1A\"");
+        // Octal
+        assert_eq!(yaml_scalar("0o755"), "\"0o755\"");
+        // Binary
+        assert_eq!(yaml_scalar("0b1010"), "\"0b1010\"");
+        // Scientific notation
+        assert_eq!(yaml_scalar("1e5"), "\"1e5\"");
+        assert_eq!(yaml_scalar("1.5e-3"), "\"1.5e-3\"");
+    }
+
+    #[test]
+    fn non_number_strings_are_unquoted() {
+        // Strings that look like numbers but aren't valid
+        assert_eq!(yaml_scalar("0x"), "0x"); // incomplete hex
+        assert_eq!(yaml_scalar("1.2.3"), "1.2.3"); // multiple dots
+        assert_eq!(yaml_scalar("abc123"), "abc123"); // letters before digits
+        assert_eq!(yaml_scalar("v1.0"), "v1.0"); // letter prefix
     }
 
     #[test]
