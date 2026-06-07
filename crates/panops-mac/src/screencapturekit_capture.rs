@@ -121,6 +121,7 @@ struct StopResult {
     mic_audio_path: Option<String>,
     #[serde(default)]
     screenshot_paths: Vec<String>,
+    #[serde(default)]
     duration_ms: u64,
 }
 
@@ -324,10 +325,26 @@ impl Capture for ScreenCaptureKitCapture {
             "screenshot_threshold": config.screenshot_threshold,
         });
         let started: StartedResult = self.call("capture.start", params)?;
-        self.sessions
-            .lock()
-            .map_err(|e| CaptureError::Sidecar(format!("sessions mutex poisoned: {e}")))?
-            .insert(meeting_id.to_string(), ());
+        // Insert into the sessions map AFTER successful sidecar call.
+        // If the lock is poisoned after a successful start, make a best-effort
+        // stop call to avoid an orphaned recording before returning the error.
+        match self.sessions.lock() {
+            Ok(mut sessions) => {
+                sessions.insert(meeting_id.to_string(), ());
+            }
+            Err(e) => {
+                // Poisoned mutex: best-effort stop to avoid orphaned recording
+                // Note: type inference fails for call() here; StopResult is safe since
+                // we're just trying to stop the sidecar - any response is acceptable.
+                let _ = self.call::<StopResult>(
+                    "capture.stop",
+                    serde_json::json!({ "meeting_id": meeting_id }),
+                );
+                return Err(CaptureError::Sidecar(format!(
+                    "sessions mutex poisoned: {e}"
+                )));
+            }
+        }
         Ok(CaptureSession {
             meeting_id: meeting_id.to_string(),
             started_at_ms: started.started_at_ms,
@@ -337,34 +354,41 @@ impl Capture for ScreenCaptureKitCapture {
     fn stop_capture(&self, session: &CaptureSession) -> Result<CaptureResult, CaptureError> {
         // An unknown session is `SessionNotFound` without ever talking to
         // the sidecar — the live-session map is the source of truth.
-        {
+        // Order matters: call the sidecar FIRST, then remove from the map.
+        // If the sidecar call fails, the recording is not orphaned.
+        let params = serde_json::json!({ "meeting_id": session.meeting_id });
+
+        // Check session existence and prepare return value first, but don't remove yet
+        let capture_result = {
             let mut sessions = self
                 .sessions
                 .lock()
                 .map_err(|e| CaptureError::Sidecar(format!("sessions mutex poisoned: {e}")))?;
-            if sessions.remove(&session.meeting_id).is_none() {
+            if sessions.get(&session.meeting_id).is_none() {
                 return Err(CaptureError::SessionNotFound(session.meeting_id.clone()));
             }
-        }
-        let params = serde_json::json!({ "meeting_id": session.meeting_id });
-        let r: StopResult = self.call("capture.stop", params)?;
-        Ok(CaptureResult {
-            system_audio_path: r.system_audio_path.map(PathBuf::from),
-            mic_audio_path: r.mic_audio_path.map(PathBuf::from),
-            screenshot_paths: r.screenshot_paths.into_iter().map(PathBuf::from).collect(),
-            duration_ms: r.duration_ms,
-        })
+            // Call the sidecar BEFORE removing from the map
+            let r: StopResult = self.call("capture.stop", params)?;
+            // Now remove the session from the map
+            sessions.remove(&session.meeting_id);
+            CaptureResult {
+                system_audio_path: r.system_audio_path.map(PathBuf::from),
+                mic_audio_path: r.mic_audio_path.map(PathBuf::from),
+                screenshot_paths: r.screenshot_paths.into_iter().map(PathBuf::from).collect(),
+                duration_ms: r.duration_ms,
+            }
+        };
+        Ok(capture_result)
     }
 }
 
 impl Drop for ScreenCaptureKitCapture {
     fn drop(&mut self) {
         // `SidecarState`'s own `Drop` closes stdin and reaps the child; we
-        // just take the slot here so it runs. A poisoned mutex still yields
-        // the guard, so the child is reaped on every path.
-        if let Ok(mut slot) = self.state.lock() {
-            slot.take();
-        }
+        // just take the slot here so it runs. Lock poisoning is recovered
+        // via `into_inner()` so the child is always reaped on every path.
+        let mut slot = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        slot.take();
     }
 }
 
