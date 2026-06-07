@@ -48,8 +48,8 @@ pub fn render_raw_transcript(segments: &[Segment]) -> String {
     out
 }
 
-/// Format a millisecond timestamp as `m:ss.mmm` (minutes unpadded, matching
-/// the `m:ss` convention used elsewhere; milliseconds keep the value lossless).
+/// Format a millisecond timestamp as `m:ss.mmm` (minutes unpadded, human-readable;
+/// the `.mmm` milliseconds keep the value lossless / round-trippable).
 fn format_ts(ms: u64) -> String {
     let total_s = ms / 1000;
     let millis = ms % 1000;
