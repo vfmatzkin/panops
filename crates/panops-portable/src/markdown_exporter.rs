@@ -263,12 +263,21 @@ fn yaml_scalar(s: &str) -> String {
     if is_safe_plain_scalar(s) {
         return s.to_string();
     }
-    let escaped = s
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t");
+    let mut escaped = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            // Any remaining C0 control char (U+0000–U+001F) is invalid in a
+            // YAML double-quoted scalar unless escaped; emit `\xNN` with two
+            // lowercase hex digits (e.g. 0x01 -> \x01, 0x07 -> \x07).
+            c if (c as u32) < 0x20 => escaped.push_str(&format!("\\x{:02x}", c as u32)),
+            c => escaped.push(c),
+        }
+    }
     format!("\"{escaped}\"")
 }
 
@@ -302,10 +311,22 @@ fn is_yaml_reserved(s: &str) -> bool {
     KEYWORDS.contains(&lower.as_str())
 }
 
-/// Returns true if the value could be read back as a YAML number: it parses as
-/// an integer or float, uses underscore digit grouping (`1_000`), or carries a
-/// radix prefix (`0x`/`0o`/`0b`). `f64::parse` also accepts `inf`/`nan`, which
-/// is why those letter-leading words are number-like and need quoting.
+/// Returns true if the value could be read back as a YAML number. Three
+/// detection paths, checked in order:
+///
+/// 1. **Parse** — `i64::parse` or `f64::parse` succeeds (decimal integers,
+///    floats, scientific notation, a leading or trailing dot, optional sign).
+/// 2. **Radix prefix** — an optionally-signed `0x` / `0o` / `0b` prefix with
+///    digits valid for that base. Rust's `parse` rejects these, so they are
+///    matched explicitly.
+/// 3. **Underscore grouping** — YAML 1.1 digit separators (`1_000`,
+///    `1_000.5`), which Rust's `parse` also rejects.
+///
+/// `f64::parse` accepts the bare tokens `inf` / `nan`, so those are flagged
+/// here. The dotted YAML spellings `.inf` / `-.inf` / `.nan` are instead caught
+/// by [`is_yaml_reserved`]. That overlap is intentional: between them the two
+/// checks cover every infinity / NaN spelling, and either one alone is enough
+/// to force quoting — neither needs to depend on the other's exact coverage.
 fn looks_like_number(s: &str) -> bool {
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -407,6 +428,18 @@ mod tests {
     #[test]
     fn tab_is_escaped_inside_double_quotes() {
         assert_eq!(yaml_scalar("col1\tcol2"), "\"col1\\tcol2\"");
+    }
+
+    #[test]
+    fn control_chars_are_hex_escaped_inside_double_quotes() {
+        // U+0001 (SOH) and U+0007 (BEL) have no dedicated escape and would be
+        // invalid raw inside a YAML double-quoted scalar; they must emit as
+        // \x01 / \x07 (two lowercase hex digits).
+        let mut value = String::from("a");
+        value.push('\u{0001}');
+        value.push('\u{0007}');
+        value.push('b');
+        assert_eq!(yaml_scalar(&value), "\"a\\x01\\x07b\"");
     }
 
     #[test]
