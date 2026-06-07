@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use panops_core::asr::AsrProvider;
 use panops_core::diar::Diarizer;
 use panops_core::exporter::NotesExporter;
+use panops_core::llm::LlmProvider;
 use panops_core::merge::merge_speaker_turns;
 use panops_core::notes::dialect::MarkdownDialect;
 use panops_core::notes::input::{MeetingMetadata, NotesInput};
@@ -256,22 +257,28 @@ fn run_notes(
         Err(e) => tracing::warn!(error = %e, "write transcript.txt failed; continuing"),
     }
 
-    let llm = match llm_provider.as_str() {
+    // Boxed so the on-device `foundation` adapter (a distinct concrete
+    // type from `GenaiLlm`) shares one binding. `auto`/`ollama` keep
+    // their existing `GenaiLlm` resolution; only the box wrapper is new.
+    let llm: Box<dyn LlmProvider> = match llm_provider.as_str() {
         "auto" => match llm_model {
-            Some(m) => GenaiLlm::new(m).map_err(|e| (3, e.to_string()))?,
-            None => GenaiLlm::auto().map_err(|e| (3, e.to_string()))?,
+            Some(m) => Box::new(GenaiLlm::new(m).map_err(|e| (3, e.to_string()))?),
+            None => Box::new(GenaiLlm::auto().map_err(|e| (3, e.to_string()))?),
         },
         "ollama" => {
             let model = llm_model.unwrap_or_else(|| "gemma3:4b".to_string());
-            GenaiLlm::new(model).map_err(|e| (3, e.to_string()))?
+            Box::new(GenaiLlm::new(model).map_err(|e| (3, e.to_string()))?)
         }
+        "foundation" => build_foundation_llm()?,
         other => {
             return Err((
                 1,
                 format!(
                     "--llm-provider {other:?} not supported. Use \"auto\" (detects from \
-                     ANTHROPIC_API_KEY / OPENAI_API_KEY / OLLAMA_HOST) or \"ollama\" \
-                     (defaults to model gemma3:4b on http://localhost:11434)."
+                     ANTHROPIC_API_KEY / OPENAI_API_KEY / OLLAMA_HOST), \"ollama\" \
+                     (defaults to model gemma3:4b on http://localhost:11434), or \
+                     \"foundation\" (on-device Apple FoundationModels via the \
+                     PANOPS_LLM_SIDECAR_BIN sidecar, macOS only)."
                 ),
             ));
         }
@@ -297,7 +304,10 @@ fn run_notes(
         },
     };
 
-    let generator = NotesGenerator { llm: &llm, dialect };
+    let generator = NotesGenerator {
+        llm: llm.as_ref(),
+        dialect,
+    };
     let notes = generator.generate(input).map_err(|e| (2, e.to_string()))?;
 
     let art = MarkdownExporter
@@ -346,6 +356,31 @@ fn run_notes(
     )?;
 
     Ok(())
+}
+
+/// Resolve the on-device FoundationModels adapter for an explicit
+/// `--llm-provider foundation` request. Reads the same
+/// `PANOPS_LLM_SIDECAR_BIN` gate as `serve` and constructs
+/// `panops_mac::FoundationLlm` the same way the IPC server does, but
+/// **never falls back**: an unset or non-executable sidecar is a hard
+/// error so an explicit on-device request can't silently run on Ollama.
+#[cfg(target_os = "macos")]
+fn build_foundation_llm() -> Result<Box<dyn LlmProvider>, (u8, String)> {
+    let path = panops_engine::llm_resolver::sidecar_binary_from_env();
+    let llm = panops_engine::llm_resolver::foundation_llm_explicit(path).map_err(|e| (1, e))?;
+    Ok(Box::new(llm))
+}
+
+/// Non-macOS stub: FoundationModels is an Apple-only API, so an explicit
+/// `--llm-provider foundation` request can't be honored off macOS.
+#[cfg(not(target_os = "macos"))]
+fn build_foundation_llm() -> Result<Box<dyn LlmProvider>, (u8, String)> {
+    Err((
+        1,
+        "--llm-provider foundation requires macOS (Apple FoundationModels). \
+         Use \"auto\" or \"ollama\" on this platform."
+            .to_string(),
+    ))
 }
 
 /// Bundled input for [`register_meeting_in_registry`]. Avoids an
