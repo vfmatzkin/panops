@@ -23,7 +23,9 @@ You are emitting Notion-flavored markdown. Allowed constructs:
 - Inline mentions: @user, @date.
 NEVER emit raw HTML beyond the listed tags. NEVER nest callouts.
 
-Output language: en
+CRITICAL: write the ENTIRE output (title, narrative_md, key_points,
+action_items) in en. Do NOT translate to English; keep the
+speakers' original language.
 
 Speaker attribution rule (STRICT): never attribute a quote to a speaker_id
 that does not appear in the transcript. When in doubt, use passive voice.
