@@ -14,6 +14,39 @@ pub fn merge_speaker_turns(segments: Vec<Segment>, turns: &[SpeakerTurn]) -> Vec
         .collect()
 }
 
+/// Combine the two capture tracks into one diarized segment list.
+///
+/// Mic-track segments are the local user → pinned to `speaker_id 0` ("You").
+/// System-track segments are remote participants → each sherpa turn id is
+/// offset by `+1` (past the reserved local id) and assigned by overlap via
+/// [`merge_speaker_turns`]. The two lists are concatenated and stably sorted
+/// by `start_ms`. Either input may be empty (single-track captures).
+pub fn merge_two_track(
+    mic_segments: Vec<Segment>,
+    system_segments: Vec<Segment>,
+    system_turns: &[SpeakerTurn],
+) -> Vec<Segment> {
+    let mut mic = mic_segments;
+    for s in &mut mic {
+        s.speaker_id = Some(0);
+    }
+
+    let offset_turns: Vec<SpeakerTurn> = system_turns
+        .iter()
+        .map(|t| SpeakerTurn {
+            start_ms: t.start_ms,
+            end_ms: t.end_ms,
+            speaker_id: t.speaker_id + 1,
+        })
+        .collect();
+    let system = merge_speaker_turns(system_segments, &offset_turns);
+
+    let mut all = mic;
+    all.extend(system);
+    all.sort_by_key(|s| s.start_ms); // stable; mic keeps order vs system on ties
+    all
+}
+
 fn dominant_speaker(start_ms: u64, end_ms: u64, turns: &[SpeakerTurn]) -> Option<u32> {
     let mut best: Option<(u32, u64)> = None;
     for t in turns {
@@ -84,5 +117,36 @@ mod tests {
         let segs = vec![seg(0, 1_000), seg(1_000, 2_000)];
         let out = merge_speaker_turns(segs, &[]);
         assert!(out.iter().all(|s| s.speaker_id.is_none()));
+    }
+
+    #[test]
+    fn mic_segments_pinned_to_local_speaker_zero() {
+        let mic = vec![seg(0, 1_000), seg(1_000, 2_000)];
+        let out = merge_two_track(mic, vec![], &[]);
+        assert!(out.iter().all(|s| s.speaker_id == Some(0)));
+    }
+
+    #[test]
+    fn system_turns_offset_past_local() {
+        let system = vec![seg(0, 1_000), seg(1_000, 2_000)];
+        // sherpa speaker ids 0 and 1 → remote ids 1 and 2.
+        let turns = vec![turn(0, 1_000, 0), turn(1_000, 2_000, 1)];
+        let out = merge_two_track(vec![], system, &turns);
+        assert_eq!(out[0].speaker_id, Some(1));
+        assert_eq!(out[1].speaker_id, Some(2));
+    }
+
+    #[test]
+    fn merged_output_is_timestamp_ordered() {
+        let mic = vec![seg(500, 1_500)];
+        let system = vec![seg(0, 400), seg(2_000, 2_500)];
+        let turns = vec![turn(0, 3_000, 0)];
+        let out = merge_two_track(mic, system, &turns);
+        let starts: Vec<u64> = out.iter().map(|s| s.start_ms).collect();
+        assert_eq!(starts, vec![0, 500, 2_000]);
+        // mic segment is local 0; system segments are remote 1.
+        assert_eq!(out[1].speaker_id, Some(0));
+        assert_eq!(out[0].speaker_id, Some(1));
+        assert_eq!(out[2].speaker_id, Some(1));
     }
 }
