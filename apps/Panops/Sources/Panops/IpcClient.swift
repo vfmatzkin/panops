@@ -595,6 +595,14 @@ actor IpcClient {
         )
     }
 
+    /// `ipc.meeting.delete(id)` — removes the meeting row and its directory.
+    func meetingDelete(id: String) async throws {
+        try await sendRequestVoid(
+            method: "ipc.meeting.delete",
+            params: MeetingDeleteParams(id: id)
+        )
+    }
+
     /// `ipc.meeting.list` — fetches all meeting summaries.
     /// Slice 12: sidebar needs meeting list for navigation.
     func meetingList() async throws -> [MeetingSummary] {
@@ -668,6 +676,39 @@ actor IpcClient {
         let envelope = JsonRpcRequest(id: id, method: method, param: params)
         let body = try JSONEncoder().encode(envelope)
         return try await sendRawRequest(body: body)
+    }
+
+    private func sendRawRequestVoid(
+        body: Data
+    ) async throws {
+        let request = Self.buildHttpRequest(body: body)
+        let conn = NWConnection(to: endpoint, using: .tcp)
+        try await Self.start(conn)
+        defer { conn.cancel() }
+        try await Self.send(conn, data: request)
+        let (status, responseBody) = try await Self.readHttpResponse(conn)
+        guard status == 200 else {
+            let bodyString = String(data: responseBody, encoding: .utf8) ?? ""
+            throw IpcClientError.httpError(status: status, body: bodyString)
+        }
+        let resp = try JSONDecoder().decode(JsonRpcVoidResponse.self, from: responseBody)
+        if let err = resp.error {
+            throw IpcClientError.rpcError(code: err.code, message: err.message)
+        }
+        guard resp.hasResult else {
+            throw IpcClientError.decode("response missing both result and error")
+        }
+    }
+
+    private func sendRequestVoid<P: Encodable>(
+        method: String,
+        params: P
+    ) async throws {
+        let id = nextId
+        nextId += 1
+        let envelope = JsonRpcRequest(id: id, method: method, param: params)
+        let body = try JSONEncoder().encode(envelope)
+        try await sendRawRequestVoid(body: body)
     }
 
     /// Send request for methods that take no parameters.

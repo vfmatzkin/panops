@@ -189,6 +189,28 @@ struct JsonRpcResponse<R: Decodable>: Decodable {
     let error: JsonRpcError?
 }
 
+struct JsonRpcVoidResponse: Decodable {
+    let jsonrpc: String
+    let id: UInt64
+    let hasResult: Bool
+    let error: JsonRpcError?
+
+    enum CodingKeys: String, CodingKey {
+        case jsonrpc
+        case id
+        case result
+        case error
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        jsonrpc = try container.decode(String.self, forKey: .jsonrpc)
+        id = try container.decode(UInt64.self, forKey: .id)
+        hasResult = container.contains(.result)
+        error = try container.decodeIfPresent(JsonRpcError.self, forKey: .error)
+    }
+}
+
 struct JsonRpcError: Decodable {
     let code: Int
     let message: String
@@ -239,6 +261,11 @@ struct MeetingGetParams: Encodable {
 
 /// Outgoing params for `ipc.meeting.stop`.
 struct MeetingStopParams: Encodable {
+    let id: String
+}
+
+/// Outgoing params for `ipc.meeting.delete`.
+struct MeetingDeleteParams: Encodable {
     let id: String
 }
 
