@@ -70,6 +70,75 @@ pub fn load_wav_mono16k(path: &Path) -> Result<(Vec<f32>, u32), AsrError> {
     Ok((audio, 16_000))
 }
 
+fn is_wav(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("wav"))
+        .unwrap_or(false)
+}
+
+/// Load audio from any container CoreAudio can decode (WAV, MOV, MP4, M4A,
+/// MP3, AAC, …) as 16 kHz mono `f32` samples — the format the ASR + VAD
+/// pipeline consumes. A ready 16 kHz WAV is read directly; anything else (a
+/// video, a compressed audio file, or a WAV at the wrong rate/depth) is
+/// transcoded to a temporary 16 kHz mono 16-bit WAV via macOS `afconvert`
+/// first, then read. On non-macOS only 16 kHz WAV input is supported
+/// (afconvert is macOS-only; a cross-platform decoder can be added later).
+pub fn load_audio_mono16k(path: &Path) -> Result<(Vec<f32>, u32), AsrError> {
+    if !path.exists() {
+        return Err(AsrError::AudioNotFound(path.to_path_buf()));
+    }
+    // Fast path: a ready 16 kHz WAV loads directly (no transcode).
+    if is_wav(path) {
+        match load_wav_mono16k(path) {
+            Ok(out) => return Ok(out),
+            // Wrong rate/depth/format → fall through to transcode + retry.
+            Err(AsrError::InvalidAudio(_)) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    transcode_to_wav16k_and_load(path)
+}
+
+#[cfg(target_os = "macos")]
+fn transcode_to_wav16k_and_load(path: &Path) -> Result<(Vec<f32>, u32), AsrError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let tmp = std::env::temp_dir().join(format!(
+        "panops-transcode-{}-{}.wav",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    // macOS CoreAudio `afconvert`: decode the input's audio track to
+    // 16 kHz mono signed-16-bit little-endian WAV.
+    let status = std::process::Command::new("/usr/bin/afconvert")
+        .args(["-f", "WAVE", "-d", "LEI16@16000", "-c", "1"])
+        .arg(path)
+        .arg(&tmp)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    let result = match status {
+        Ok(s) if s.success() => load_wav_mono16k(&tmp),
+        Ok(s) => Err(AsrError::InvalidAudio(format!(
+            "afconvert could not decode {path:?} (exit {:?})",
+            s.code()
+        ))),
+        Err(e) => Err(AsrError::InvalidAudio(format!(
+            "afconvert spawn failed: {e}"
+        ))),
+    };
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
+#[cfg(not(target_os = "macos"))]
+fn transcode_to_wav16k_and_load(path: &Path) -> Result<(Vec<f32>, u32), AsrError> {
+    Err(AsrError::InvalidAudio(format!(
+        "unsupported audio container {path:?}: only 16 kHz WAV input is supported on this platform"
+    )))
+}
+
 /// Collapse adjacent speech regions whose gap is `<= gap_ms` into
 /// single contiguous regions. Pure function. Accepts unsorted input
 /// (sorts internally). The 5s default the pipeline uses matches
@@ -92,4 +161,47 @@ pub fn merge_adjacent_regions(mut regions: Vec<SpeechRegion>, gap_ms: u64) -> Ve
         out.push(r);
     }
     out
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod media_tests {
+    use super::*;
+
+    /// A 48 kHz WAV is rejected by `load_wav_mono16k` but `load_audio_mono16k`
+    /// transcodes it (via afconvert) to 16 kHz and loads it.
+    #[test]
+    fn load_audio_mono16k_transcodes_non_16k_wav() {
+        let dir = std::env::temp_dir().join(format!("panops-audiotest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src48k.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&src, spec).unwrap();
+        for i in 0..48_000i32 {
+            // 1s of a quiet tone
+            w.write_sample((((i as f32) * 0.05).sin() * 6000.0) as i16)
+                .unwrap();
+        }
+        w.finalize().unwrap();
+
+        // Direct 16k loader rejects the 48 kHz rate...
+        assert!(matches!(
+            load_wav_mono16k(&src),
+            Err(AsrError::InvalidAudio(_))
+        ));
+        // ...but the media loader transcodes to 16 kHz.
+        let (samples, rate) = load_audio_mono16k(&src).expect("transcode + load");
+        assert_eq!(rate, 16_000);
+        // 1s @ 16 kHz ≈ 16000 samples (resampled; allow tolerance).
+        assert!(
+            samples.len() > 12_000 && samples.len() < 20_000,
+            "unexpected sample count {}",
+            samples.len()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

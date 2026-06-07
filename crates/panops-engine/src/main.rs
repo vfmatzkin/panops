@@ -458,10 +458,11 @@ fn transcribe_with_vad(
     vad: &dyn Vad,
     language: Option<&str>,
 ) -> Result<panops_core::Transcript, (u8, String)> {
-    let (samples, sample_rate) = panops_portable::audio::load_wav_mono16k(audio).map_err(|e| {
-        tracing::error!(error = %e, "audio loading failed");
-        (2, "audio decode failed".to_string())
-    })?;
+    let (samples, sample_rate) =
+        panops_portable::audio::load_audio_mono16k(audio).map_err(|e| {
+            tracing::error!(error = %e, "audio loading failed");
+            (2, "audio decode failed".to_string())
+        })?;
     let regions = vad.detect_speech(&samples, sample_rate).map_err(|e| {
         tracing::error!(error = %e, "vad detect_speech failed");
         (2, "vad failed".to_string())
