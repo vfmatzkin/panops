@@ -44,3 +44,7 @@ hound = "3.5"
 # so this enables `ws-client` for `cargo test` without leaking it into the
 # production binary.
 jsonrpsee = { version = "0.26", features = ["ws-client"] }
+# Raw WS client for the malformed-body parse-error test: jsonrpsee's high-level
+# `WsClient` serializes every request and so can't transmit a broken JSON body.
+# `handshake` only — we hand it a pre-connected `UnixStream`, so no TLS/dialing.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
