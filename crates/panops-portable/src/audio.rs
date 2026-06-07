@@ -1,9 +1,10 @@
-//! Pure utilities used by the VAD-aware ASR pipeline:
-//! `load_wav_mono16k` decodes a WAV file into 16 kHz mono `f32`
-//! samples (the format `WhisperRsAsr` and `WhisperVad` both accept).
-//! `merge_adjacent_regions` collapses VAD output across short gaps
-//! so per-region Whisper calls get >= 30s of speech for reliable
-//! language detection.
+//! Audio utilities for the VAD-aware ASR pipeline:
+//! `load_audio_mono16k` is the entry point — it loads any CoreAudio-decodable
+//! file (WAV, MOV, MP4, M4A, MP3, …) as 16 kHz mono `f32` samples, transcoding
+//! non-WAV / wrong-rate input via macOS `afconvert`. `load_wav_mono16k` is the
+//! direct 16 kHz-WAV reader it builds on. `merge_adjacent_regions` collapses
+//! VAD output across short gaps so per-region Whisper calls get >= 30s of
+//! speech for reliable language detection.
 
 use std::path::Path;
 
@@ -110,23 +111,33 @@ fn transcode_to_wav16k_and_load(path: &Path) -> Result<(Vec<f32>, u32), AsrError
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
     // macOS CoreAudio `afconvert`: decode the input's audio track to
-    // 16 kHz mono signed-16-bit little-endian WAV.
-    let status = std::process::Command::new("/usr/bin/afconvert")
+    // 16 kHz mono signed-16-bit little-endian WAV. Capture output so the
+    // CoreAudio failure reason is logged; the returned (wire-facing) error
+    // stays opaque — no path/stderr — so it can't leak over the IPC boundary.
+    let output = std::process::Command::new("/usr/bin/afconvert")
         .args(["-f", "WAVE", "-d", "LEI16@16000", "-c", "1"])
         .arg(path)
         .arg(&tmp)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    let result = match status {
-        Ok(s) if s.success() => load_wav_mono16k(&tmp),
-        Ok(s) => Err(AsrError::InvalidAudio(format!(
-            "afconvert could not decode {path:?} (exit {:?})",
-            s.code()
-        ))),
-        Err(e) => Err(AsrError::InvalidAudio(format!(
-            "afconvert spawn failed: {e}"
-        ))),
+        .output();
+    let result = match output {
+        Ok(o) if o.status.success() => load_wav_mono16k(&tmp),
+        Ok(o) => {
+            tracing::error!(
+                path = ?path,
+                exit = ?o.status.code(),
+                stderr = %String::from_utf8_lossy(&o.stderr).trim(),
+                "afconvert failed to decode audio"
+            );
+            Err(AsrError::InvalidAudio(
+                "could not decode audio (unsupported or corrupt media file)".to_string(),
+            ))
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "afconvert spawn failed");
+            Err(AsrError::InvalidAudio(
+                "audio decoder (afconvert) unavailable".to_string(),
+            ))
+        }
     };
     let _ = std::fs::remove_file(&tmp);
     result
@@ -134,9 +145,10 @@ fn transcode_to_wav16k_and_load(path: &Path) -> Result<(Vec<f32>, u32), AsrError
 
 #[cfg(not(target_os = "macos"))]
 fn transcode_to_wav16k_and_load(path: &Path) -> Result<(Vec<f32>, u32), AsrError> {
-    Err(AsrError::InvalidAudio(format!(
-        "unsupported audio container {path:?}: only 16 kHz WAV input is supported on this platform"
-    )))
+    tracing::error!(path = ?path, "non-WAV audio on a platform without afconvert");
+    Err(AsrError::InvalidAudio(
+        "unsupported audio format: only 16 kHz WAV is supported on this platform".to_string(),
+    ))
 }
 
 /// Collapse adjacent speech regions whose gap is `<= gap_ms` into
