@@ -136,6 +136,13 @@ pub struct NotesGenerateResult {
     /// The meeting this note belongs to. Always set after slice 06
     /// (auto-created when `NotesGenerateParams.meeting_id` was `None`).
     pub meeting_id: String,
+    /// Absolute path to the human-readable raw `transcript.txt` sidecar,
+    /// when it was written. `None` if the best-effort sidecar write failed
+    /// (the rest of the result is still valid). Optional + skip-when-none
+    /// keeps the field forward-compatible for clients built against an
+    /// older snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_txt_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -340,9 +347,39 @@ mod tests {
             primary_file: "/x/notes.md".into(),
             assets: vec!["/x/screenshots/1.jpg".into()],
             meeting_id: "abc".into(),
+            transcript_txt_path: None,
         };
         let s = serde_json::to_string(&r).unwrap();
         assert!(s.contains("\"meeting_id\":\"abc\""), "got: {s}");
+    }
+
+    #[test]
+    fn notes_generate_result_carries_transcript_txt_path() {
+        let r = NotesGenerateResult {
+            primary_file: "/x/notes.md".into(),
+            assets: vec![],
+            meeting_id: "abc".into(),
+            transcript_txt_path: Some("/x/transcript.txt".into()),
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(
+            s.contains("\"transcript_txt_path\":\"/x/transcript.txt\""),
+            "got: {s}"
+        );
+        let back: NotesGenerateResult = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn notes_generate_result_omits_transcript_txt_path_when_none() {
+        let r = NotesGenerateResult {
+            primary_file: "/x/notes.md".into(),
+            assets: vec![],
+            meeting_id: "abc".into(),
+            transcript_txt_path: None,
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(!s.contains("transcript_txt_path"), "got: {s}");
     }
 
     #[test]
@@ -365,6 +402,7 @@ mod tests {
                 primary_file: "/tmp/notes.md".into(),
                 assets: vec!["/tmp/screenshots/a.jpg".into()],
                 meeting_id: "m1".into(),
+                transcript_txt_path: Some("/tmp/transcript.txt".into()),
             },
         });
         let json = serde_json::to_string(&e).unwrap();
