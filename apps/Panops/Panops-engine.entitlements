@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the bundled panops-engine. The engine loads the ad-hoc-signed
+  onnxruntime + sherpa-onnx dylibs that sit next to it in Resources/. Under the
+  hardened runtime, library validation rejects libraries whose Team ID differs
+  from the loading process (ad-hoc signatures carry no Team ID), so the engine
+  needs disable-library-validation or it crashes on launch with a dyld
+  "different Team IDs" error.
+-->
+<plist version="1.0"><dict>
+  <key>com.apple.security.cs.disable-library-validation</key><true/>
+</dict></plist>

@@ -26,6 +26,13 @@ cargo build --release -p panops-engine
 # sibling-of-engine resolver finds them (asr_resolver / llm_resolver /
 # capture_resolver) — no env vars needed in the bundle.
 cp target/release/panops-engine "$RES/panops-engine"
+# The engine dynamically links onnxruntime + sherpa-onnx (via sherpa-rs, for
+# diarization/VAD). cargo's build-time rpath finds them in target/release; the
+# bundle has no such path, so copy them next to the engine — its rpath is
+# @executable_path (= Resources/). Missing → the engine dies on launch with
+# "dyld: Library not loaded: @rpath/libonnxruntime…" and nothing records.
+cp target/release/libonnxruntime.*.dylib "$RES/"
+cp target/release/libsherpa-onnx-c-api.dylib "$RES/"
 cp apps/Panops/.build/release/Panops "$MACOS/Panops"
 cp apps/panops-asr-mac/.build/release/panops-asr-mac "$RES/panops-asr-mac"
 cp apps/panops-llm-mac/.build/release/panops-llm-mac "$RES/panops-llm-mac"
@@ -47,10 +54,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 
-# 4. Ad-hoc sign (inner binaries first, then the app), hardened runtime + entitlements
-for b in "$RES/panops-engine" "$RES/panops-asr-mac" "$RES/panops-llm-mac"; do
+# 4. Ad-hoc sign (inner code first, then the app), hardened runtime + entitlements.
+# The bundled dylibs + the ASR/LLM sidecars carry no special entitlements.
+for b in "$RES"/lib*.dylib "$RES/panops-asr-mac" "$RES/panops-llm-mac"; do
   codesign --force --options runtime --timestamp=none -s - "$b"
 done
+# The engine loads the ad-hoc-signed onnxruntime/sherpa dylibs copied above.
+# Under the hardened runtime, library validation rejects libraries whose Team ID
+# differs from the loading process (ad-hoc = no Team ID), so the engine needs
+# disable-library-validation or it can't load them (dyld "different Team IDs").
+codesign --force --options runtime --timestamp=none \
+  --entitlements apps/Panops/Panops-engine.entitlements -s - "$RES/panops-engine"
 # The capture sidecar is the process that opens the microphone, so under the
 # hardened runtime IT needs the audio-input entitlement on its own executable
 # (it isn't inherited from the outer .app). Without this, mic recording fails
@@ -59,6 +73,16 @@ codesign --force --options runtime --timestamp=none \
   --entitlements apps/Panops/Panops.entitlements -s - "$RES/panops-capture-mac"
 codesign --force --options runtime --timestamp=none \
   --entitlements apps/Panops/Panops.entitlements -s - "$APP"
+
+# Smoke: the bundled engine must actually launch under the hardened runtime
+# (i.e. its dylibs resolve + load). Catches a missing bundled dylib or a
+# library-validation/signing regression before we ship a non-starting app.
+if ! "$RES/panops-engine" --help >/dev/null 2>&1; then
+  echo "error: bundled panops-engine failed to launch (dylib/signing problem):" >&2
+  "$RES/panops-engine" --help 2>&1 | head -6 >&2
+  exit 1
+fi
+
 codesign --verify --deep --strict "$APP"
 
 # 5. Tar + sha256 (bare hash in the .sha256 file — the cask needs just the
