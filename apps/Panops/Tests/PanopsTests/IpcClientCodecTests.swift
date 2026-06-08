@@ -318,19 +318,21 @@ struct IpcClientCodecTests {
         #expect(meeting.language == "auto")
     }
 
-    @Test("RecordingStartParams with recordVideo encodes correctly")
-    func recordingStartParamsWithRecordVideo_encodes() throws {
+    @Test("RecordingStartParams with recordVideo and autoGenerateNotes encodes correctly")
+    func recordingStartParamsWithFlags_encodes() throws {
         let params = RecordingStartParams(
             meetingId: "m1",
             audioSources: .systemAndMic,
             screenshotIntervalMs: 500,
             screenshotThreshold: 0.15,
-            recordVideo: true
+            recordVideo: true,
+            autoGenerateNotes: false
         )
         let data = try encoder.encode(params)
         let json = String(data: data, encoding: .utf8)!
         #expect(json.contains("\"meeting_id\":\"m1\""))
         #expect(json.contains("\"record_video\":true"))
+        #expect(json.contains("\"auto_generate_notes\":false"))
     }
 
     @Test("MeetingDeleteVideoResult decodes from engine response")

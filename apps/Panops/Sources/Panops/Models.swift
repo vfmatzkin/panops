@@ -181,6 +181,7 @@ struct RecordingStartParams: Encodable {
     let screenshotIntervalMs: UInt64
     let screenshotThreshold: Float
     let recordVideo: Bool
+    let autoGenerateNotes: Bool
 
     enum CodingKeys: String, CodingKey {
         case meetingId = "meeting_id"
@@ -188,6 +189,7 @@ struct RecordingStartParams: Encodable {
         case screenshotIntervalMs = "screenshot_interval_ms"
         case screenshotThreshold = "screenshot_threshold"
         case recordVideo = "record_video"
+        case autoGenerateNotes = "auto_generate_notes"
     }
 }
 

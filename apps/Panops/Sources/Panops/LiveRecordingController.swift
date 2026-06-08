@@ -7,7 +7,8 @@ protocol LiveRecordingIpcClient: Sendable {
         audioSources: AudioSourcesWire,
         screenshotIntervalMs: UInt64,
         screenshotThreshold: Float,
-        recordVideo: Bool
+        recordVideo: Bool,
+        autoGenerateNotes: Bool
     ) async throws -> RecordingAccepted
 
     func recordingStop(recordingId: String) async throws -> RecordingStopped
@@ -50,7 +51,8 @@ final class LiveRecordingController: RecordingController, ObservableObject {
                 audioSources: options.audioSources,
                 screenshotIntervalMs: options.screenshotIntervalMs,
                 screenshotThreshold: options.screenshotThreshold,
-                recordVideo: options.recordVideo
+                recordVideo: options.recordVideo,
+                autoGenerateNotes: options.autoGenerateNotes
             )
             recordingId = accepted.recordingId
             canStop = true

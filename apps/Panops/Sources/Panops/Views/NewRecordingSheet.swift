@@ -45,6 +45,18 @@ struct NewRecordingSheet: View {
                 }
 
                 Toggle("Record video", isOn: $setup.recordVideo)
+
+                Picker("Processing mode", selection: $setup.autoGenerateNotes) {
+                    Text("Record + notes")
+                        .tag(true)
+                    Text("Record only")
+                        .tag(false)
+                }
+                .pickerStyle(.segmented)
+
+                Text("Capture now, generate notes later — good when Ollama / Apple Intelligence is unavailable.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .formStyle(.grouped)
 

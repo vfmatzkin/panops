@@ -95,17 +95,18 @@ struct LiveRecordingControllerTests {
         #expect(controller.isRecording == true)
     }
 
-    @Test("start records recordVideo flag")
-    func startRecordsRecordVideo() async throws {
+    @Test("start records recordVideo and autoGenerateNotes flags")
+    func startRecordsFlags() async throws {
         let fake = FakeLiveRecordingIpcClient()
         let controller = LiveRecordingController(ipcClient: fake)
 
-        let options = RecordingOptions(recordVideo: true)
+        let options = RecordingOptions(recordVideo: true, autoGenerateNotes: false)
         try await controller.start(meetingId: "meeting-1", options: options)
 
-        let (startCalls, lastRecordVideo) = await fake.startCallCountAndRecordVideo()
+        let (startCalls, lastRecordVideo, lastAutoGenerateNotes) = await fake.startCallCountAndRecordVideo()
         #expect(startCalls == 1)
         #expect(lastRecordVideo == true)
+        #expect(lastAutoGenerateNotes == false)
     }
 }
 
@@ -123,6 +124,7 @@ private actor FakeLiveRecordingIpcClient: LiveRecordingIpcClient {
     private let accepted: RecordingAccepted
     private let stopped: RecordingStopped
     private var lastRecordVideo: Bool = false
+    private var lastAutoGenerateNotes: Bool = false
 
     init(
         startDelayNanoseconds: UInt64 = 0,
@@ -149,10 +151,12 @@ private actor FakeLiveRecordingIpcClient: LiveRecordingIpcClient {
         audioSources: AudioSourcesWire,
         screenshotIntervalMs: UInt64,
         screenshotThreshold: Float,
-        recordVideo: Bool
+        recordVideo: Bool,
+        autoGenerateNotes: Bool
     ) async throws -> RecordingAccepted {
         startCalls += 1
         lastRecordVideo = recordVideo
+        lastAutoGenerateNotes = autoGenerateNotes
         if startDelayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: startDelayNanoseconds)
         }
@@ -182,7 +186,7 @@ private actor FakeLiveRecordingIpcClient: LiveRecordingIpcClient {
         stopCalls
     }
 
-    func startCallCountAndRecordVideo() -> (Int, Bool) {
-        (startCalls, lastRecordVideo)
+    func startCallCountAndRecordVideo() -> (Int, Bool, Bool) {
+        (startCalls, lastRecordVideo, lastAutoGenerateNotes)
     }
 }
