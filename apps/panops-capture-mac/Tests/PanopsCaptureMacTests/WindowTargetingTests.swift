@@ -68,7 +68,7 @@ struct WindowTargetingTests {
     }
 
     @Test func windowKindWithoutIdFallsBackToDisplay() throws {
-        // Malformed window target (no window_id) degrades to full-display capture.
+        // Malformed window target (no window_id) returns nil and falls back to display
         let target = try JSONDecoder().decode(CaptureTarget.self, from: Data(#"{"kind":"window"}"#.utf8))
         #expect(CaptureTargetKind(wire: target) == .display)
     }
