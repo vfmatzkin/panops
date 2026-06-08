@@ -366,7 +366,7 @@ impl IpcServer for IpcImpl {
         let services = self.services.clone();
         let events_tx = self.events_tx.clone();
 
-        let (stopped, auto_generate_notes, recording_id) =
+        let (mut stopped, auto_generate_notes, recording_id) =
             spawn_blocking_into_ipc("recording.stop", move || {
                 // Look up the real session persisted by recording.start.
                 let session = sessions
@@ -397,14 +397,23 @@ impl IpcServer for IpcImpl {
                         .map(|p| p.display().to_string())
                         .collect(),
                     duration_ms: result.duration_ms,
+                    // Set below once auto-generate (if requested) has enqueued
+                    // a job — capture-only stop never knows a notes job id.
+                    notes_job_id: None,
                 };
 
                 Ok((stopped, auto_generate_notes, recording_id))
             })
             .await?;
 
+        // When auto-generate is set, surface the enqueued notes job id on the
+        // stop result so the app can track it through the same job.done /
+        // job.error flow as a manual `notes.generate`. Stays `None` when
+        // compute wasn't ready (warmup / no provider) — the app then shows a
+        // "notes deferred" hint and leaves the meeting manually generable.
         if auto_generate_notes {
-            maybe_enqueue_auto_notes(services, events_tx, &recording_id, &stopped);
+            stopped.notes_job_id =
+                maybe_enqueue_auto_notes(services, events_tx, &recording_id, &stopped);
         }
 
         Ok(stopped)
@@ -538,19 +547,24 @@ fn enqueue_notes_job(
     JobAccepted { job_id }
 }
 
+/// Enqueue the post-recording notes job when auto-generate is on and compute is
+/// ready, returning the job id so `recording.stop` can echo it to the client.
+/// Returns `None` (and leaves the meeting manually generable) when compute isn't
+/// ready or no captured audio is available — the caller then leaves
+/// `notes_job_id` unset so the client can surface a deferred hint.
 fn maybe_enqueue_auto_notes(
     services: Arc<crate::server::EngineServices>,
     events_tx: broadcast::Sender<Event>,
     meeting_id: &str,
     stopped: &RecordingStopped,
-) {
+) -> Option<String> {
     if let Err(reason) = auto_notes_compute_available(&services) {
         tracing::warn!(
             meeting_id,
             reason = %reason,
             "auto-generate-notes skipped: no LLM provider available; meeting left for manual generation"
         );
-        return;
+        return None;
     }
 
     let Some(audio) = stopped
@@ -563,7 +577,7 @@ fn maybe_enqueue_auto_notes(
             meeting_id,
             "auto-generate-notes skipped: no captured audio path; meeting left for manual generation"
         );
-        return;
+        return None;
     };
 
     let language = match services.storage.get_meeting(meeting_id) {
@@ -597,6 +611,7 @@ fn maybe_enqueue_auto_notes(
         job_id = %accepted.job_id,
         "auto-generate-notes enqueued notes.generate job"
     );
+    Some(accepted.job_id)
 }
 
 fn auto_notes_compute_available(services: &crate::server::EngineServices) -> Result<(), String> {
@@ -1755,11 +1770,78 @@ mod recording_auto_generate_tests {
             .await
             .expect("recording.stop should still succeed");
         assert!(stopped.system_audio_path.is_some() || stopped.mic_audio_path.is_some());
+        assert!(
+            stopped.notes_job_id.is_none(),
+            "no notes job id when compute is unavailable (app shows a deferred hint)"
+        );
 
         let no_event = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
         assert!(
             no_event.is_err(),
             "auto-generate should not enqueue a notes job while compute is unavailable"
+        );
+    }
+
+    fn ready_ipc() -> (IpcImpl, tempfile::TempDir) {
+        use panops_core::conformance::fakes::{
+            FakeNotesExporter, KnownRegionsFake, KnownTurnsFake, TranscriptFileFake,
+        };
+        let data_dir = tempfile::tempdir().expect("temp data dir");
+        let storage = Arc::new(InMemoryStorage::new());
+        let services = crate::server::EngineServices::ready(
+            Arc::new(MockLlm::default()),
+            storage,
+            data_dir.path().to_path_buf(),
+            Arc::new(TranscriptFileFake::default()),
+            Arc::new(KnownTurnsFake),
+            Arc::new(FakeNotesExporter),
+            Arc::new(KnownRegionsFake::default()),
+        );
+        let (events_tx, _keepalive) = broadcast::channel(16);
+        (
+            IpcImpl {
+                services: Arc::new(services),
+                events_tx,
+                sessions: Arc::new(Mutex::new(HashMap::new())),
+            },
+            data_dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn recording_stop_auto_generate_returns_job_id_when_ready() {
+        ensure_test_capture();
+        let (ipc, _data_dir) = ready_ipc();
+        let meeting_id = ipc
+            .meeting_start(MeetingConfig {
+                title: Some("ready auto notes".into()),
+                language: Some("en".into()),
+            })
+            .await
+            .expect("meeting.start");
+
+        ipc.recording_start(RecordingStartParams {
+            meeting_id: meeting_id.clone(),
+            audio_sources: panops_protocol::AudioSourcesWire::SystemAndMic,
+            record_video: false,
+            auto_generate_notes: true,
+            screenshot_interval_ms: 500,
+            screenshot_threshold: 0.15,
+        })
+        .await
+        .expect("recording.start");
+
+        let stopped = ipc
+            .recording_stop(RecordingStopParams {
+                recording_id: meeting_id,
+            })
+            .await
+            .expect("recording.stop");
+
+        assert!(stopped.system_audio_path.is_some() || stopped.mic_audio_path.is_some());
+        assert!(
+            stopped.notes_job_id.is_some(),
+            "auto-generate with a ready provider must surface the enqueued notes job id"
         );
     }
 }

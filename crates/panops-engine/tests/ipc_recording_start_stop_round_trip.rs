@@ -296,6 +296,10 @@ async fn recording_stop_with_auto_generate_notes_enqueues_notes_job() {
     .await
     .expect("recording.stop");
     assert!(stopped.system_audio_path.is_some() || stopped.mic_audio_path.is_some());
+    let notes_job_id = stopped
+        .notes_job_id
+        .clone()
+        .expect("auto-generate with a ready provider returns a notes job id");
 
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
@@ -305,7 +309,13 @@ async fn recording_stop_with_auto_generate_notes_enqueues_notes_job() {
                 .expect("subscription open")
                 .expect("payload deserialises");
             match event {
-                Event::JobDone(d) if d.result.meeting_id == meeting_id => return,
+                Event::JobDone(d) if d.result.meeting_id == meeting_id => {
+                    assert_eq!(
+                        d.job_id, notes_job_id,
+                        "stop result notes_job_id should match the completed auto job"
+                    );
+                    return;
+                }
                 Event::JobDone(_) => continue,
                 Event::JobError(e) => panic!("expected JobDone, got JobError: {:?}", e.error),
                 Event::Unknown(v) => panic!("expected JobDone, got Unknown: {v}"),
