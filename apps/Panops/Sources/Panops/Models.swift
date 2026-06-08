@@ -162,6 +162,16 @@ enum AudioSourcesWire: String, Codable {
 struct MeetingConfig: Encodable {
     let title: String?
     let language: String?
+
+    // Explicit snake_case keys per the wire convention (see MeetingSummary).
+    // Both fields are single-word today, so this matches the current wire, but
+    // it pins the mapping so a future multi-word field can't silently drift from
+    // the engine's snake_case contract. Optionals still encode via
+    // `encodeIfPresent`, so an all-nil config stays `{}`.
+    enum CodingKeys: String, CodingKey {
+        case title
+        case language
+    }
 }
 
 /// Outgoing params for `ipc.recording.start`.
