@@ -54,6 +54,12 @@ final class CapturePreviewController: NSObject, ObservableObject {
     private lazy var observer = CapturePickerObserver(controller: self)
     private var stream: SCStream?
     private var output: PreviewStreamOutput?
+    /// Bumped on every preview restart and on teardown. A `restartPreview` whose
+    /// epoch is stale when `startCapture()` returns lost the race (a newer pick or
+    /// a teardown happened mid-suspension) and must discard its stream instead of
+    /// assigning it — otherwise overlapping picks leak streams and a teardown is
+    /// silently overwritten by a stream that keeps capturing.
+    private var previewEpoch = 0
     private var currentFilter: SCContentFilter?
     /// Sub-rectangle to preview, in display points; set by the drag-crop overlay.
     private var sourceRect: CGRect?
@@ -104,6 +110,9 @@ final class CapturePreviewController: NSObject, ObservableObject {
     /// Stop the picker observer + preview stream and reset to a clean state so
     /// the next sheet opens fresh. Call on sheet cancel and when recording ends.
     func teardown() {
+        // Invalidate any in-flight restart so a stream that finishes starting
+        // after teardown stops itself instead of resurrecting the preview.
+        previewEpoch += 1
         SCContentSharingPicker.shared.remove(observer)
         let stopping = stream
         stream = nil
@@ -183,7 +192,11 @@ final class CapturePreviewController: NSObject, ObservableObject {
     // MARK: - Preview stream
 
     private func restartPreview(with filter: SCContentFilter) async {
+        previewEpoch += 1
+        let epoch = previewEpoch
         await stopStream()
+        // A newer pick (or a teardown) superseded us while stopping the old stream.
+        guard epoch == previewEpoch else { return }
         state = .starting
         let config = makeConfig(for: filter)
         let newOutput = PreviewStreamOutput(displayLayer: displayLayer, onAudioLevel: makeLevelSink())
@@ -195,10 +208,18 @@ final class CapturePreviewController: NSObject, ObservableObject {
                 try newStream.addStreamOutput(newOutput, type: .microphone, sampleHandlerQueue: audioQueue)
             }
             try await newStream.startCapture()
+            // If we lost the race during startCapture (newer pick or teardown),
+            // discard this stream rather than overwriting the current state.
+            guard epoch == previewEpoch else {
+                try? await newStream.stopCapture()
+                return
+            }
             stream = newStream
             output = newOutput
             state = .live
         } catch {
+            // Only surface the failure if we're still the current attempt.
+            guard epoch == previewEpoch else { return }
             state = Self.mapStartError(error)
         }
     }
