@@ -9,12 +9,19 @@ struct RecordingOptions: Equatable {
     var screenshotThreshold: Float
     var recordVideo: Bool
 
-    static let `default` = RecordingOptions(
-        audioSources: .systemAndMic,
-        screenshotIntervalMs: 500,
-        screenshotThreshold: 0.15,
-        recordVideo: false
-    )
+    init(
+        audioSources: AudioSourcesWire = .systemAndMic,
+        screenshotIntervalMs: UInt64 = 500,
+        screenshotThreshold: Float = 0.15,
+        recordVideo: Bool = false
+    ) {
+        self.audioSources = audioSources
+        self.screenshotIntervalMs = screenshotIntervalMs
+        self.screenshotThreshold = screenshotThreshold
+        self.recordVideo = recordVideo
+    }
+
+    static let `default` = RecordingOptions()
 }
 
 /// Language choice offered in the New Recording sheet. Maps to the
