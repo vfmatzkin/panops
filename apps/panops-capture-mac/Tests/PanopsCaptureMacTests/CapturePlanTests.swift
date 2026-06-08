@@ -52,6 +52,11 @@ struct CapturePlanTests {
         #expect(rect.h == 480)
     }
 
+    @Test func testCaptureRectToCGRect() {
+        let rect = CapturePlan.CaptureRect(x: 10, y: 20, w: 640, h: 480)
+        #expect(rect.cgRect == CGRect(x: 10, y: 20, width: 640, height: 480))
+    }
+
     // MARK: - Apply to SCStreamConfiguration
 
     @Test func testApplyToConfigSetsWidthHeight() throws {

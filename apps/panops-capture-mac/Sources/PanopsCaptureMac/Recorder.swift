@@ -130,10 +130,8 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
                 filter = SCContentFilter(desktopIndependentWindow: window)
                 nativeWidth = Int(window.frame.width)
                 nativeHeight = Int(window.frame.height)
-                sourceRect = region.map { r in
-                    // Region is specified in native window coordinates
-                    CGRect(x: r.x, y: r.y, width: r.w, height: r.h)
-                }
+                // Region is specified in native window coordinates.
+                sourceRect = region?.cgRect
             } else {
                 FileHandle.standardError.write(
                     Data("capture_target window \(windowID) not found; using full display\n".utf8))
@@ -147,18 +145,14 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
             guard let display = content.displays.first else { throw CaptureFailure.noDisplay }
             filter = SCContentFilter(display: display, excludingWindows: [])
             (nativeWidth, nativeHeight) = (display.width, display.height)
-            sourceRect = region.map { r in
-                CGRect(x: r.x, y: r.y, width: r.w, height: r.h)
-            }
+            sourceRect = region?.cgRect
         case .app(let bundleId):
             // App capture: find the first window of this app, or fall back to display
             if let window = content.windows.first(where: { $0.owningApplication?.bundleIdentifier == bundleId }) {
                 filter = SCContentFilter(desktopIndependentWindow: window)
                 nativeWidth = Int(window.frame.width)
                 nativeHeight = Int(window.frame.height)
-                sourceRect = region.map { r in
-                    CGRect(x: r.x, y: r.y, width: r.w, height: r.h)
-                }
+                sourceRect = region?.cgRect
             } else {
                 FileHandle.standardError.write(
                     Data("capture_target app \(bundleId) has no windows; using full display\n".utf8))
@@ -168,8 +162,8 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
                 // Display fallback: no region applies
                 sourceRect = nil
             }
-        case .region(let displayId, _, _, let w, let h):
-            // Region capture: display filter with the specified rectangle
+        case .region(let displayId, let x, let y, let w, let h):
+            // Region capture: display filter cropped to the specified rectangle.
             let display: SCDisplay
             if let d = content.displays.first(where: { $0.displayID == displayId }) {
                 display = d
@@ -180,13 +174,13 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
                 display = primary
             }
             filter = SCContentFilter(display: display, excludingWindows: [])
-            // When region is specified via wire protocol, use those dimensions
+            // The region's own dimensions are the native capture size.
             nativeWidth = Int(w)
             nativeHeight = Int(h)
-            // Also apply any region given at runtime (e.g., from crop)
-            sourceRect = region.map { r in
-                CGRect(x: r.x, y: r.y, width: r.w, height: r.h)
-            }
+            // Crop to exactly the requested rectangle. Prefer the threaded
+            // region param (the wire x/y/w/h), falling back to the target's own
+            // coordinates so the crop holds even if the caller passes no region.
+            sourceRect = (region ?? CapturePlan.CaptureRect(x: x, y: y, w: w, h: h)).cgRect
         }
 
         let config = SCStreamConfiguration()

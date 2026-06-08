@@ -32,6 +32,15 @@ enum CaptureTargetKind: Equatable {
             self = .display
         }
     }
+
+    /// The crop rectangle for a `.region` target, in native source coordinates;
+    /// `nil` for whole-display / window / app targets. Lets `main.swift` thread
+    /// the wire `x/y/w/h` into the recorder so the SCStream `sourceRect` records
+    /// exactly the cropped rectangle.
+    var regionRect: CapturePlan.CaptureRect? {
+        guard case let .region(_, x, y, w, h) = self else { return nil }
+        return CapturePlan.CaptureRect(x: x, y: y, w: w, h: h)
+    }
 }
 
 /// One on-screen window in the wire shape the engine's `--list-windows`

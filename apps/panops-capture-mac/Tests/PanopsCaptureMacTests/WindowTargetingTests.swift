@@ -77,4 +77,28 @@ struct WindowTargetingTests {
         let target = try JSONDecoder().decode(CaptureTarget.self, from: Data(#"{"kind":"bogus"}"#.utf8))
         #expect(CaptureTargetKind(wire: target) == .display)
     }
+
+    // MARK: - region → sourceRect threading
+
+    @Test func regionKindDecodesAllFields() throws {
+        let json = #"{"kind":"region","display_id":0,"x":10,"y":20,"w":640,"h":480}"#
+        let target = try JSONDecoder().decode(CaptureTarget.self, from: Data(json.utf8))
+        #expect(CaptureTargetKind(wire: target) == .region(displayId: 0, x: 10, y: 20, w: 640, h: 480))
+    }
+
+    @Test func regionTargetExposesItsCropRect() {
+        // A region target threads its x/y/w/h to the recorder so the SCStream
+        // sourceRect records exactly the cropped rectangle.
+        let rect = CaptureTargetKind.region(displayId: 0, x: 10, y: 20, w: 640, h: 480).regionRect
+        #expect(rect?.x == 10)
+        #expect(rect?.y == 20)
+        #expect(rect?.w == 640)
+        #expect(rect?.h == 480)
+    }
+
+    @Test func nonRegionTargetsHaveNoCropRect() {
+        #expect(CaptureTargetKind.display.regionRect == nil)
+        #expect(CaptureTargetKind.window(7).regionRect == nil)
+        #expect(CaptureTargetKind.app("com.example.app").regionRect == nil)
+    }
 }
