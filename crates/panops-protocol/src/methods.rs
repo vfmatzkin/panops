@@ -364,6 +364,14 @@ pub struct RecordingStopped {
     pub mic_audio_path: Option<String>,
     pub screenshot_paths: Vec<String>,
     pub duration_ms: u64,
+    /// Engine-issued notes job id when `auto_generate_notes` was set on the
+    /// recording AND a notes provider was ready at stop. `None` when auto-notes
+    /// wasn't requested, or was requested but compute wasn't ready (warmup / no
+    /// provider) — clients detect "auto requested but no job" and surface a
+    /// deferred hint. `#[serde(default)]` + skip-when-none keeps the field
+    /// forward-compatible: older payloads (no field) still decode all-default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_job_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -738,10 +746,24 @@ mod tests {
             mic_audio_path: Some("/tmp/mic.wav".into()),
             screenshot_paths: vec!["/tmp/screenshots/001.jpg".into()],
             duration_ms: 60_000,
+            notes_job_id: Some("job-123".into()),
         };
-        let back =
-            serde_json::from_str::<RecordingStopped>(&serde_json::to_string(&r).unwrap()).unwrap();
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains(r#""notes_job_id":"job-123""#), "got: {json}");
+        let back = serde_json::from_str::<RecordingStopped>(&json).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn recording_stopped_decodes_without_notes_job_id() {
+        // Older engine payloads (pre auto-notes-observability) omit the field;
+        // they must still decode with `notes_job_id == None`.
+        let json = r#"{"system_audio_path":"/tmp/system.wav","mic_audio_path":null,"screenshot_paths":[],"duration_ms":1000}"#;
+        let r: RecordingStopped = serde_json::from_str(json).unwrap();
+        assert_eq!(r.notes_job_id, None);
+        // And when absent, it must not be emitted on the wire.
+        let back = serde_json::to_string(&r).unwrap();
+        assert!(!back.contains("notes_job_id"), "got: {back}");
     }
 
     #[test]
