@@ -769,7 +769,6 @@ impl Capture for FakeCapture {
         Ok(CaptureSession {
             meeting_id: meeting_id.to_string(),
             started_at_ms,
-            auto_generate_notes: config.auto_generate_notes,
         })
     }
 
