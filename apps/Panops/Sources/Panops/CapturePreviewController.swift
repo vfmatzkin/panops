@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import CoreMedia
 import Foundation
@@ -83,6 +84,21 @@ final class CapturePreviewController: NSObject, ObservableObject {
         } else {
             presentPicker()
         }
+    }
+
+    /// Open System Settings straight to Privacy → Screen Recording so the user
+    /// can grant the app permission, then come back and Retry.
+    func openScreenRecordingSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Re-attempt the preview when the app returns to the foreground, but only
+    /// while blocked on permission — the user may have just granted it.
+    func retryIfPermissionDenied() {
+        if state == .permissionDenied { retry() }
     }
 
     /// Stop the picker observer + preview stream and reset to a clean state so
