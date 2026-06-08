@@ -370,10 +370,16 @@ final class AppViewModel: ObservableObject {
 
     /// Create a meeting through the existing `ipc.meeting.start` path, start
     /// live capture for it, select it in the sidebar, and refresh the list.
-    func startNewRecording<Controller: RecordingController>(using recordingController: Controller) async throws {
-        let meetingId = try await client.meetingStart()
+    /// `setup` carries the New Recording sheet's choices: title + language flow
+    /// into `meeting.start`, audio sources + screenshot sampling into
+    /// `recording.start`.
+    func startNewRecording<Controller: RecordingController>(
+        using recordingController: Controller,
+        setup: RecordingSetup = .default
+    ) async throws {
+        let meetingId = try await client.meetingStart(config: setup.meetingConfig)
         do {
-            try await recordingController.start(meetingId: meetingId)
+            try await recordingController.start(meetingId: meetingId, options: setup.recordingOptions)
         } catch {
             let recordingStartError = error
             do {
@@ -624,15 +630,31 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
     @ObservedObject var recordingController: Controller
     @State private var isStartingNewRecording = false
     @State private var toolbarRecordingError: String?
+    @State private var showNewRecordingSheet = false
+    /// The setup chosen in the sheet, kept so the recording screen can show the
+    /// right capture-source indicators while recording.
+    @State private var activeSetup = RecordingSetup.default
 
     var body: some View {
         NavigationSplitView {
             MeetingListView(vm: vm)
         } detail: {
-            // A selected meeting owns its own Notes/Transcript/Info workspace,
-            // including per-meeting processing/error states. The audio-file
-            // flow (no selection) renders its working/done/error here instead.
-            if let meeting = vm.selectedMeeting {
+            // Active recording takes over the detail pane with the dedicated
+            // recording screen (timer + capture indicators + Stop), regardless
+            // of sidebar selection.
+            if recordingController.isRecording {
+                RecordingScreen(
+                    controller: recordingController,
+                    setup: activeSetup,
+                    onRecordingStopped: { _ in
+                        try await vm.finishActiveLiveRecording()
+                    }
+                )
+            } else if let meeting = vm.selectedMeeting {
+                // A selected meeting owns its own Notes/Transcript/Info
+                // workspace, including per-meeting processing/error states. The
+                // audio-file flow (no selection) renders its working/done/error
+                // here instead.
                 MeetingDetailView(
                     meeting: meeting,
                     vm: vm,
@@ -676,9 +698,7 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
                 }
 
                 Button("New Recording") {
-                    Task { @MainActor in
-                        await startNewRecording()
-                    }
+                    showNewRecordingSheet = true
                 }
                 .disabled(isStartingNewRecording || recordingController.isRecording || isEngineNotConnected || isGeneratingNotes)
                 .help("Create a meeting and start live recording")
@@ -688,6 +708,16 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(toolbarRecordingError ?? "")
+        }
+        .sheet(isPresented: $showNewRecordingSheet) {
+            NewRecordingSheet(
+                onStart: { setup in
+                    showNewRecordingSheet = false
+                    activeSetup = setup
+                    Task { @MainActor in await startNewRecording(setup: setup) }
+                },
+                onCancel: { showNewRecordingSheet = false }
+            )
         }
         .task {
             await vm.refreshMeetings()
@@ -718,14 +748,14 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
         )
     }
 
-    private func startNewRecording() async {
+    private func startNewRecording(setup: RecordingSetup) async {
         guard !isStartingNewRecording else { return }
         isStartingNewRecording = true
         defer { isStartingNewRecording = false }
 
         do {
             toolbarRecordingError = nil
-            try await vm.startNewRecording(using: recordingController)
+            try await vm.startNewRecording(using: recordingController, setup: setup)
         } catch {
             AppViewModel.logFullError("recording.new", error)
             toolbarRecordingError = "Couldn't start recording."
@@ -762,7 +792,7 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
                 .multilineTextAlignment(.center)
 
             Button {
-                Task { @MainActor in await startNewRecording() }
+                showNewRecordingSheet = true
             } label: {
                 Label("New Recording", systemImage: "record.circle")
                     .padding(.horizontal, 8)
