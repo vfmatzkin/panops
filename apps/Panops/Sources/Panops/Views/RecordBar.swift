@@ -113,13 +113,15 @@ struct RecordingScreen<Controller: RecordingController & ObservableObject>: View
     }
 
     private var activeSources: [CaptureSource] {
-        var sources: [CaptureSource] = []
-        if setup.audioSources == .micOnly || setup.audioSources == .systemAndMic {
-            sources.append(CaptureSource(id: "mic", icon: "mic", label: "Mic"))
-        }
-        if setup.audioSources == .systemOnly || setup.audioSources == .systemAndMic {
-            sources.append(CaptureSource(id: "system", icon: "speaker.wave.2", label: "System audio"))
-        }
+        // One audio chip labelled from the shared `displayLabel` so its wording
+        // matches the New Recording picker exactly, plus the screenshots chip.
+        var sources: [CaptureSource] = [
+            CaptureSource(
+                id: "audio",
+                icon: setup.audioSources.icon,
+                label: setup.audioSources.displayLabel
+            )
+        ]
         if setup.captureScreenshots {
             sources.append(CaptureSource(id: "screenshots", icon: "photo", label: "Screenshots"))
         }
