@@ -20,6 +20,7 @@ use std::sync::Mutex;
 
 use panops_core::capture::{
     AudioSources, Capture, CaptureConfig, CaptureError, CaptureResult, CaptureSession,
+    CaptureTarget, WindowInfo,
 };
 use serde::{Deserialize, Deserializer};
 
@@ -123,6 +124,13 @@ struct StopResult {
     screenshot_paths: Vec<String>,
     #[serde(default)]
     duration_ms: u64,
+}
+
+#[derive(Deserialize)]
+struct WindowInfoWire {
+    window_id: u32,
+    app_name: String,
+    title: String,
 }
 
 impl ScreenCaptureKitCapture {
@@ -308,6 +316,32 @@ impl ScreenCaptureKitCapture {
 }
 
 impl Capture for ScreenCaptureKitCapture {
+    fn list_windows(&self) -> Result<Vec<WindowInfo>, CaptureError> {
+        let output = Command::new(&self.binary)
+            .arg("--list-windows")
+            .envs(self.extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .output()
+            .map_err(|e| CaptureError::Sidecar(format!("list-windows spawn: {e}")))?;
+        if !output.status.success() {
+            return Err(CaptureError::Sidecar(format!(
+                "list-windows exited with status {}",
+                output.status
+            )));
+        }
+        let windows: Vec<WindowInfoWire> = serde_json::from_slice(&output.stdout)
+            .map_err(|e| CaptureError::Sidecar(format!("list-windows decode: {e}")))?;
+        Ok(windows
+            .into_iter()
+            .map(|w| WindowInfo {
+                window_id: w.window_id,
+                app_name: w.app_name,
+                title: w.title,
+            })
+            .collect())
+    }
+
     fn start_capture(
         &self,
         meeting_id: &str,
@@ -325,6 +359,7 @@ impl Capture for ScreenCaptureKitCapture {
             "video_path": meeting_dir.join("recording.mov").display().to_string(),
             "screenshot_interval_ms": config.screenshot_interval_ms,
             "screenshot_threshold": config.screenshot_threshold,
+            "capture_target": capture_target_json(config.capture_target),
         });
         let started: StartedResult = self.call("capture.start", params)?;
         // Insert into the sessions map AFTER successful sidecar call.
@@ -414,6 +449,16 @@ fn audio_sources_str(sources: AudioSources) -> &'static str {
     }
 }
 
+/// Map `CaptureTarget` to the sidecar control-protocol shape.
+fn capture_target_json(target: CaptureTarget) -> serde_json::Value {
+    match target {
+        CaptureTarget::Display => serde_json::json!({ "kind": "display" }),
+        CaptureTarget::Window { window_id } => {
+            serde_json::json!({ "kind": "window", "window_id": window_id })
+        }
+    }
+}
+
 /// Map a sidecar JSON-RPC error code to an opaque `CaptureError`. Full
 /// detail is logged via `tracing`; only the code shapes the variant.
 fn map_sidecar_error(code: i32) -> CaptureError {
@@ -460,6 +505,18 @@ mod tests {
         assert_eq!(
             audio_sources_str(AudioSources::SystemAndMic),
             "system_and_mic"
+        );
+    }
+
+    #[test]
+    fn capture_target_json_uses_pinned_shape() {
+        assert_eq!(
+            capture_target_json(CaptureTarget::Display),
+            serde_json::json!({ "kind": "display" })
+        );
+        assert_eq!(
+            capture_target_json(CaptureTarget::Window { window_id: 42 }),
+            serde_json::json!({ "kind": "window", "window_id": 42 })
         );
     }
 

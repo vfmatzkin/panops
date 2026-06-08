@@ -27,6 +27,17 @@ mod macos {
     use std::io::{BufRead, Write};
 
     pub fn run() {
+        if std::env::args().any(|arg| arg == "--list-windows") {
+            println!(
+                "{}",
+                serde_json::json!([
+                    { "window_id": 101u32, "app_name": "Safari", "title": "Panops Fixture Window" },
+                    { "window_id": 202u32, "app_name": "Notes", "title": "Meeting Notes" }
+                ])
+            );
+            return;
+        }
+
         let mode = std::env::var("PANOPS_FAKE_SIDECAR_MODE").unwrap_or_default();
         let stdin = std::io::stdin();
         let mut out = std::io::stdout();

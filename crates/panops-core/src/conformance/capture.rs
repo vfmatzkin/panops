@@ -12,7 +12,9 @@
 
 use std::path::Path;
 
-use crate::capture::{AudioSources, Capture, CaptureConfig, CaptureError, CaptureSession};
+use crate::capture::{
+    AudioSources, Capture, CaptureConfig, CaptureError, CaptureSession, CaptureTarget,
+};
 
 /// Run the full conformance suite against a `Capture` implementation.
 ///
@@ -30,13 +32,31 @@ pub fn run_suite<C: Capture>(adapter: &C, fixtures_dir: &Path) {
 /// `false` — it must not opt out of the production marker just because its
 /// sidecar is stubbed for CI.
 pub fn run_suite_with<C: Capture>(adapter: &C, fixtures_dir: &Path, expected_is_fake: bool) {
+    list_windows_returns_window_info(adapter);
     start_returns_session(adapter, fixtures_dir);
+    start_accepts_window_capture_target(adapter, fixtures_dir);
     stop_returns_valid_audio(adapter, fixtures_dir);
     stop_returns_screenshot_paths(adapter, fixtures_dir);
     stop_track_presence_matches_sources(adapter);
     record_video_writes_recording_mov(adapter);
     stop_session_not_found(adapter);
     is_fake_marker(adapter, expected_is_fake);
+}
+
+fn list_windows_returns_window_info<C: Capture>(adapter: &C) {
+    let windows = adapter.list_windows().expect("list_windows should succeed");
+    assert!(
+        !windows.is_empty(),
+        "list_windows must return at least one capturable window"
+    );
+    for window in windows {
+        assert_ne!(window.window_id, 0, "window_id should be non-zero");
+        assert!(
+            !window.app_name.trim().is_empty(),
+            "app_name should be non-empty"
+        );
+        assert!(!window.title.trim().is_empty(), "title should be non-empty");
+    }
 }
 
 fn temp_meeting_dir() -> std::path::PathBuf {
@@ -77,6 +97,32 @@ fn start_returns_session<C: Capture>(adapter: &C, _fixtures_dir: &Path) {
     let _ = adapter.stop_capture(&session);
 
     // Clean up temp dir.
+    let _ = std::fs::remove_dir_all(&meeting_dir);
+}
+
+fn start_accepts_window_capture_target<C: Capture>(adapter: &C, _fixtures_dir: &Path) {
+    let meeting_id = "test_meeting_window_target";
+    let meeting_dir = temp_meeting_dir();
+    std::fs::create_dir_all(&meeting_dir).expect("create temp meeting dir");
+
+    let window = adapter
+        .list_windows()
+        .expect("list_windows should succeed")
+        .into_iter()
+        .next()
+        .expect("conformance window");
+    let config = CaptureConfig {
+        capture_target: CaptureTarget::Window {
+            window_id: window.window_id,
+        },
+        ..CaptureConfig::default()
+    };
+    let session = adapter
+        .start_capture(meeting_id, &meeting_dir, &config)
+        .expect("start_capture should accept a window target");
+    assert_eq!(session.meeting_id, meeting_id);
+    let _ = adapter.stop_capture(&session);
+
     let _ = std::fs::remove_dir_all(&meeting_dir);
 }
 

@@ -17,7 +17,7 @@ use panops_core::conformance::fakes::{
 };
 use panops_core::llm::{LlmError, LlmProvider, LlmRequest, LlmResponse};
 use panops_engine::server::{EngineServices, run_serve_in_process};
-use panops_protocol::{Event, RecordingAccepted, RecordingStopped};
+use panops_protocol::{CaptureWindowsResult, Event, RecordingAccepted, RecordingStopped};
 use tempfile::tempdir;
 use tokio::sync::watch;
 
@@ -220,6 +220,55 @@ async fn recording_start_with_audio_sources_wire() {
     // audio_sources = mic_only → only the mic track is present.
     assert!(stopped.system_audio_path.is_none(), "no system track");
     assert!(stopped.mic_audio_path.is_some(), "mic track present");
+
+    let _ = shutdown_tx.send(true);
+    let _ = server.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn capture_windows_returns_fake_window_list() {
+    ensure_test_capture();
+    let dir = tempdir().unwrap();
+    let socket = dir.path().join("engine.sock");
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let (_storage_tmp, storage, data_dir) = tempdir_storage();
+    let services = EngineServices::ready(
+        Arc::new(MockLlm::default()),
+        storage,
+        data_dir,
+        Arc::new(TranscriptFileFake::default()),
+        Arc::new(panops_core::conformance::fakes::KnownTurnsFake),
+        Arc::new(FakeNotesExporter),
+        Arc::new(KnownRegionsFake::default()),
+    );
+
+    let server_socket = socket.clone();
+    let server_shutdown = shutdown_rx.clone();
+    let server = tokio::spawn(async move {
+        run_serve_in_process(&server_socket, services, Some(server_shutdown))
+            .await
+            .unwrap();
+    });
+
+    wait_for_socket(&socket).await;
+
+    let client = uds_ws_client(&socket).await;
+    let result: CaptureWindowsResult = ClientT::request(
+        &client,
+        "ipc.capture.windows",
+        rpc_params![serde_json::json!({})],
+    )
+    .await
+    .expect("capture.windows");
+
+    assert!(
+        result.windows.iter().any(|w| w.window_id == 101
+            && w.app_name == "Safari"
+            && w.title == "Panops Fixture Window"),
+        "fake window list should be returned, got {:?}",
+        result.windows
+    );
 
     let _ = shutdown_tx.send(true);
     let _ = server.await;

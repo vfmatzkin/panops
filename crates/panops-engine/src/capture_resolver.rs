@@ -57,6 +57,14 @@ pub fn pick_capture() -> Arc<dyn Capture + Send + Sync> {
 struct NotYetImplementedCapture;
 
 impl Capture for NotYetImplementedCapture {
+    fn list_windows(
+        &self,
+    ) -> Result<Vec<panops_core::capture::WindowInfo>, panops_core::capture::CaptureError> {
+        Err(panops_core::capture::CaptureError::Capture(
+            "live capture not available — PANOPS_CAPTURE_SIDECAR_BIN not set".into(),
+        ))
+    }
+
     fn start_capture(
         &self,
         _meeting_id: &str,

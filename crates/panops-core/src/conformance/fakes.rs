@@ -714,6 +714,7 @@ use std::path::PathBuf;
 
 use crate::capture::{
     AudioSources, Capture, CaptureConfig, CaptureError, CaptureResult, CaptureSession,
+    CaptureTarget, WindowInfo,
 };
 
 /// A fake `Capture` adapter for testing. Produces:
@@ -722,7 +723,15 @@ use crate::capture::{
 ///
 /// Thread-safe: sessions are tracked in an internal `Mutex<HashMap>`.
 pub struct FakeCapture {
-    sessions: Mutex<std::collections::HashMap<String, (PathBuf, u64, AudioSources, bool)>>,
+    sessions: Mutex<std::collections::HashMap<String, FakeCaptureSession>>,
+}
+
+struct FakeCaptureSession {
+    meeting_dir: PathBuf,
+    started_at_ms: u64,
+    audio_sources: AudioSources,
+    record_video: bool,
+    capture_target: CaptureTarget,
 }
 
 impl Default for FakeCapture {
@@ -740,6 +749,21 @@ impl FakeCapture {
 }
 
 impl Capture for FakeCapture {
+    fn list_windows(&self) -> Result<Vec<WindowInfo>, CaptureError> {
+        Ok(vec![
+            WindowInfo {
+                window_id: 101,
+                app_name: "Safari".into(),
+                title: "Panops Fixture Window".into(),
+            },
+            WindowInfo {
+                window_id: 202,
+                app_name: "Notes".into(),
+                title: "Meeting Notes".into(),
+            },
+        ])
+    }
+
     fn start_capture(
         &self,
         meeting_id: &str,
@@ -758,12 +782,13 @@ impl Capture for FakeCapture {
             .map_err(|_| CaptureError::Capture("mutex poisoned".into()))?;
         sessions.insert(
             meeting_id.to_string(),
-            (
-                meeting_dir.to_path_buf(),
+            FakeCaptureSession {
+                meeting_dir: meeting_dir.to_path_buf(),
                 started_at_ms,
-                config.audio_sources,
-                config.record_video,
-            ),
+                audio_sources: config.audio_sources,
+                record_video: config.record_video,
+                capture_target: config.capture_target,
+            },
         );
 
         Ok(CaptureSession {
@@ -777,32 +802,38 @@ impl Capture for FakeCapture {
             .sessions
             .lock()
             .map_err(|_| CaptureError::Capture("mutex poisoned".into()))?;
-        let (meeting_dir, started_at_ms, audio_sources, record_video) = sessions
+        let fake_session = sessions
             .remove(&session.meeting_id)
             .ok_or_else(|| CaptureError::SessionNotFound(session.meeting_id.clone()))?;
+        let _capture_target = fake_session.capture_target;
 
         // Compute duration (at least 1s for valid WAV).
         let ended_at_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| CaptureError::Capture(e.to_string()))?
             .as_millis() as u64;
-        let duration_ms = ended_at_ms.saturating_sub(started_at_ms).max(1000);
+        let duration_ms = ended_at_ms
+            .saturating_sub(fake_session.started_at_ms)
+            .max(1000);
 
         // Write one synthetic 16 kHz mono WAV per requested source — never a
         // mixed track (slice 11, Decision §2). Each field is `Some` only when
         // its source was requested via `audio_sources`.
-        let want_system = !matches!(audio_sources, AudioSources::MicOnly);
-        let want_mic = !matches!(audio_sources, AudioSources::SystemOnly);
+        let want_system = !matches!(fake_session.audio_sources, AudioSources::MicOnly);
+        let want_mic = !matches!(fake_session.audio_sources, AudioSources::SystemOnly);
         let system_audio_path = if want_system {
             Some(write_sine_wav(
-                &meeting_dir.join("system.wav"),
+                &fake_session.meeting_dir.join("system.wav"),
                 duration_ms,
             )?)
         } else {
             None
         };
         let mic_audio_path = if want_mic {
-            Some(write_sine_wav(&meeting_dir.join("mic.wav"), duration_ms)?)
+            Some(write_sine_wav(
+                &fake_session.meeting_dir.join("mic.wav"),
+                duration_ms,
+            )?)
         } else {
             None
         };
@@ -813,7 +844,7 @@ impl Capture for FakeCapture {
         // old ancestor-walk failed there). Emit a minimal embedded JPEG
         // (SOI + JFIF APP0 + EOI) instead — enough for the contract, which
         // only requires the screenshot paths to exist.
-        let screenshots_dir = meeting_dir.join("screenshots");
+        let screenshots_dir = fake_session.meeting_dir.join("screenshots");
         std::fs::create_dir_all(&screenshots_dir).map_err(CaptureError::Io)?;
 
         const FAKE_JPEG: &[u8] = &[
@@ -827,8 +858,8 @@ impl Capture for FakeCapture {
             screenshot_paths.push(dest_path);
         }
 
-        if record_video {
-            write_fake_mov(&meeting_dir.join("recording.mov"))?;
+        if fake_session.record_video {
+            write_fake_mov(&fake_session.meeting_dir.join("recording.mov"))?;
         }
 
         Ok(CaptureResult {
