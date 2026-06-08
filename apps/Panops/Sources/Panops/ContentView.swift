@@ -27,8 +27,20 @@ final class AppViewModel: ObservableObject {
     @Published var state: State = .idle(audio: nil)
     @Published var selectedMeetingId: String?
     @Published var activeRecordingMeetingId: String?
+    /// The displayed meeting list — `allMeetings` narrowed by the current
+    /// sidebar selection. The content list renders this.
     @Published var meetings: [MeetingSummary] = []
+    /// The full unfiltered meeting list (Phase B). Smart Views filter this
+    /// client-side; space/project/tag selections refetch via the engine.
+    @Published private(set) var allMeetings: [MeetingSummary] = []
     @Published var selectedMeeting: Meeting?
+    /// Organization state (Phase B), loaded on connect and after edits.
+    @Published var spaces: [Space] = []
+    @Published var projects: [Project] = []
+    @Published var tags: [Tag] = []
+    /// Current sidebar selection; drives the displayed meeting list. Defaults
+    /// to All (every meeting) so first launch matches the pre-Phase-B view.
+    @Published var sidebarSelection: SidebarSelection = .smart(.all)
     @Published var notesProgress: JobProgressEvent?
     @Published var llmInfo: LlmInfo?
     /// Which meeting the current/last notes generation targets. Lets the meeting
@@ -66,6 +78,7 @@ final class AppViewModel: ObservableObject {
     func connect() async throws {
         try await client.connect()
         await loadServerInfoBestEffort()
+        await refreshOrganization()
         await refreshMeetingsWithStartupRetry()
     }
 
@@ -75,6 +88,7 @@ final class AppViewModel: ObservableObject {
         do {
             try await client.connect()
             await loadServerInfoBestEffort()
+            await refreshOrganization()
             await refreshMeetingsWithStartupRetry()
             state = .idle(audio: nil)
         } catch {
@@ -435,7 +449,8 @@ final class AppViewModel: ObservableObject {
         var delayMs = initialDelayMs
         for attempt in 1...maxAttempts {
             do {
-                meetings = try await client.meetingList()
+                allMeetings = try await client.meetingList()
+                await applySidebarSelection()
                 return
             } catch {
                 Self.logFullError("meeting.list", error)
@@ -445,6 +460,236 @@ final class AppViewModel: ObservableObject {
                     delayMs = min(delayMs * 2, 1_000)
                 }
             }
+        }
+    }
+
+    // MARK: - Organization (Phase B): load + filtering + CRUD + assign
+
+    /// Load spaces / projects / tags. Best-effort like `loadServerInfoBestEffort`:
+    /// an older or unhealthy engine simply leaves the sections empty rather than
+    /// blocking the app.
+    func refreshOrganization() async {
+        do {
+            spaces = Self.sortedSpaces(try await client.spaceList())
+        } catch {
+            Self.logFullError("space.list", error)
+        }
+        do {
+            projects = try await client.projectList()
+        } catch {
+            Self.logFullError("project.list", error)
+        }
+        do {
+            tags = (try await client.tagList()).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        } catch {
+            Self.logFullError("tag.list", error)
+        }
+    }
+
+    /// Recompute the displayed `meetings` for the current sidebar selection.
+    /// Smart Views filter the loaded `allMeetings` client-side; space / project
+    /// / tag selections refetch through the engine's `meeting.list` filters.
+    func applySidebarSelection() async {
+        switch sidebarSelection {
+        case .smart(let view):
+            meetings = meetingsForSmartView(view)
+        case .space(let id):
+            await loadFilteredMeetings(MeetingListParams(spaceId: id))
+        case .project(let id):
+            await loadFilteredMeetings(MeetingListParams(projectId: id))
+        case .tag(let id):
+            await loadFilteredMeetings(MeetingListParams(tagId: id))
+        }
+    }
+
+    private func loadFilteredMeetings(_ filter: MeetingListParams) async {
+        do {
+            meetings = try await client.meetingList(filter: filter)
+        } catch {
+            Self.logFullError("meeting.list.filter", error)
+            meetings = []
+        }
+    }
+
+    private func meetingsForSmartView(_ view: SmartView) -> [MeetingSummary] {
+        switch view {
+        case .all:
+            return allMeetings
+        case .inbox:
+            return allMeetings.filter { $0.spaceId == nil }
+        case .needsNotes:
+            return allMeetings.filter { status(for: $0) == .needsNotes }
+        case .thisWeek:
+            return allMeetings.filter { isInCurrentWeek($0) }
+        }
+    }
+
+    private func isInCurrentWeek(_ summary: MeetingSummary) -> Bool {
+        guard let date = MeetingDate.parse(summary.startedAt) else { return false }
+        let calendar = Calendar.current
+        guard let week = calendar.dateInterval(of: .weekOfYear, for: Date()) else { return false }
+        return week.contains(date)
+    }
+
+    /// Projects within a space, ordered for display.
+    func projects(in spaceId: String) -> [Project] {
+        Self.sortedProjects(projects.filter { $0.spaceId == spaceId })
+    }
+
+    /// Resolve a tag id to its display name (falls back to the id).
+    func tagName(_ id: String) -> String {
+        tags.first { $0.id == id }?.name ?? id
+    }
+
+    private static func sortedSpaces(_ items: [Space]) -> [Space] {
+        items.sorted { ($0.position, $0.name) < ($1.position, $1.name) }
+    }
+
+    private static func sortedProjects(_ items: [Project]) -> [Project] {
+        items.sorted { ($0.position, $0.name) < ($1.position, $1.name) }
+    }
+
+    func createSpace(name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            let space = try await client.spaceCreate(name: trimmed)
+            await refreshOrganization()
+            sidebarSelection = .space(space.id)
+            await applySidebarSelection()
+        } catch {
+            Self.logFullError("space.create", error)
+        }
+    }
+
+    func renameSpace(id: String, name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try await client.spaceRename(id: id, name: trimmed)
+            await refreshOrganization()
+        } catch {
+            Self.logFullError("space.rename", error)
+        }
+    }
+
+    func deleteSpace(id: String) async {
+        do {
+            try await client.spaceDelete(id: id)
+        } catch {
+            Self.logFullError("space.delete", error)
+            return
+        }
+        if isSelectionUnder(spaceId: id) {
+            sidebarSelection = .smart(.all)
+        }
+        await refreshOrganization()
+        await refreshMeetings()
+    }
+
+    func createProject(spaceId: String, name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            let project = try await client.projectCreate(spaceId: spaceId, name: trimmed)
+            await refreshOrganization()
+            sidebarSelection = .project(project.id)
+            await applySidebarSelection()
+        } catch {
+            Self.logFullError("project.create", error)
+        }
+    }
+
+    func renameProject(id: String, name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try await client.projectRename(id: id, name: trimmed)
+            await refreshOrganization()
+        } catch {
+            Self.logFullError("project.rename", error)
+        }
+    }
+
+    func deleteProject(id: String) async {
+        do {
+            try await client.projectDelete(id: id)
+        } catch {
+            Self.logFullError("project.delete", error)
+            return
+        }
+        if case .project(let pid) = sidebarSelection, pid == id {
+            sidebarSelection = .smart(.all)
+        }
+        await refreshOrganization()
+        await refreshMeetings()
+    }
+
+    func createTag(name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            _ = try await client.tagCreate(name: trimmed)
+            await refreshOrganization()
+        } catch {
+            Self.logFullError("tag.create", error)
+        }
+    }
+
+    func deleteTag(id: String) async {
+        do {
+            try await client.tagDelete(id: id)
+        } catch {
+            Self.logFullError("tag.delete", error)
+            return
+        }
+        if case .tag(let tid) = sidebarSelection, tid == id {
+            sidebarSelection = .smart(.all)
+        }
+        await refreshOrganization()
+        await refreshMeetings()
+    }
+
+    /// Assign a meeting to a space/project (both `nil` ⇒ move to Inbox), then
+    /// refresh so the list and tag/space chips reflect the change.
+    func assignMeeting(meetingId: String, spaceId: String?, projectId: String?) async {
+        do {
+            try await client.meetingAssign(meetingId: meetingId, spaceId: spaceId, projectId: projectId)
+        } catch {
+            Self.logFullError("meeting.assign", error)
+            return
+        }
+        await refreshMeetings()
+    }
+
+    func addTag(meetingId: String, tagId: String) async {
+        do {
+            try await client.tagAssign(meetingId: meetingId, tagId: tagId)
+        } catch {
+            Self.logFullError("tag.assign", error)
+            return
+        }
+        await refreshMeetings()
+    }
+
+    func removeTag(meetingId: String, tagId: String) async {
+        do {
+            try await client.tagUnassign(meetingId: meetingId, tagId: tagId)
+        } catch {
+            Self.logFullError("tag.unassign", error)
+            return
+        }
+        await refreshMeetings()
+    }
+
+    private func isSelectionUnder(spaceId: String) -> Bool {
+        switch sidebarSelection {
+        case .space(let id):
+            return id == spaceId
+        case .project(let pid):
+            return projects.first { $0.id == pid }?.spaceId == spaceId
+        case .smart, .tag:
+            return false
         }
     }
 
