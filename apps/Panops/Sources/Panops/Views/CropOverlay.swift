@@ -68,9 +68,11 @@ struct CropOverlay: View {
                 let rect = Self.normalizedRect(start, value.location)
                 // Ignore stray taps / tiny rectangles.
                 guard rect.width > 8, rect.height > 8 else { return }
-                let crop = cropRect(
+                // The preview uses `.resizeAspect`, so the video occupies only a
+                // letterboxed sub-rect of `viewSize`; map against that, not the box.
+                let crop = cropRectLetterboxed(
                     previewRect: rect,
-                    previewSize: viewSize,
+                    boxSize: viewSize,
                     displaySize: controller.sourceContentSize
                 )
                 controller.applyCrop(crop)

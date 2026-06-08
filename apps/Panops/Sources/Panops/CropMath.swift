@@ -31,3 +31,40 @@ func cropRect(previewRect: CGRect, previewSize: CGSize, displaySize: CGSize) -> 
         h: clampedPixel(previewRect.height * scaleY)
     )
 }
+
+/// The rectangle a `sourceSize` source occupies, centered, when displayed with
+/// `.resizeAspect` (aspect-fit) inside a `boxSize` box. The video fills one axis
+/// and is letterboxed (bars top/bottom) or pillarboxed (bars left/right) on the
+/// other. Degenerate sizes fall back to the full box.
+func aspectFitRect(sourceSize: CGSize, boxSize: CGSize) -> CGRect {
+    guard sourceSize.width > 0, sourceSize.height > 0,
+          boxSize.width > 0, boxSize.height > 0 else {
+        return CGRect(origin: .zero, size: boxSize)
+    }
+    let scale = min(boxSize.width / sourceSize.width, boxSize.height / sourceSize.height)
+    let w = sourceSize.width * scale
+    let h = sourceSize.height * scale
+    return CGRect(x: (boxSize.width - w) / 2, y: (boxSize.height - h) / 2, width: w, height: h)
+}
+
+/// Map a crop rectangle drawn in the preview *box* to a `CaptureRect`, correcting
+/// for aspect-fit letterboxing: the video only occupies `aspectFitRect` inside
+/// the box, so the drag is clamped to that sub-rect and re-based onto its origin
+/// before scaling to the source. Without this the mapping is off by the
+/// letterbox margin.
+func cropRectLetterboxed(previewRect: CGRect, boxSize: CGSize, displaySize: CGSize) -> CaptureRect {
+    let videoRect = aspectFitRect(sourceSize: displaySize, boxSize: boxSize)
+    // Clamp the drag to the displayed video area; a drag entirely in the bars
+    // yields an empty crop.
+    let clamped = previewRect.intersection(videoRect)
+    guard !clamped.isNull, !clamped.isEmpty else {
+        return CaptureRect(x: 0, y: 0, w: 0, h: 0)
+    }
+    let rebased = CGRect(
+        x: clamped.origin.x - videoRect.origin.x,
+        y: clamped.origin.y - videoRect.origin.y,
+        width: clamped.width,
+        height: clamped.height
+    )
+    return cropRect(previewRect: rebased, previewSize: videoRect.size, displaySize: displaySize)
+}
