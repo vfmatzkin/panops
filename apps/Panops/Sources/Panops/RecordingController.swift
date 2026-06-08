@@ -9,19 +9,22 @@ struct RecordingOptions: Equatable {
     var screenshotThreshold: Float
     var recordVideo: Bool
     var autoGenerateNotes: Bool
+    var captureTarget: CaptureTarget
 
     init(
         audioSources: AudioSourcesWire = .systemAndMic,
         screenshotIntervalMs: UInt64 = 500,
         screenshotThreshold: Float = 0.15,
         recordVideo: Bool = false,
-        autoGenerateNotes: Bool = true
+        autoGenerateNotes: Bool = true,
+        captureTarget: CaptureTarget = .display
     ) {
         self.audioSources = audioSources
         self.screenshotIntervalMs = screenshotIntervalMs
         self.screenshotThreshold = screenshotThreshold
         self.recordVideo = recordVideo
         self.autoGenerateNotes = autoGenerateNotes
+        self.captureTarget = captureTarget
     }
 
     static let `default` = RecordingOptions()
@@ -68,6 +71,7 @@ struct RecordingSetup: Equatable {
     var captureScreenshots: Bool = true
     var recordVideo: Bool = false
     var autoGenerateNotes: Bool = true
+    var captureTarget: CaptureTarget = .display
 
     static let `default` = RecordingSetup()
 
@@ -89,7 +93,8 @@ struct RecordingSetup: Equatable {
             screenshotIntervalMs: RecordingOptions.default.screenshotIntervalMs,
             screenshotThreshold: RecordingOptions.default.screenshotThreshold,
             recordVideo: recordVideo,
-            autoGenerateNotes: autoGenerateNotes
+            autoGenerateNotes: autoGenerateNotes,
+            captureTarget: captureTarget
         )
     }
 }
