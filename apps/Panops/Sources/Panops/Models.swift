@@ -210,6 +210,17 @@ struct WindowInfo: Decodable, Equatable, Identifiable {
     }
 }
 
+/// Result wrapper for `ipc.capture.windows`. Mirrors
+/// `panops-protocol::CaptureWindowsResult` — the engine returns
+/// `{"windows":[...]}`, not a bare array.
+struct CaptureWindowsResult: Decodable, Equatable {
+    let windows: [WindowInfo]
+
+    enum CodingKeys: String, CodingKey {
+        case windows
+    }
+}
+
 /// Outgoing params for `ipc.meeting.start`. Mirrors `panops-protocol::MeetingConfig`.
 /// Both fields optional; the engine applies defaults (title="", language="auto").
 /// `nil` fields are omitted by `JSONEncoder`, so an all-`nil` config encodes to

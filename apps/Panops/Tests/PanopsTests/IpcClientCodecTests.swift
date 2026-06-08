@@ -376,6 +376,40 @@ struct IpcClientCodecTests {
         #expect(window.title == "Example Window")
     }
 
+    @Test("CaptureWindowsResult decodes the {windows:[...]} wrapper")
+    func captureWindowsResult_decodes() throws {
+        let json = #"""
+        {
+          "windows": [
+            { "window_id": 42, "app_name": "Safari", "title": "Panops" },
+            { "window_id": 7, "app_name": "Xcode", "title": "App.swift" }
+          ]
+        }
+        """#
+        let result = try decoder.decode(CaptureWindowsResult.self, from: json.data(using: .utf8)!)
+        #expect(result.windows.count == 2)
+        #expect(result.windows[0] == WindowInfo(windowId: 42, appName: "Safari", title: "Panops"))
+        #expect(result.windows[1].windowId == 7)
+    }
+
+    @Test("CaptureWindowsResult decodes an empty window list")
+    func captureWindowsResult_decodesEmpty() throws {
+        let json = #"{ "windows": [] }"#
+        let result = try decoder.decode(CaptureWindowsResult.self, from: json.data(using: .utf8)!)
+        #expect(result.windows.isEmpty)
+    }
+
+    @Test("capture.windows request encodes empty params as a positional array")
+    func captureWindowsRequest_encodesEmptyParams() throws {
+        // The engine handler takes a `CaptureWindowsParams {}` arg: the param must
+        // be a 1-element positional array holding an empty object, not omitted.
+        let req = JsonRpcRequest(id: 1, method: "ipc.capture.windows", param: EmptyParams())
+        let data = try encoder.encode(req)
+        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"method\":\"ipc.capture.windows\""), "method missing: \(json)")
+        #expect(json.contains("\"params\":[{}]"), "expected [{}] params, got: \(json)")
+    }
+
     @Test("CaptureTarget.display encodes correctly")
     func captureTarget_display_encodes() throws {
         let encoder = JSONEncoder()
