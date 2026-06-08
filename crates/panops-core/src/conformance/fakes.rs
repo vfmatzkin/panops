@@ -1167,6 +1167,7 @@ impl Capture for FakeCapture {
         Ok(CaptureSession {
             meeting_id: meeting_id.to_string(),
             started_at_ms,
+            capture_target: config.capture_target,
         })
     }
 
@@ -1178,7 +1179,12 @@ impl Capture for FakeCapture {
         let fake_session = sessions
             .remove(&session.meeting_id)
             .ok_or_else(|| CaptureError::SessionNotFound(session.meeting_id.clone()))?;
-        let _capture_target = fake_session.capture_target;
+        if session.capture_target != fake_session.capture_target {
+            return Err(CaptureError::InvalidConfig(format!(
+                "session capture target {:?} did not match started target {:?}",
+                session.capture_target, fake_session.capture_target
+            )));
+        }
 
         // Compute duration (at least 1s for valid WAV).
         let ended_at_ms = std::time::SystemTime::now()
