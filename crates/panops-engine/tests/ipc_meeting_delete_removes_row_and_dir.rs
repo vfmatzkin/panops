@@ -13,6 +13,7 @@ use panops_core::conformance::fakes::{
 };
 use panops_core::storage::NoteDraft;
 use panops_engine::server::{EngineServices, run_serve_in_process};
+use panops_protocol::MeetingDeleteVideoResult;
 use serde_json::json;
 use tempfile::tempdir;
 use tokio::sync::watch;
@@ -127,6 +128,131 @@ async fn delete_unknown_id_is_input_not_found() {
     let data: serde_json::Value =
         serde_json::from_str(call_err.data().unwrap().get()).expect("data is JSON");
     assert_eq!(data["kind"], "input_not_found");
+
+    let _ = shutdown_tx.send(true);
+    let _ = server.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delete_video_deletes_only_recording_mov_and_is_idempotent() {
+    let dir = tempdir().unwrap();
+    let socket = dir.path().join("engine.sock");
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let (_storage_tmp, storage, data_dir) = tempdir_storage();
+    let services = EngineServices::ready(
+        Arc::new(MockLlm::default()),
+        storage,
+        data_dir.clone(),
+        Arc::new(TranscriptFileFake::default()),
+        Arc::new(KnownTurnsFake),
+        Arc::new(FakeNotesExporter),
+        Arc::new(KnownRegionsFake::default()),
+    );
+
+    let server_socket = socket.clone();
+    let server_shutdown = shutdown_rx.clone();
+    let server = tokio::spawn(async move {
+        run_serve_in_process(&server_socket, services, Some(server_shutdown))
+            .await
+            .unwrap();
+    });
+    wait_for_socket(&socket).await;
+
+    let client = uds_ws_client(&socket).await;
+    let id: String = ClientT::request(&client, "ipc.meeting.start", rpc_params![json!({})])
+        .await
+        .expect("start");
+    let meeting_dir = data_dir.join("meetings").join(&id);
+
+    let video = meeting_dir.join("recording.mov");
+    std::fs::write(&video, b"fake mov bytes").expect("write video");
+    let transcript = meeting_dir.join("transcript.json");
+    let notes = meeting_dir.join("notes.md");
+    let system = meeting_dir.join("system.wav");
+    let screenshots = meeting_dir.join("screenshots");
+    std::fs::create_dir_all(&screenshots).expect("screenshots dir");
+    let shot = screenshots.join("001.jpg");
+    std::fs::write(&transcript, b"{}").expect("write transcript");
+    std::fs::write(&notes, b"# notes").expect("write notes");
+    std::fs::write(&system, b"wav").expect("write system audio");
+    std::fs::write(&shot, b"jpg").expect("write screenshot");
+
+    let deleted: MeetingDeleteVideoResult = ClientT::request(
+        &client,
+        "ipc.meeting.deleteVideo",
+        rpc_params![json!({"meeting_id":id.clone()})],
+    )
+    .await
+    .expect("deleteVideo");
+    assert!(deleted.deleted);
+    assert_eq!(deleted.freed_bytes, b"fake mov bytes".len() as u64);
+    assert!(!video.exists(), "recording.mov should be removed");
+    assert!(transcript.exists(), "transcript.json must be preserved");
+    assert!(notes.exists(), "notes.md must be preserved");
+    assert!(system.exists(), "audio artifacts must be preserved");
+    assert!(shot.exists(), "screenshots must be preserved");
+
+    let second: MeetingDeleteVideoResult = ClientT::request(
+        &client,
+        "ipc.meeting.deleteVideo",
+        rpc_params![json!({"meeting_id":id})],
+    )
+    .await
+    .expect("deleteVideo idempotent");
+    assert_eq!(
+        second,
+        MeetingDeleteVideoResult {
+            deleted: false,
+            freed_bytes: 0
+        }
+    );
+
+    let _ = shutdown_tx.send(true);
+    let _ = server.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delete_video_rejects_path_escape_meeting_id() {
+    let dir = tempdir().unwrap();
+    let socket = dir.path().join("engine.sock");
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let (_storage_tmp, storage, data_dir) = tempdir_storage();
+    let services = EngineServices::ready(
+        Arc::new(MockLlm::default()),
+        storage,
+        data_dir,
+        Arc::new(TranscriptFileFake::default()),
+        Arc::new(KnownTurnsFake),
+        Arc::new(FakeNotesExporter),
+        Arc::new(KnownRegionsFake::default()),
+    );
+
+    let server_socket = socket.clone();
+    let server_shutdown = shutdown_rx.clone();
+    let server = tokio::spawn(async move {
+        run_serve_in_process(&server_socket, services, Some(server_shutdown))
+            .await
+            .unwrap();
+    });
+    wait_for_socket(&socket).await;
+
+    let client = uds_ws_client(&socket).await;
+    let err = ClientT::request::<MeetingDeleteVideoResult, _>(
+        &client,
+        "ipc.meeting.deleteVideo",
+        rpc_params![json!({"meeting_id":"../evil"})],
+    )
+    .await
+    .expect_err("path-like meeting id must error");
+
+    let ClientError::Call(call_err) = err else {
+        panic!("expected Call error, got {err:?}");
+    };
+    let data: serde_json::Value =
+        serde_json::from_str(call_err.data().unwrap().get()).expect("data is JSON");
+    assert_eq!(data["kind"], "invalid_input");
 
     let _ = shutdown_tx.send(true);
     let _ = server.await;

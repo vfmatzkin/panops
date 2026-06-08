@@ -30,10 +30,14 @@ mod macos {
         let mode = std::env::var("PANOPS_FAKE_SIDECAR_MODE").unwrap_or_default();
         let stdin = std::io::stdin();
         let mut out = std::io::stdout();
-        // The single active session's (system, mic) paths. The conformance
-        // suite is strictly sequential (start → stop), so one slot suffices.
-        let mut active: (serde_json::Value, serde_json::Value) =
-            (serde_json::Value::Null, serde_json::Value::Null);
+        // The single active session's (system, mic, video) paths. The
+        // conformance suite is strictly sequential (start → stop), so one
+        // slot suffices.
+        let mut active: (serde_json::Value, serde_json::Value, serde_json::Value) = (
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
 
         for line in stdin.lock().lines() {
             let Ok(line) = line else { break };
@@ -56,6 +60,11 @@ mod macos {
                     active = (
                         params["system_audio_path"].clone(),
                         params["mic_audio_path"].clone(),
+                        if params["record_video"].as_bool().unwrap_or(false) {
+                            params["video_path"].clone()
+                        } else {
+                            serde_json::Value::Null
+                        },
                     );
                     let resp = serde_json::json!({
                         "jsonrpc": "2.0",
@@ -74,10 +83,15 @@ mod macos {
                         reply(&mut out, &resp);
                         continue;
                     }
-                    let (sys, mic) = std::mem::replace(
+                    let (sys, mic, video) = std::mem::replace(
                         &mut active,
-                        (serde_json::Value::Null, serde_json::Value::Null),
+                        (
+                            serde_json::Value::Null,
+                            serde_json::Value::Null,
+                            serde_json::Value::Null,
+                        ),
                     );
+                    write_video(&video);
                     let resp = serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -121,5 +135,16 @@ mod macos {
         }
         w.finalize().expect("finalize wav");
         serde_json::Value::String(p.to_string())
+    }
+
+    fn write_video(path: &serde_json::Value) {
+        let Some(p) = path.as_str() else {
+            return;
+        };
+        std::fs::write(
+            p,
+            b"\x00\x00\x00\x14ftypqt  \x00\x00\x00\x00qt  \x00\x00\x00\x08mdat",
+        )
+        .expect("write fake mov");
     }
 }

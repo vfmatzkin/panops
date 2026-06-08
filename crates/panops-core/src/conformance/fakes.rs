@@ -722,7 +722,7 @@ use crate::capture::{
 ///
 /// Thread-safe: sessions are tracked in an internal `Mutex<HashMap>`.
 pub struct FakeCapture {
-    sessions: Mutex<std::collections::HashMap<String, (PathBuf, u64, AudioSources)>>,
+    sessions: Mutex<std::collections::HashMap<String, (PathBuf, u64, AudioSources, bool)>>,
 }
 
 impl Default for FakeCapture {
@@ -762,6 +762,7 @@ impl Capture for FakeCapture {
                 meeting_dir.to_path_buf(),
                 started_at_ms,
                 config.audio_sources,
+                config.record_video,
             ),
         );
 
@@ -776,7 +777,7 @@ impl Capture for FakeCapture {
             .sessions
             .lock()
             .map_err(|_| CaptureError::Capture("mutex poisoned".into()))?;
-        let (meeting_dir, started_at_ms, audio_sources) = sessions
+        let (meeting_dir, started_at_ms, audio_sources, record_video) = sessions
             .remove(&session.meeting_id)
             .ok_or_else(|| CaptureError::SessionNotFound(session.meeting_id.clone()))?;
 
@@ -826,6 +827,10 @@ impl Capture for FakeCapture {
             screenshot_paths.push(dest_path);
         }
 
+        if record_video {
+            write_fake_mov(&meeting_dir.join("recording.mov"))?;
+        }
+
         Ok(CaptureResult {
             system_audio_path,
             mic_audio_path,
@@ -864,6 +869,15 @@ fn write_sine_wav(path: &Path, duration_ms: u64) -> Result<PathBuf, CaptureError
         .finalize()
         .map_err(|e| CaptureError::Capture(e.to_string()))?;
     Ok(path.to_path_buf())
+}
+
+/// Write a tiny placeholder QuickTime-style file when the fake is asked to
+/// exercise the video-recording path. The capture contract only promises the
+/// `<meeting_dir>/recording.mov` convention at this layer; real media
+/// validation belongs to the macOS sidecar smoke tests.
+fn write_fake_mov(path: &Path) -> Result<(), CaptureError> {
+    const FAKE_MOV: &[u8] = b"\x00\x00\x00\x14ftypqt  \x00\x00\x00\x00qt  \x00\x00\x00\x08mdat";
+    std::fs::write(path, FAKE_MOV).map_err(CaptureError::Io)
 }
 
 #[cfg(test)]
