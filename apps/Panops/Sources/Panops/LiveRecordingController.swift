@@ -8,12 +8,15 @@ protocol LiveRecordingIpcClient: Sendable {
         screenshotIntervalMs: UInt64,
         screenshotThreshold: Float,
         recordVideo: Bool,
-        autoGenerateNotes: Bool
+        autoGenerateNotes: Bool,
+        captureTarget: CaptureTarget
     ) async throws -> RecordingAccepted
 
     func recordingStop(recordingId: String) async throws -> RecordingStopped
 
     func meetingDeleteVideo(meetingId: String) async throws -> (deleted: Bool, freedBytes: UInt64)
+
+    func captureWindows() async throws -> [WindowInfo]
 }
 
 extension IpcClient: LiveRecordingIpcClient {}
@@ -56,7 +59,8 @@ final class LiveRecordingController: RecordingController, ObservableObject {
                 screenshotIntervalMs: options.screenshotIntervalMs,
                 screenshotThreshold: options.screenshotThreshold,
                 recordVideo: options.recordVideo,
-                autoGenerateNotes: options.autoGenerateNotes
+                autoGenerateNotes: options.autoGenerateNotes,
+                captureTarget: options.captureTarget
             )
             recordingId = accepted.recordingId
             autoGenerateNotesRequested = options.autoGenerateNotes
