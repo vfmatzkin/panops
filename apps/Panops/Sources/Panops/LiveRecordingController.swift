@@ -6,10 +6,13 @@ protocol LiveRecordingIpcClient: Sendable {
         meetingId: String,
         audioSources: AudioSourcesWire,
         screenshotIntervalMs: UInt64,
-        screenshotThreshold: Float
+        screenshotThreshold: Float,
+        recordVideo: Bool
     ) async throws -> RecordingAccepted
 
     func recordingStop(recordingId: String) async throws -> RecordingStopped
+
+    func meetingDeleteVideo(meetingId: String) async throws -> (deleted: Bool, freedBytes: UInt64)
 }
 
 extension IpcClient: LiveRecordingIpcClient {}
@@ -46,7 +49,8 @@ final class LiveRecordingController: RecordingController, ObservableObject {
                 meetingId: meetingId,
                 audioSources: options.audioSources,
                 screenshotIntervalMs: options.screenshotIntervalMs,
-                screenshotThreshold: options.screenshotThreshold
+                screenshotThreshold: options.screenshotThreshold,
+                recordVideo: options.recordVideo
             )
             recordingId = accepted.recordingId
             canStop = true

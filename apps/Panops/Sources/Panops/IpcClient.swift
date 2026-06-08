@@ -633,13 +633,15 @@ actor IpcClient {
         meetingId: String,
         audioSources: AudioSourcesWire = .systemAndMic,
         screenshotIntervalMs: UInt64 = 500,
-        screenshotThreshold: Float = 0.15
+        screenshotThreshold: Float = 0.15,
+        recordVideo: Bool = false
     ) async throws -> RecordingAccepted {
         let params = RecordingStartParams(
             meetingId: meetingId,
             audioSources: audioSources,
             screenshotIntervalMs: screenshotIntervalMs,
-            screenshotThreshold: screenshotThreshold
+            screenshotThreshold: screenshotThreshold,
+            recordVideo: recordVideo
         )
         return try await sendRequest(
             method: "ipc.recording.start",
@@ -654,6 +656,17 @@ actor IpcClient {
             method: "ipc.recording.stop",
             params: RecordingStopParams(recordingId: recordingId)
         )
+    }
+
+    /// `ipc.meeting.deleteVideo` — deletes the recording video file for a meeting.
+    /// Returns the deleted status and freed bytes.
+    func meetingDeleteVideo(meetingId: String) async throws -> (deleted: Bool, freedBytes: UInt64) {
+        let params = MeetingDeleteVideoParams(meetingId: meetingId)
+        let result: MeetingDeleteVideoResult = try await sendRequest(
+            method: "ipc.meeting.deleteVideo",
+            params: params
+        )
+        return (deleted: result.deleted, freedBytes: result.freedBytes)
     }
 
     // MARK: - Private

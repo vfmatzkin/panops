@@ -317,4 +317,45 @@ struct IpcClientCodecTests {
         #expect(meeting.durationMs == nil)
         #expect(meeting.language == "auto")
     }
+
+    @Test("RecordingStartParams with recordVideo encodes correctly")
+    func recordingStartParamsWithRecordVideo_encodes() throws {
+        let params = RecordingStartParams(
+            meetingId: "m1",
+            audioSources: .systemAndMic,
+            screenshotIntervalMs: 500,
+            screenshotThreshold: 0.15,
+            recordVideo: true
+        )
+        let data = try encoder.encode(params)
+        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"meeting_id\":\"m1\""))
+        #expect(json.contains("\"record_video\":true"))
+    }
+
+    @Test("MeetingDeleteVideoResult decodes from engine response")
+    func meetingDeleteVideoResult_decodes() throws {
+        let json = #"""
+        {
+          "deleted": true,
+          "freed_bytes": 1048576
+        }
+        """#
+        let result = try decoder.decode(MeetingDeleteVideoResult.self, from: json.data(using: .utf8)!)
+        #expect(result.deleted == true)
+        #expect(result.freedBytes == 1048576)
+    }
+
+    @Test("MeetingDeleteVideoResult decodes with false deleted")
+    func meetingDeleteVideoResult_decodesFalse() throws {
+        let json = #"""
+        {
+          "deleted": false,
+          "freed_bytes": 0
+        }
+        """#
+        let result = try decoder.decode(MeetingDeleteVideoResult.self, from: json.data(using: .utf8)!)
+        #expect(result.deleted == false)
+        #expect(result.freedBytes == 0)
+    }
 }

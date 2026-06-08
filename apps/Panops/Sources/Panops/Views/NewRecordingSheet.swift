@@ -43,6 +43,8 @@ struct NewRecordingSheet: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                Toggle("Record video", isOn: $setup.recordVideo)
             }
             .formStyle(.grouped)
 

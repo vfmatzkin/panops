@@ -25,6 +25,9 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
     @State private var showErrorDetails = false
     @State private var exportError: String?
 
+    /// Cached video file URL, if present
+    @State private var videoFileURL: URL?
+
     enum DetailTab: String, CaseIterable, Identifiable {
         case notes = "Notes"
         case transcript = "Transcript"
@@ -278,6 +281,9 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
                 infoRow("Started", startedDate.map { "\(MeetingDate.shortDate($0)) · \(MeetingDate.shortTime($0))" })
                 infoRow("Ended", endedDate.map { "\(MeetingDate.shortDate($0)) · \(MeetingDate.shortTime($0))" })
                 infoRow("panops", nonEmpty(structuredNotes?.frontmatter.panopsVersion))
+                if hasVideoFile, let videoFileURL {
+                    videoRow(videoFileURL)
+                }
             }
             .padding(16)
         }
@@ -295,6 +301,56 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
                     .font(.subheadline)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.vertical, 6)
+            Divider()
+        }
+    }
+
+    @ViewBuilder
+    private func videoRow(_ url: URL) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Recording")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 110, alignment: .leading)
+                Text(url.lastPathComponent)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                Spacer()
+                Button {
+                    playVideo()
+                } label: {
+                    Label("Play", systemImage: "play.circle")
+                }
+                .help("Play video")
+                Button {
+                    revealVideoInFinder()
+                } label: {
+                    Label("Reveal", systemImage: "folder")
+                }
+                .help("Reveal in Finder")
+                Button {
+                    Task {
+                        await deleteVideo()
+                    }
+                } label: {
+                    Label("Delete video", systemImage: "xmark.circle")
+                        .foregroundStyle(.red)
+                }
+                .help("Delete video to reclaim space")
+                .foregroundStyle(.red)
+            }
+            Divider()
+            HStack {
+                Text("Size")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 110, alignment: .leading)
+                Text(formatFileSize(for: url))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
             .padding(.vertical, 6)
             Divider()
@@ -433,6 +489,65 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
         return "Something went wrong while generating notes. You can retry or check the details."
     }
 
+    // MARK: - Video file handling
+
+    private var hasVideoFile: Bool {
+        videoFileURL != nil
+    }
+
+    private func formatFileSize(for url: URL) -> String {
+        guard let attrs = try? url.resourceValues(forKeys: [.fileSizeKey]),
+              let size = attrs.fileSize else {
+            return "Unknown size"
+        }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: Int64(size))
+    }
+
+    private func playVideo() {
+        guard let url = videoFileURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func revealVideoInFinder() {
+        guard let url = videoFileURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    @MainActor
+    private func deleteVideo() async {
+        guard let url = videoFileURL else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Delete video file?"
+        alert.informativeText = "This will delete \(url.lastPathComponent) and reclaim disk space. This action cannot be undone."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // Delete the file
+        let fm = FileManager.default
+        do {
+            try fm.removeItem(at: url)
+            // Update our state
+            videoFileURL = nil
+            // Call the IPC to update the engine's record
+            do {
+                _ = try await vm.deleteVideoForMeeting(meetingId: meeting.id)
+            } catch {
+                AppViewModel.logFullError("meeting.deleteVideo", error)
+            }
+        } catch {
+            let errorAlert = NSAlert()
+            errorAlert.messageText = "Failed to delete video"
+            errorAlert.informativeText = error.localizedDescription
+            errorAlert.addButton(withTitle: "OK")
+            errorAlert.runModal()
+        }
+    }
+
     // MARK: - Export
 
     private func exportNotes() {
@@ -473,11 +588,12 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
         // large, and a sync read+decode on the main thread hitches the UI on
         // every meeting switch.
         let loaded = await Task.detached(priority: .utility) {
-            () -> (Transcript?, String?, StructuredNotes?, [URL]?) in
+            () -> (Transcript?, String?, StructuredNotes?, [URL]?, URL?) in
             var t: Transcript?
             var notesMd: String?
             var notesJson: StructuredNotes?
             var shots: [URL]?
+            var videoURL: URL?
 
             let transcriptPath = (dirPath as NSString).appendingPathComponent("transcript.json")
             if PathValidator.isPath(transcriptPath, under: dirPath),
@@ -512,7 +628,15 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
                     }
                     .sorted { $0.lastPathComponent < $1.lastPathComponent }
             }
-            return (t, notesMd, notesJson, shots)
+
+            // Look for recording.mov in the meeting directory
+            let videoPath = (dirPath as NSString).appendingPathComponent("recording.mov")
+            if PathValidator.isPath(videoPath, under: dirPath),
+               FileManager.default.fileExists(atPath: videoPath) {
+                videoURL = URL(fileURLWithPath: videoPath)
+            }
+
+            return (t, notesMd, notesJson, shots, videoURL)
         }.value
 
         guard !Task.isCancelled else { return }
@@ -521,6 +645,7 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
         notesContent = loaded.1
         structuredNotes = loaded.2
         screenshots = loaded.3
+        videoFileURL = loaded.4
         isLoading = false
     }
 }
