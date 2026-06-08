@@ -161,6 +161,11 @@ final class CapturePreviewController: NSObject, ObservableObject {
         sourceRect = CGRect(x: Int(rect.x), y: Int(rect.y), width: Int(rect.w), height: Int(rect.h))
         target = .region(displayID: currentDisplayID, x: rect.x, y: rect.y, w: rect.w, h: rect.h)
         isCropped = true
+        // The cropped region — not the whole display — is now the recorded source,
+        // so the resolution preset must resolve against the region's pixel height.
+        if let filter = currentFilter {
+            nativePixelHeight = Int((CGFloat(rect.h) * CGFloat(filter.pointPixelScale)).rounded())
+        }
         Task { await updateStreamConfig() }
     }
 
@@ -169,6 +174,10 @@ final class CapturePreviewController: NSObject, ObservableObject {
         sourceRect = nil
         isCropped = false
         target = .display(displayID: currentDisplayID)
+        // Restore the full-display pixel height for resolution math.
+        if let filter = currentFilter {
+            nativePixelHeight = Int((filter.contentRect.height * CGFloat(filter.pointPixelScale)).rounded())
+        }
         Task { await updateStreamConfig() }
     }
 
