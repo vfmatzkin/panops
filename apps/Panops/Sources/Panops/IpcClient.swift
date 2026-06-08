@@ -626,6 +626,14 @@ actor IpcClient {
         )
     }
 
+    /// `ipc.capture.windows` — fetches available windows for capture.
+    /// Returns a list of windows with their id, app name, and title.
+    func captureWindows() async throws -> [WindowInfo] {
+        return try await sendRequestNoParams(
+            method: "ipc.capture.windows"
+        )
+    }
+
     /// `ipc.recording.start` — starts live capture for an existing meeting.
     /// Returns the engine-issued recording session id used by
     /// `ipc.recording.stop`.
@@ -635,7 +643,8 @@ actor IpcClient {
         screenshotIntervalMs: UInt64 = 500,
         screenshotThreshold: Float = 0.15,
         recordVideo: Bool = false,
-        autoGenerateNotes: Bool = true
+        autoGenerateNotes: Bool = true,
+        captureTarget: CaptureTarget = .display
     ) async throws -> RecordingAccepted {
         let params = RecordingStartParams(
             meetingId: meetingId,
@@ -643,7 +652,8 @@ actor IpcClient {
             screenshotIntervalMs: screenshotIntervalMs,
             screenshotThreshold: screenshotThreshold,
             recordVideo: recordVideo,
-            autoGenerateNotes: autoGenerateNotes
+            autoGenerateNotes: autoGenerateNotes,
+            captureTarget: captureTarget
         )
         return try await sendRequest(
             method: "ipc.recording.start",
