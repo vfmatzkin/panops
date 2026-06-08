@@ -53,6 +53,7 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
 
     private let plan: TrackPlan
     private let videoPath: String?
+    private let target: CaptureTargetKind
     private let lock = NSLock()
     private var stream: SCStream?
     private var systemWriter: WavWriter?
@@ -63,9 +64,16 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
     private let sampleQueue = DispatchQueue(label: "ar.tzk.panops.capture.audio")
     private(set) var startedAtMs: UInt64 = 0
 
-    init(plan: TrackPlan, systemPath: String?, micPath: String?, videoPath: String?) throws {
+    init(
+        plan: TrackPlan,
+        systemPath: String?,
+        micPath: String?,
+        videoPath: String?,
+        target: CaptureTargetKind = .display
+    ) throws {
         self.plan = plan
         self.videoPath = videoPath
+        self.target = target
         super.init()
 
         guard !plan.wantsSystem || systemPath != nil else {
@@ -100,10 +108,30 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         } catch {
             throw Self.mapSCStreamError(error)
         }
-        guard let display = content.displays.first else {
-            throw CaptureFailure.noDisplay
+        // Resolve the content filter + capture dimensions from the target.
+        // window: a desktop-independent filter over the matching SCWindow;
+        // display (or an unknown window_id): the full first display.
+        let filter: SCContentFilter
+        let width: Int
+        let height: Int
+        switch target {
+        case .window(let windowID):
+            if let window = content.windows.first(where: { UInt32($0.windowID) == windowID }) {
+                filter = SCContentFilter(desktopIndependentWindow: window)
+                width = Int(window.frame.width)
+                height = Int(window.frame.height)
+            } else {
+                FileHandle.standardError.write(
+                    Data("capture_target window \(windowID) not found; using full display\n".utf8))
+                guard let display = content.displays.first else { throw CaptureFailure.noDisplay }
+                filter = SCContentFilter(display: display, excludingWindows: [])
+                (width, height) = (display.width, display.height)
+            }
+        case .display:
+            guard let display = content.displays.first else { throw CaptureFailure.noDisplay }
+            filter = SCContentFilter(display: display, excludingWindows: [])
+            (width, height) = (display.width, display.height)
         }
-        let filter = SCContentFilter(display: display, excludingWindows: [])
 
         let config = SCStreamConfiguration()
         config.capturesAudio = plan.wantsSystem
@@ -118,8 +146,8 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         config.channelCount = 1
         // Screen frames feed the screenshotter. Cadence is bounded by the
         // minimum frame interval; the screenshotter dedups beyond that.
-        config.width = display.width
-        config.height = display.height
+        config.width = width
+        config.height = height
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.queueDepth = 5
         // Frame cadence: a video recording needs a smooth rate, but the
@@ -139,7 +167,7 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         if let path = videoPath {
             do {
                 writer = try VideoWriter(
-                    url: URL(fileURLWithPath: path), width: display.width, height: display.height
+                    url: URL(fileURLWithPath: path), width: width, height: height
                 )
             } catch {
                 FileHandle.standardError.write(
