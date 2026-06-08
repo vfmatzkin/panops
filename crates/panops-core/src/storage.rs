@@ -12,6 +12,10 @@ pub trait Storage: Send + Sync {
     fn create_meeting(&self, draft: MeetingDraft) -> Result<Meeting, StorageError>;
     fn get_meeting(&self, id: &str) -> Result<Meeting, StorageError>;
     fn list_meetings(&self) -> Result<Vec<MeetingSummary>, StorageError>;
+    fn list_meetings_filtered(
+        &self,
+        filter: MeetingListFilter,
+    ) -> Result<Vec<MeetingSummary>, StorageError>;
     fn update_meeting_ended(
         &self,
         id: &str,
@@ -22,6 +26,26 @@ pub trait Storage: Send + Sync {
     fn delete_meeting(&self, id: &str) -> Result<(), StorageError>;
     fn create_note(&self, draft: NoteDraft) -> Result<Note, StorageError>;
     fn list_notes_for_meeting(&self, meeting_id: &str) -> Result<Vec<Note>, StorageError>;
+    fn create_space(&self, name: &str) -> Result<Space, StorageError>;
+    fn list_spaces(&self) -> Result<Vec<Space>, StorageError>;
+    fn rename_space(&self, id: &str, name: &str) -> Result<(), StorageError>;
+    fn delete_space(&self, id: &str) -> Result<(), StorageError>;
+    fn create_project(&self, space_id: &str, name: &str) -> Result<Project, StorageError>;
+    fn list_projects(&self, space_id: Option<&str>) -> Result<Vec<Project>, StorageError>;
+    fn rename_project(&self, id: &str, name: &str) -> Result<(), StorageError>;
+    fn delete_project(&self, id: &str) -> Result<(), StorageError>;
+    fn create_tag(&self, name: &str) -> Result<Tag, StorageError>;
+    fn list_tags(&self) -> Result<Vec<Tag>, StorageError>;
+    fn delete_tag(&self, id: &str) -> Result<(), StorageError>;
+    fn tag_meeting(&self, meeting_id: &str, tag_id: &str) -> Result<(), StorageError>;
+    fn untag_meeting(&self, meeting_id: &str, tag_id: &str) -> Result<(), StorageError>;
+    fn list_tags_for_meeting(&self, meeting_id: &str) -> Result<Vec<Tag>, StorageError>;
+    fn assign_meeting(
+        &self,
+        meeting_id: &str,
+        space_id: Option<String>,
+        project_id: Option<String>,
+    ) -> Result<(), StorageError>;
 
     /// Atomic combined insert: meeting + note + (optional) ended_at
     /// in a single transaction. Used by the CLI's `notes` flow so a
@@ -68,6 +92,40 @@ pub struct MeetingSummary {
     pub duration_ms: u64,
     pub language: String,
     pub has_notes: bool,
+    pub space_id: Option<String>,
+    pub project_id: Option<String>,
+    /// Tag ids assigned to this meeting.
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MeetingListFilter {
+    pub space_id: Option<String>,
+    pub project_id: Option<String>,
+    pub tag_id: Option<String>,
+    /// When true, return meetings in the implicit Inbox (`space_id IS NULL`).
+    pub unsorted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Space {
+    pub id: String,
+    pub name: String,
+    pub position: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Project {
+    pub id: String,
+    pub space_id: String,
+    pub name: String,
+    pub position: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tag {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -364,7 +364,8 @@ impl crate::exporter::NotesExporter for FakeNotesExporter {
 use chrono::Utc;
 
 use crate::storage::{
-    Meeting, MeetingDraft, MeetingSummary, Note, NoteDraft, Storage, StorageError,
+    Meeting, MeetingDraft, MeetingListFilter, MeetingSummary, Note, NoteDraft, Project, Space,
+    Storage, StorageError, Tag,
 };
 
 /// In-process `Storage` fake. Used by `panops-core`'s own tests and
@@ -377,6 +378,15 @@ pub struct InMemoryStorage {
 struct InMemoryInner {
     meetings: HashMap<String, Meeting>,
     notes: HashMap<String, Note>,
+    spaces: HashMap<String, Space>,
+    projects: HashMap<String, Project>,
+    tags: HashMap<String, Tag>,
+    meeting_tags: HashMap<String, Vec<String>>,
+    meeting_spaces: HashMap<String, String>,
+    meeting_projects: HashMap<String, String>,
+    next_space_id: u64,
+    next_project_id: u64,
+    next_tag_id: u64,
 }
 
 impl Default for InMemoryStorage {
@@ -391,6 +401,15 @@ impl InMemoryStorage {
             inner: Mutex::new(InMemoryInner {
                 meetings: HashMap::new(),
                 notes: HashMap::new(),
+                spaces: HashMap::new(),
+                projects: HashMap::new(),
+                tags: HashMap::new(),
+                meeting_tags: HashMap::new(),
+                meeting_spaces: HashMap::new(),
+                meeting_projects: HashMap::new(),
+                next_space_id: 1,
+                next_project_id: 1,
+                next_tag_id: 1,
             }),
         }
     }
@@ -506,10 +525,46 @@ impl Storage for InMemoryStorage {
     }
 
     fn list_meetings(&self) -> Result<Vec<MeetingSummary>, StorageError> {
+        self.list_meetings_filtered(MeetingListFilter::default())
+    }
+
+    fn list_meetings_filtered(
+        &self,
+        filter: MeetingListFilter,
+    ) -> Result<Vec<MeetingSummary>, StorageError> {
         let inner = self.inner.lock().unwrap();
         let mut rows: Vec<MeetingSummary> = inner
             .meetings
             .values()
+            .filter(|m| {
+                if filter.unsorted && inner.meeting_spaces.contains_key(&m.id) {
+                    return false;
+                }
+                if let Some(space_id) = &filter.space_id {
+                    if inner.meeting_spaces.get(&m.id).map(String::as_str)
+                        != Some(space_id.as_str())
+                    {
+                        return false;
+                    }
+                }
+                if let Some(project_id) = &filter.project_id {
+                    if inner.meeting_projects.get(&m.id).map(String::as_str)
+                        != Some(project_id.as_str())
+                    {
+                        return false;
+                    }
+                }
+                if let Some(tag_id) = &filter.tag_id {
+                    if !inner
+                        .meeting_tags
+                        .get(&m.id)
+                        .is_some_and(|tags| tags.iter().any(|t| t == tag_id))
+                    {
+                        return false;
+                    }
+                }
+                true
+            })
             .map(|m| MeetingSummary {
                 id: m.id.clone(),
                 title: m.title.clone(),
@@ -518,6 +573,9 @@ impl Storage for InMemoryStorage {
                 duration_ms: m.duration_ms.unwrap_or(0),
                 language: m.language.clone(),
                 has_notes: inner.notes.values().any(|n| n.meeting_id == m.id),
+                space_id: inner.meeting_spaces.get(&m.id).cloned(),
+                project_id: inner.meeting_projects.get(&m.id).cloned(),
+                tags: inner.meeting_tags.get(&m.id).cloned().unwrap_or_default(),
             })
             .collect();
         rows.sort_by(|a, b| b.started_at.cmp(&a.started_at));
@@ -566,6 +624,9 @@ impl Storage for InMemoryStorage {
         }
         // FK cascade simulation.
         inner.notes.retain(|_, n| n.meeting_id != id);
+        inner.meeting_tags.remove(id);
+        inner.meeting_spaces.remove(id);
+        inner.meeting_projects.remove(id);
         Ok(())
     }
 
@@ -603,6 +664,318 @@ impl Storage for InMemoryStorage {
             .filter(|n| n.meeting_id == meeting_id)
             .cloned()
             .collect())
+    }
+
+    fn create_space(&self, name: &str) -> Result<Space, StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        let id = format!("space_{}", inner.next_space_id);
+        inner.next_space_id += 1;
+        let position = next_position(inner.spaces.values().map(|s| s.position));
+        let space = Space {
+            id: id.clone(),
+            name: name.into(),
+            position,
+        };
+        inner.spaces.insert(id, space.clone());
+        Ok(space)
+    }
+
+    fn list_spaces(&self) -> Result<Vec<Space>, StorageError> {
+        let inner = self.inner.lock().unwrap();
+        let mut rows: Vec<Space> = inner.spaces.values().cloned().collect();
+        rows.sort_by(|a, b| {
+            a.position
+                .cmp(&b.position)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        Ok(rows)
+    }
+
+    fn rename_space(&self, id: &str, name: &str) -> Result<(), StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        let space = inner
+            .spaces
+            .get_mut(id)
+            .ok_or_else(|| StorageError::NotFound {
+                id: id.into(),
+                kind: "space",
+            })?;
+        space.name = name.into();
+        Ok(())
+    }
+
+    fn delete_space(&self, id: &str) -> Result<(), StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.spaces.remove(id).is_none() {
+            return Err(StorageError::NotFound {
+                id: id.into(),
+                kind: "space",
+            });
+        }
+        let project_ids: Vec<String> = inner
+            .projects
+            .values()
+            .filter(|p| p.space_id == id)
+            .map(|p| p.id.clone())
+            .collect();
+        for project_id in project_ids {
+            inner.projects.remove(&project_id);
+            clear_project_assignments(&mut inner, &project_id);
+        }
+        clear_space_assignments(&mut inner, id);
+        Ok(())
+    }
+
+    fn create_project(&self, space_id: &str, name: &str) -> Result<Project, StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.spaces.contains_key(space_id) {
+            return Err(StorageError::NotFound {
+                id: space_id.into(),
+                kind: "space",
+            });
+        }
+        let id = format!("project_{}", inner.next_project_id);
+        inner.next_project_id += 1;
+        let position = next_position(
+            inner
+                .projects
+                .values()
+                .filter(|p| p.space_id == space_id)
+                .map(|p| p.position),
+        );
+        let project = Project {
+            id: id.clone(),
+            space_id: space_id.into(),
+            name: name.into(),
+            position,
+        };
+        inner.projects.insert(id, project.clone());
+        Ok(project)
+    }
+
+    fn list_projects(&self, space_id: Option<&str>) -> Result<Vec<Project>, StorageError> {
+        let inner = self.inner.lock().unwrap();
+        let mut rows: Vec<Project> = inner
+            .projects
+            .values()
+            .filter(|p| space_id.is_none_or(|s| p.space_id == s))
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| {
+            a.space_id
+                .cmp(&b.space_id)
+                .then_with(|| a.position.cmp(&b.position))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        Ok(rows)
+    }
+
+    fn rename_project(&self, id: &str, name: &str) -> Result<(), StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        let project = inner
+            .projects
+            .get_mut(id)
+            .ok_or_else(|| StorageError::NotFound {
+                id: id.into(),
+                kind: "project",
+            })?;
+        project.name = name.into();
+        Ok(())
+    }
+
+    fn delete_project(&self, id: &str) -> Result<(), StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.projects.remove(id).is_none() {
+            return Err(StorageError::NotFound {
+                id: id.into(),
+                kind: "project",
+            });
+        }
+        clear_project_assignments(&mut inner, id);
+        Ok(())
+    }
+
+    fn create_tag(&self, name: &str) -> Result<Tag, StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(existing) = inner.tags.values().find(|t| t.name == name) {
+            return Ok(existing.clone());
+        }
+        let id = format!("tag_{}", inner.next_tag_id);
+        inner.next_tag_id += 1;
+        let tag = Tag {
+            id: id.clone(),
+            name: name.into(),
+        };
+        inner.tags.insert(id, tag.clone());
+        Ok(tag)
+    }
+
+    fn list_tags(&self) -> Result<Vec<Tag>, StorageError> {
+        let inner = self.inner.lock().unwrap();
+        let mut rows: Vec<Tag> = inner.tags.values().cloned().collect();
+        rows.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+        Ok(rows)
+    }
+
+    fn delete_tag(&self, id: &str) -> Result<(), StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.tags.remove(id).is_none() {
+            return Err(StorageError::NotFound {
+                id: id.into(),
+                kind: "tag",
+            });
+        }
+        for tag_ids in inner.meeting_tags.values_mut() {
+            tag_ids.retain(|tag_id| tag_id != id);
+        }
+        Ok(())
+    }
+
+    fn tag_meeting(&self, meeting_id: &str, tag_id: &str) -> Result<(), StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        ensure_meeting_exists(&inner, meeting_id)?;
+        ensure_tag_exists(&inner, tag_id)?;
+        let tags = inner.meeting_tags.entry(meeting_id.into()).or_default();
+        if !tags.iter().any(|t| t == tag_id) {
+            tags.push(tag_id.into());
+            tags.sort();
+        }
+        Ok(())
+    }
+
+    fn untag_meeting(&self, meeting_id: &str, tag_id: &str) -> Result<(), StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        ensure_meeting_exists(&inner, meeting_id)?;
+        ensure_tag_exists(&inner, tag_id)?;
+        if let Some(tags) = inner.meeting_tags.get_mut(meeting_id) {
+            tags.retain(|t| t != tag_id);
+        }
+        Ok(())
+    }
+
+    fn list_tags_for_meeting(&self, meeting_id: &str) -> Result<Vec<Tag>, StorageError> {
+        let inner = self.inner.lock().unwrap();
+        ensure_meeting_exists(&inner, meeting_id)?;
+        let mut rows: Vec<Tag> = inner
+            .meeting_tags
+            .get(meeting_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|tag_id| inner.tags.get(tag_id))
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+        Ok(rows)
+    }
+
+    fn assign_meeting(
+        &self,
+        meeting_id: &str,
+        space_id: Option<String>,
+        project_id: Option<String>,
+    ) -> Result<(), StorageError> {
+        let inner = &mut *self.inner.lock().unwrap();
+        ensure_meeting_exists(inner, meeting_id)?;
+        if let Some(project_id) = project_id.as_deref() {
+            let project = inner
+                .projects
+                .get(project_id)
+                .ok_or_else(|| StorageError::NotFound {
+                    id: project_id.into(),
+                    kind: "project",
+                })?;
+            set_assignment(
+                inner,
+                meeting_id,
+                Some(project.space_id.clone()),
+                Some(project.id.clone()),
+            );
+            return Ok(());
+        }
+        if let Some(space_id) = space_id.as_deref() {
+            if !inner.spaces.contains_key(space_id) {
+                return Err(StorageError::NotFound {
+                    id: space_id.into(),
+                    kind: "space",
+                });
+            }
+        }
+        set_assignment(inner, meeting_id, space_id, None);
+        Ok(())
+    }
+}
+
+fn next_position(values: impl Iterator<Item = i64>) -> i64 {
+    values.max().map_or(0, |v| v + 1)
+}
+
+fn ensure_meeting_exists(inner: &InMemoryInner, meeting_id: &str) -> Result<(), StorageError> {
+    if inner.meetings.contains_key(meeting_id) {
+        Ok(())
+    } else {
+        Err(StorageError::NotFound {
+            id: meeting_id.into(),
+            kind: "meeting",
+        })
+    }
+}
+
+fn ensure_tag_exists(inner: &InMemoryInner, tag_id: &str) -> Result<(), StorageError> {
+    if inner.tags.contains_key(tag_id) {
+        Ok(())
+    } else {
+        Err(StorageError::NotFound {
+            id: tag_id.into(),
+            kind: "tag",
+        })
+    }
+}
+
+fn set_assignment(
+    inner: &mut InMemoryInner,
+    meeting_id: &str,
+    space_id: Option<String>,
+    project_id: Option<String>,
+) {
+    match space_id {
+        Some(id) => {
+            inner.meeting_spaces.insert(meeting_id.into(), id);
+        }
+        None => {
+            inner.meeting_spaces.remove(meeting_id);
+        }
+    }
+    match project_id {
+        Some(id) => {
+            inner.meeting_projects.insert(meeting_id.into(), id);
+        }
+        None => {
+            inner.meeting_projects.remove(meeting_id);
+        }
+    }
+}
+
+fn clear_space_assignments(inner: &mut InMemoryInner, space_id: &str) {
+    let meeting_ids: Vec<String> = inner
+        .meeting_spaces
+        .iter()
+        .filter(|(_, id)| id.as_str() == space_id)
+        .map(|(key, _)| key.clone())
+        .collect();
+    for meeting_id in meeting_ids {
+        inner.meeting_spaces.remove(&meeting_id);
+    }
+}
+
+fn clear_project_assignments(inner: &mut InMemoryInner, project_id: &str) {
+    let meeting_ids: Vec<String> = inner
+        .meeting_projects
+        .iter()
+        .filter(|(_, id)| id.as_str() == project_id)
+        .map(|(key, _)| key.clone())
+        .collect();
+    for meeting_id in meeting_ids {
+        inner.meeting_projects.remove(&meeting_id);
     }
 }
 
