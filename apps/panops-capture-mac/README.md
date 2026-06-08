@@ -39,7 +39,8 @@ reserved but unemitted for v0.1).
   "screenshots_dir":"<meeting_dir>/screenshots",
   "audio_sources":"system_and_mic",
   "screenshot_interval_ms":500,
-  "screenshot_threshold":0.15
+  "screenshot_threshold":0.15,
+  "capture_target":{"kind":"display"}
 }]}
 ```
 
@@ -47,6 +48,30 @@ reserved but unemitted for v0.1).
 
 A `null` audio path means "do not capture that source"; the paths MUST agree
 with `audio_sources` (`system_only` / `mic_only` / `system_and_mic`).
+
+`capture_target` selects what the `SCStream` captures: `{"kind":"display"}`
+(default; omit the field for the same effect) captures the first display, and
+`{"kind":"window","window_id":<u32>}` captures a single window by its
+`SCWindow.windowID` (from `--list-windows` below). An unknown `window_id` falls
+back to full-display capture (logged to stderr); capture never fails on it.
+
+## Window enumeration (`--list-windows`)
+
+Invoked with `--list-windows`, the sidecar enumerates on-screen windows, prints
+a JSON array to stdout, and exits 0 — no capture session:
+
+```bash
+panops-capture-mac --list-windows
+```
+
+```json
+[{"window_id":12345,"app_name":"Zoom","title":"Standup"}, ...]
+```
+
+`window_id` is the `SCWindow.windowID` to pass back as `capture_target`. panops's
+own windows, untitled windows, and zero-frame windows are filtered out.
+Enumeration failure (e.g. Screen-Recording denied) prints `[]`. Like live
+capture, this needs the Screen-Recording TCC grant.
 
 `capture.stop`:
 
