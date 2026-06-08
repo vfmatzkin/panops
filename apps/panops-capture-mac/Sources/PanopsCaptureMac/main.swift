@@ -1,11 +1,40 @@
 import Foundation
 import Darwin
+import ScreenCaptureKit
 
 // Stateful capture sidecar. Unlike the request/response ASR sidecar, capture
 // is a session: `capture.start` opens an SCStream + screenshotter and acks;
 // `capture.stop` finalizes and returns the paths. One session at a time.
 
 FileHandle.standardError.write(Data("panops-capture-mac starting\n".utf8))
+
+/// One-shot window enumeration: print the on-screen windows as a JSON array to
+/// stdout and exit, before any capture session. On enumeration failure (e.g.
+/// Screen-Recording denied) emit `[]` so the engine always parses valid JSON.
+func runListWindows() async {
+    let windows: [WindowInfo]
+    do {
+        windows = try await listShareableWindows()
+    } catch {
+        FileHandle.standardError.write(Data("--list-windows enumeration failed: \(error)\n".utf8))
+        print("[]")
+        fflush(stdout)
+        return
+    }
+    let enc = JSONEncoder()
+    enc.outputFormatting = [.withoutEscapingSlashes]
+    if let data = try? enc.encode(windows), let line = String(data: data, encoding: .utf8) {
+        print(line)
+    } else {
+        print("[]")
+    }
+    fflush(stdout)
+}
+
+if CommandLine.arguments.contains("--list-windows") {
+    await runListWindows()
+    exit(0)
+}
 
 /// A live capture: the SCStream recorder + the screen-frame screenshotter,
 /// keyed by the meeting that started it.
@@ -138,7 +167,8 @@ while !shutdownRequested, let line = readLine(strippingNewline: true) {
                 plan: plan,
                 systemPath: params.systemAudioPath,
                 micPath: params.micAudioPath,
-                videoPath: videoPath
+                videoPath: videoPath,
+                target: CaptureTargetKind(wire: params.captureTarget)
             )
             let screenshotter = try Screenshotter(
                 dir: params.screenshotsDir ?? FileManager.default.temporaryDirectory.path,
