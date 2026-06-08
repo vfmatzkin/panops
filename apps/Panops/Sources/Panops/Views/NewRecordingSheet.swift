@@ -13,6 +13,7 @@ struct NewRecordingSheet: View {
     let onCancel: () -> Void
 
     @State private var setup = RecordingSetup.default
+    @StateObject private var preview = CapturePreviewController()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -26,11 +27,16 @@ struct NewRecordingSheet: View {
 
             footer
         }
-        .frame(width: 420)
+        .frame(width: 460)
+        .onDisappear { preview.teardown() }
     }
 
     private var settingsForm: some View {
         Form {
+            Section("Capture") {
+                CaptureSourcePane(controller: preview, resolution: $setup.resolution)
+            }
+
             TextField("Title", text: $setup.title, prompt: Text("Optional"))
 
             Picker("Language", selection: $setup.language) {
@@ -74,10 +80,20 @@ struct NewRecordingSheet: View {
             Spacer()
             Button("Cancel", role: .cancel) { onCancel() }
                 .keyboardShortcut(.cancelAction)
-            Button("Start") { onStart(setup) }
+            Button("Start") { start() }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
         }
         .padding(20)
+    }
+
+    /// Fold the live picker selection into the setup before handing it back: the
+    /// chosen target (default primary display when nothing was picked) and the
+    /// source's native height, which resolves the resolution preset on the wire.
+    private func start() {
+        var resolved = setup
+        resolved.captureTarget = preview.target ?? .primaryDisplay
+        resolved.captureNativeHeight = preview.nativePixelHeight
+        onStart(resolved)
     }
 }
