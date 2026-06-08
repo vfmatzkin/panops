@@ -35,6 +35,7 @@ pub fn run_suite_with<C: Capture>(adapter: &C, fixtures_dir: &Path, expected_is_
     stop_returns_screenshot_paths(adapter, fixtures_dir);
     stop_track_presence_matches_sources(adapter);
     record_video_writes_recording_mov(adapter);
+    start_preserves_auto_generate_notes(adapter);
     stop_session_not_found(adapter);
     is_fake_marker(adapter, expected_is_fake);
 }
@@ -72,6 +73,10 @@ fn start_returns_session<C: Capture>(adapter: &C, _fixtures_dir: &Path) {
         .expect("start_capture should succeed");
     assert_eq!(session.meeting_id, meeting_id);
     assert!(session.started_at_ms > 0, "started_at_ms should be set");
+    assert!(
+        !session.auto_generate_notes,
+        "default capture config must not auto-generate notes"
+    );
 
     // Clean up the session.
     let _ = adapter.stop_capture(&session);
@@ -214,10 +219,34 @@ fn record_video_writes_recording_mov<C: Capture>(adapter: &C) {
     let _ = std::fs::remove_dir_all(&meeting_dir);
 }
 
+fn start_preserves_auto_generate_notes<C: Capture>(adapter: &C) {
+    let meeting_id = "test_meeting_auto_notes";
+    let meeting_dir = temp_meeting_dir();
+    std::fs::create_dir_all(&meeting_dir).expect("create temp meeting dir");
+
+    let config = CaptureConfig {
+        auto_generate_notes: true,
+        ..CaptureConfig::default()
+    };
+    let session = adapter
+        .start_capture(meeting_id, &meeting_dir, &config)
+        .expect("start_capture should succeed");
+    assert!(
+        session.auto_generate_notes,
+        "CaptureSession must preserve auto_generate_notes from CaptureConfig"
+    );
+
+    adapter
+        .stop_capture(&session)
+        .expect("stop_capture should succeed");
+    let _ = std::fs::remove_dir_all(&meeting_dir);
+}
+
 fn stop_session_not_found<C: Capture>(adapter: &C) {
     let fake_session = CaptureSession {
         meeting_id: "nonexistent_session".into(),
         started_at_ms: 0,
+        auto_generate_notes: false,
     };
     let err = adapter
         .stop_capture(&fake_session)

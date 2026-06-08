@@ -31,6 +31,11 @@ pub struct CaptureConfig {
     pub audio_sources: AudioSources,
     /// Whether to write a screen-video file at `<meeting_dir>/recording.mov`.
     pub record_video: bool,
+    /// Whether the engine should enqueue notes generation after stop.
+    /// Capture adapters do not execute the AI pipeline themselves; the flag
+    /// is preserved on [`CaptureSession`] so the IPC layer can decide after a
+    /// successful capture stop.
+    pub auto_generate_notes: bool,
     /// Screenshot sampling interval in milliseconds.
     pub screenshot_interval_ms: u64,
     /// Vision FeaturePrint cosine distance threshold for change detection.
@@ -42,6 +47,7 @@ impl Default for CaptureConfig {
         Self {
             audio_sources: AudioSources::SystemAndMic,
             record_video: false,
+            auto_generate_notes: false,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
         }
@@ -54,6 +60,10 @@ impl Default for CaptureConfig {
 pub struct CaptureSession {
     pub meeting_id: String,
     pub started_at_ms: u64,
+    /// Engine-owned processing mode captured at `recording.start`.
+    /// Adapters pass it through from [`CaptureConfig`]; `stop_capture` itself
+    /// remains strictly capture-only.
+    pub auto_generate_notes: bool,
 }
 
 /// Result returned by `stop_capture`. Contains paths to captured artifacts.
@@ -129,6 +139,7 @@ mod tests {
         let cfg = CaptureConfig::default();
         assert_eq!(cfg.audio_sources, AudioSources::SystemAndMic);
         assert!(!cfg.record_video);
+        assert!(!cfg.auto_generate_notes);
         assert_eq!(cfg.screenshot_interval_ms, 500);
         assert!(cfg.screenshot_threshold > 0.0 && cfg.screenshot_threshold < 1.0);
     }
@@ -145,9 +156,11 @@ mod tests {
         let s = CaptureSession {
             meeting_id: "abc123".into(),
             started_at_ms: 1_700_000_000_000,
+            auto_generate_notes: true,
         };
         assert_eq!(s.meeting_id, "abc123");
         assert_eq!(s.started_at_ms, 1_700_000_000_000);
+        assert!(s.auto_generate_notes);
     }
 
     #[test]

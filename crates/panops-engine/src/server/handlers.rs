@@ -123,87 +123,11 @@ impl IpcServer for IpcImpl {
         &self,
         params: NotesGenerateParams,
     ) -> Result<JobAccepted, ErrorObjectOwned> {
-        let job_id = uuid::Uuid::new_v4().to_string();
-        let services = self.services.clone();
-        let events_tx = self.events_tx.clone();
-        let job_id_owned = job_id.clone();
-
-        // Accept the job and return its id immediately. ALL heavy work — the
-        // backpressure wait AND the synchronous pipeline — runs off the RPC
-        // accept path, so the `{job_id}`-then-events contract holds even under
-        // load: the caller never blocks waiting for a permit. Results land on
-        // `events.subscribe` as `JobDone` or `JobError`.
-        tokio::spawn(async move {
-            // Backpressure heavy note generation before it reaches tokio's
-            // blocking pool. A permit is held for the whole synchronous
-            // pipeline, so a burst of jobs cannot enqueue unbounded decoded
-            // audio / ASR / diarization / LLM work and exhaust RAM. Jobs
-            // beyond `MAX_CONCURRENT_NOTES_JOBS` wait here (off the RPC path).
-            let notes_job_permit = match services.notes_jobs.clone().acquire_owned().await {
-                Ok(permit) => permit,
-                Err(e) => {
-                    // `acquire_owned` errors only when the semaphore is
-                    // permanently closed (engine shutdown) — not the normal
-                    // wait-when-full case. The job id was already returned, so
-                    // surface the failure as a `JobError` event, not an RPC error.
-                    tracing::error!(error = %e, "notes.generate semaphore permanently closed");
-                    let _ = events_tx.send(Event::JobError(JobErrorEvent {
-                        job_id: job_id_owned,
-                        error: IpcError::Internal {
-                            message: "notes.generate internal error".into(),
-                        },
-                    }));
-                    return;
-                }
-            };
-
-            // Move the pipeline off any tokio worker thread: rayon (used by
-            // `NotesGenerator` for the per-section fan-out) and the blocking
-            // ASR/diar adapters mustn't share a runtime worker with the RPC
-            // accept loop. `spawn_blocking` drops them on the dedicated
-            // blocking pool.
-            let job_id_for_panic = job_id_owned.clone();
-            let events_tx_for_panic = events_tx.clone();
-            let join_handle = tokio::task::spawn_blocking(move || {
-                let _notes_job_permit = notes_job_permit;
-                let outcome = run_notes_pipeline(&services, &params, &events_tx, &job_id_owned);
-                match outcome {
-                    Ok(result) => {
-                        let _ = events_tx.send(Event::JobDone(JobDoneEvent {
-                            job_id: job_id_owned,
-                            result,
-                        }));
-                    }
-                    Err(error) => {
-                        let _ = events_tx.send(Event::JobError(JobErrorEvent {
-                            job_id: job_id_owned,
-                            error,
-                        }));
-                    }
-                }
-            });
-
-            // Awaiter for the blocking task. Without this, a panic inside
-            // the closure (MockLlm fingerprint mismatch, rayon panic, OOM)
-            // is silently swallowed when the JoinHandle drops, leaving
-            // subscribers waiting forever. We turn a JoinError into a
-            // synthetic `JobError` event with an opaque `Internal` message
-            // so the wire never leaks panic payloads or filesystem paths.
-            if let Err(join_err) = join_handle.await {
-                let msg = if join_err.is_panic() {
-                    "pipeline panicked".to_string()
-                } else {
-                    format!("pipeline cancelled: {join_err}")
-                };
-                tracing::error!(error = %join_err, "notes.generate pipeline did not complete");
-                let _ = events_tx_for_panic.send(Event::JobError(JobErrorEvent {
-                    job_id: job_id_for_panic,
-                    error: IpcError::Internal { message: msg },
-                }));
-            }
-        });
-
-        Ok(JobAccepted { job_id })
+        Ok(enqueue_notes_job(
+            self.services.clone(),
+            self.events_tx.clone(),
+            params,
+        ))
     }
 
     async fn meeting_list(&self) -> Result<Vec<MeetingSummary>, ErrorObjectOwned> {
@@ -439,39 +363,51 @@ impl IpcServer for IpcImpl {
 
         // Clone self.sessions for use in spawn_blocking.
         let sessions = self.sessions.clone();
+        let services = self.services.clone();
+        let events_tx = self.events_tx.clone();
 
-        spawn_blocking_into_ipc("recording.stop", move || {
-            // Look up the real session persisted by recording.start.
-            let session = sessions
-                .lock()
-                .map_err(|_| IpcError::Internal {
-                    message: "sessions mutex poisoned".into(),
-                })?
-                .remove(&recording_id)
-                .ok_or_else(|| IpcError::InputNotFound {
-                    path: format!("session/{recording_id}"),
-                })?;
+        let (stopped, auto_generate_notes, recording_id) =
+            spawn_blocking_into_ipc("recording.stop", move || {
+                // Look up the real session persisted by recording.start.
+                let session = sessions
+                    .lock()
+                    .map_err(|_| IpcError::Internal {
+                        message: "sessions mutex poisoned".into(),
+                    })?
+                    .remove(&recording_id)
+                    .ok_or_else(|| IpcError::InputNotFound {
+                        path: format!("session/{recording_id}"),
+                    })?;
+                let auto_generate_notes = session.auto_generate_notes;
 
-            let result = capture.stop_capture(&session).map_err(IpcError::from)?;
+                let result = capture.stop_capture(&session).map_err(IpcError::from)?;
 
-            Ok(RecordingStopped {
-                system_audio_path: result
-                    .system_audio_path
-                    .as_ref()
-                    .map(|p| p.display().to_string()),
-                mic_audio_path: result
-                    .mic_audio_path
-                    .as_ref()
-                    .map(|p| p.display().to_string()),
-                screenshot_paths: result
-                    .screenshot_paths
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect(),
-                duration_ms: result.duration_ms,
+                let stopped = RecordingStopped {
+                    system_audio_path: result
+                        .system_audio_path
+                        .as_ref()
+                        .map(|p| p.display().to_string()),
+                    mic_audio_path: result
+                        .mic_audio_path
+                        .as_ref()
+                        .map(|p| p.display().to_string()),
+                    screenshot_paths: result
+                        .screenshot_paths
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect(),
+                    duration_ms: result.duration_ms,
+                };
+
+                Ok((stopped, auto_generate_notes, recording_id))
             })
-        })
-        .await
+            .await?;
+
+        if auto_generate_notes {
+            maybe_enqueue_auto_notes(services, events_tx, &recording_id, &stopped);
+        }
+
+        Ok(stopped)
     }
 
     async fn subscribe_events(&self, pending: PendingSubscriptionSink) -> SubscriptionResult {
@@ -508,6 +444,169 @@ impl IpcServer for IpcImpl {
             }
         }
         Ok(())
+    }
+}
+
+/// Accept a notes job and run it through the single notes.generate event path.
+///
+/// Both explicit `ipc.notes.generate` and automatic post-recording processing
+/// use this helper so backpressure, panic-to-`job.error` conversion, progress
+/// events, and `job.done`/`job.error` payloads cannot drift.
+fn enqueue_notes_job(
+    services: Arc<crate::server::EngineServices>,
+    events_tx: broadcast::Sender<Event>,
+    params: NotesGenerateParams,
+) -> JobAccepted {
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let job_id_owned = job_id.clone();
+
+    // Accept the job and return its id immediately. ALL heavy work — the
+    // backpressure wait AND the synchronous pipeline — runs off the RPC
+    // accept path, so the `{job_id}`-then-events contract holds even under
+    // load: the caller never blocks waiting for a permit. Results land on
+    // `events.subscribe` as `JobDone` or `JobError`.
+    tokio::spawn(async move {
+        // Backpressure heavy note generation before it reaches tokio's
+        // blocking pool. A permit is held for the whole synchronous
+        // pipeline, so a burst of jobs cannot enqueue unbounded decoded
+        // audio / ASR / diarization / LLM work and exhaust RAM. Jobs
+        // beyond `MAX_CONCURRENT_NOTES_JOBS` wait here (off the RPC path).
+        let notes_job_permit = match services.notes_jobs.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(e) => {
+                // `acquire_owned` errors only when the semaphore is
+                // permanently closed (engine shutdown) — not the normal
+                // wait-when-full case. The job id was already returned, so
+                // surface the failure as a `JobError` event, not an RPC error.
+                tracing::error!(error = %e, "notes.generate semaphore permanently closed");
+                let _ = events_tx.send(Event::JobError(JobErrorEvent {
+                    job_id: job_id_owned,
+                    error: IpcError::Internal {
+                        message: "notes.generate internal error".into(),
+                    },
+                }));
+                return;
+            }
+        };
+
+        // Move the pipeline off any tokio worker thread: rayon (used by
+        // `NotesGenerator` for the per-section fan-out) and the blocking
+        // ASR/diar adapters mustn't share a runtime worker with the RPC
+        // accept loop. `spawn_blocking` drops them on the dedicated
+        // blocking pool.
+        let job_id_for_panic = job_id_owned.clone();
+        let events_tx_for_panic = events_tx.clone();
+        let join_handle = tokio::task::spawn_blocking(move || {
+            let _notes_job_permit = notes_job_permit;
+            let outcome = run_notes_pipeline(&services, &params, &events_tx, &job_id_owned);
+            match outcome {
+                Ok(result) => {
+                    let _ = events_tx.send(Event::JobDone(JobDoneEvent {
+                        job_id: job_id_owned,
+                        result,
+                    }));
+                }
+                Err(error) => {
+                    let _ = events_tx.send(Event::JobError(JobErrorEvent {
+                        job_id: job_id_owned,
+                        error,
+                    }));
+                }
+            }
+        });
+
+        // Awaiter for the blocking task. Without this, a panic inside
+        // the closure (MockLlm fingerprint mismatch, rayon panic, OOM)
+        // is silently swallowed when the JoinHandle drops, leaving
+        // subscribers waiting forever. We turn a JoinError into a
+        // synthetic `JobError` event with an opaque `Internal` message
+        // so the wire never leaks panic payloads or filesystem paths.
+        if let Err(join_err) = join_handle.await {
+            let msg = if join_err.is_panic() {
+                "pipeline panicked".to_string()
+            } else {
+                format!("pipeline cancelled: {join_err}")
+            };
+            tracing::error!(error = %join_err, "notes.generate pipeline did not complete");
+            let _ = events_tx_for_panic.send(Event::JobError(JobErrorEvent {
+                job_id: job_id_for_panic,
+                error: IpcError::Internal { message: msg },
+            }));
+        }
+    });
+
+    JobAccepted { job_id }
+}
+
+fn maybe_enqueue_auto_notes(
+    services: Arc<crate::server::EngineServices>,
+    events_tx: broadcast::Sender<Event>,
+    meeting_id: &str,
+    stopped: &RecordingStopped,
+) {
+    if let Err(reason) = auto_notes_compute_available(&services) {
+        tracing::warn!(
+            meeting_id,
+            reason = %reason,
+            "auto-generate-notes skipped: no LLM provider available; meeting left for manual generation"
+        );
+        return;
+    }
+
+    let Some(audio) = stopped
+        .system_audio_path
+        .as_ref()
+        .or(stopped.mic_audio_path.as_ref())
+        .cloned()
+    else {
+        tracing::warn!(
+            meeting_id,
+            "auto-generate-notes skipped: no captured audio path; meeting left for manual generation"
+        );
+        return;
+    };
+
+    let language = match services.storage.get_meeting(meeting_id) {
+        Ok(meeting) if meeting.language.trim().is_empty() || meeting.language == "auto" => None,
+        Ok(meeting) => Some(meeting.language),
+        Err(e) => {
+            tracing::warn!(
+                meeting_id,
+                error = %e,
+                "auto-generate-notes could not read meeting language; using automatic language detection"
+            );
+            None
+        }
+    };
+
+    let accepted = enqueue_notes_job(
+        services,
+        events_tx,
+        NotesGenerateParams {
+            audio,
+            dialect: None,
+            llm_provider: None,
+            llm_model: None,
+            no_diarize: None,
+            language,
+            meeting_id: Some(meeting_id.to_string()),
+        },
+    );
+    tracing::info!(
+        meeting_id,
+        job_id = %accepted.job_id,
+        "auto-generate-notes enqueued notes.generate job"
+    );
+}
+
+fn auto_notes_compute_available(services: &crate::server::EngineServices) -> Result<(), String> {
+    if services.llm_info.provider.trim().is_empty() {
+        return Err("resolved LLM provider is empty".into());
+    }
+    match services.heavy.get() {
+        Some(Ok(_)) => Ok(()),
+        Some(Err(msg)) => Err(format!("heavy adapter init failed: {msg}")),
+        None => Err("engine AI adapters are still warming up".into()),
     }
 }
 
@@ -1541,5 +1640,126 @@ mod notes_generate_concurrency_tests {
         })
         .await
         .expect("all accepted notes jobs should finish");
+    }
+}
+
+#[cfg(test)]
+mod recording_auto_generate_tests {
+    use super::*;
+
+    use panops_core::conformance::fakes::{InMemoryStorage, MockLlm};
+    use std::time::Duration;
+
+    static TEST_CAPTURE_INIT: std::sync::Once = std::sync::Once::new();
+
+    fn ensure_test_capture() {
+        TEST_CAPTURE_INIT.call_once(|| {
+            // SAFETY: unit tests set this before the capture resolver is first
+            // used in this process.
+            unsafe {
+                std::env::set_var("PANOPS_TEST_CAPTURE", "1");
+            }
+        });
+    }
+
+    fn pending_ipc() -> (IpcImpl, tempfile::TempDir) {
+        let data_dir = tempfile::tempdir().expect("temp data dir");
+        let storage = Arc::new(InMemoryStorage::new());
+        let (services, _heavy) = crate::server::EngineServices::pending(
+            Arc::new(MockLlm::default()),
+            storage,
+            data_dir.path().to_path_buf(),
+        );
+        let (events_tx, _keepalive) = broadcast::channel(16);
+        (
+            IpcImpl {
+                services: Arc::new(services),
+                events_tx,
+                sessions: Arc::new(Mutex::new(HashMap::new())),
+            },
+            data_dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn recording_start_stores_auto_generate_notes_on_session() {
+        ensure_test_capture();
+        let (ipc, _data_dir) = pending_ipc();
+        let meeting_id = ipc
+            .meeting_start(MeetingConfig {
+                title: Some("auto flag session".into()),
+                language: Some("en".into()),
+            })
+            .await
+            .expect("meeting.start");
+
+        ipc.recording_start(RecordingStartParams {
+            meeting_id: meeting_id.clone(),
+            audio_sources: panops_protocol::AudioSourcesWire::SystemAndMic,
+            record_video: false,
+            auto_generate_notes: true,
+            screenshot_interval_ms: 500,
+            screenshot_threshold: 0.15,
+        })
+        .await
+        .expect("recording.start");
+
+        let session = ipc
+            .sessions
+            .lock()
+            .expect("sessions lock")
+            .get(&meeting_id)
+            .cloned()
+            .expect("session stored");
+        assert!(
+            session.auto_generate_notes,
+            "recording.start must preserve auto_generate_notes on CaptureSession"
+        );
+
+        let _ = ipc
+            .recording_stop(RecordingStopParams {
+                recording_id: meeting_id,
+            })
+            .await
+            .expect("recording.stop cleanup");
+    }
+
+    #[tokio::test]
+    async fn recording_stop_auto_generate_skips_when_compute_is_not_ready() {
+        ensure_test_capture();
+        let (ipc, _data_dir) = pending_ipc();
+        let mut rx = ipc.events_tx.subscribe();
+        let meeting_id = ipc
+            .meeting_start(MeetingConfig {
+                title: Some("deferred auto notes".into()),
+                language: Some("en".into()),
+            })
+            .await
+            .expect("meeting.start");
+
+        ipc.recording_start(RecordingStartParams {
+            meeting_id: meeting_id.clone(),
+            audio_sources: panops_protocol::AudioSourcesWire::SystemAndMic,
+            record_video: false,
+            auto_generate_notes: true,
+            screenshot_interval_ms: 500,
+            screenshot_threshold: 0.15,
+        })
+        .await
+        .expect("recording.start");
+
+        let stopped = ipc
+            .recording_stop(RecordingStopParams {
+                recording_id: meeting_id,
+            })
+            .await
+            .expect("recording.stop should still succeed");
+        assert!(stopped.system_audio_path.is_some() || stopped.mic_audio_path.is_some());
+
+        let no_event = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
+        assert!(
+            no_event.is_err(),
+            "auto-generate should not enqueue a notes job while compute is unavailable"
+        );
     }
 }
