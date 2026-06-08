@@ -78,7 +78,7 @@ struct MeetingDetailViewVideoTests {
             let filePath = tempDir.appendingPathComponent("video_\(size).mov")
             // Create file with exact size
             if let handle = FileHandle(forWritingAtPath: filePath.path) {
-                try? handle.truncate(atOffset: size)
+                try? handle.truncate(atOffset: UInt64(size))
                 try? handle.close()
             } else {
                 // Fallback: write null bytes
@@ -95,7 +95,7 @@ struct MeetingDetailViewVideoTests {
 
             let formatter = ByteCountFormatter()
             formatter.countStyle = .file
-            let formatted = formatter.string(fromByteLong: fileSize)
+            let formatted = formatter.string(fromByteCount: Int64(fileSize))
 
             // Just verify the formatter works and returns a non-empty string
             #expect(!formatted.isEmpty)

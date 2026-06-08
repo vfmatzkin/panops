@@ -8,21 +8,28 @@ private actor CapturingRecordingIpcClient: LiveRecordingIpcClient {
     private(set) var audioSources: AudioSourcesWire?
     private(set) var intervalMs: UInt64?
     private(set) var threshold: Float?
+    private(set) var recordVideo: Bool?
 
     func recordingStart(
         meetingId: String,
         audioSources: AudioSourcesWire,
         screenshotIntervalMs: UInt64,
-        screenshotThreshold: Float
+        screenshotThreshold: Float,
+        recordVideo: Bool
     ) async throws -> RecordingAccepted {
         self.audioSources = audioSources
         self.intervalMs = screenshotIntervalMs
         self.threshold = screenshotThreshold
+        self.recordVideo = recordVideo
         return RecordingAccepted(recordingId: "rec-1")
     }
 
     func recordingStop(recordingId: String) async throws -> RecordingStopped {
         RecordingStopped(systemAudioPath: nil, micAudioPath: nil, screenshotPaths: [], durationMs: 0)
+    }
+
+    func meetingDeleteVideo(meetingId: String) async throws -> (deleted: Bool, freedBytes: UInt64) {
+        (deleted: false, freedBytes: 0)
     }
 }
 
