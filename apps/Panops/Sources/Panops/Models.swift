@@ -135,6 +135,15 @@ enum AudioSourcesWire: String, Codable {
     case systemAndMic = "system_and_mic"
 }
 
+/// Outgoing params for `ipc.meeting.start`. Mirrors `panops-protocol::MeetingConfig`.
+/// Both fields optional; the engine applies defaults (title="", language="auto").
+/// `nil` fields are omitted by `JSONEncoder`, so an all-`nil` config encodes to
+/// `{}` — identical to the previous `EmptyParams()` path.
+struct MeetingConfig: Encodable {
+    let title: String?
+    let language: String?
+}
+
 /// Outgoing params for `ipc.recording.start`.
 struct RecordingStartParams: Encodable {
     let meetingId: String
