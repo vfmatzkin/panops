@@ -9,7 +9,9 @@ protocol LiveRecordingIpcClient: Sendable {
         screenshotThreshold: Float,
         recordVideo: Bool,
         autoGenerateNotes: Bool,
-        captureTarget: CaptureTarget
+        captureTarget: CaptureTargetDTO,
+        width: UInt32?,
+        height: UInt32?
     ) async throws -> RecordingAccepted
 
     func recordingStop(recordingId: String) async throws -> RecordingStopped
@@ -60,7 +62,9 @@ final class LiveRecordingController: RecordingController, ObservableObject {
                 screenshotThreshold: options.screenshotThreshold,
                 recordVideo: options.recordVideo,
                 autoGenerateNotes: options.autoGenerateNotes,
-                captureTarget: options.captureTarget
+                captureTarget: options.captureTarget,
+                width: options.width,
+                height: options.height
             )
             recordingId = accepted.recordingId
             autoGenerateNotesRequested = options.autoGenerateNotes

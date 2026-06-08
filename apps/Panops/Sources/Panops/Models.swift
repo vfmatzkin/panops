@@ -155,47 +155,6 @@ enum AudioSourcesWire: String, Codable {
     }
 }
 
-/// Capture target for `ipc.recording.start` — display or a specific window.
-enum CaptureTarget: Codable, Equatable {
-    case display
-    case window(windowId: UInt32)
-}
-
-extension CaptureTarget {
-    /// Wire encoding: `{"kind":"display"}` or `{"kind":"window","window_id":<u32>}`
-    enum WireKind: String, Codable {
-        case display
-        case window
-    }
-}
-
-/// Wire encoding for `CaptureTarget`.
-struct CaptureTargetWire: Encodable {
-    let kind: CaptureTargetWire.Kind
-    let windowId: UInt32?
-
-    enum Kind: String, Codable {
-        case display
-        case window
-    }
-
-    init(_ target: CaptureTarget) {
-        switch target {
-        case .display:
-            self.kind = .display
-            self.windowId = nil
-        case .window(windowId: let id):
-            self.kind = .window
-            self.windowId = id
-        }
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case kind
-        case windowId = "window_id"
-    }
-}
-
 /// A window available for capture, returned by `ipc.capture.windows`.
 struct WindowInfo: Decodable, Equatable, Identifiable {
     var id: UInt32 { windowId }
@@ -240,7 +199,10 @@ struct MeetingConfig: Encodable {
     }
 }
 
-/// Outgoing params for `ipc.recording.start`.
+/// Outgoing params for `ipc.recording.start`. Carries the full capture
+/// selection: the source `captureTarget` (display/window/app/region) plus the
+/// optional output resolution (`width`/`height`, both set or both omitted —
+/// omitted = native).
 struct RecordingStartParams: Encodable {
     let meetingId: String
     let audioSources: AudioSourcesWire
@@ -248,7 +210,9 @@ struct RecordingStartParams: Encodable {
     let screenshotThreshold: Float
     let recordVideo: Bool
     let autoGenerateNotes: Bool
-    let captureTarget: CaptureTargetWire
+    let captureTarget: CaptureTargetDTO
+    let width: UInt32?
+    let height: UInt32?
 
     enum CodingKeys: String, CodingKey {
         case meetingId = "meeting_id"
@@ -258,27 +222,10 @@ struct RecordingStartParams: Encodable {
         case recordVideo = "record_video"
         case autoGenerateNotes = "auto_generate_notes"
         case captureTarget = "capture_target"
+        case width
+        case height
     }
 
-    /// Create params with display capture target (default).
-    init(
-        meetingId: String,
-        audioSources: AudioSourcesWire,
-        screenshotIntervalMs: UInt64,
-        screenshotThreshold: Float,
-        recordVideo: Bool,
-        autoGenerateNotes: Bool
-    ) {
-        self.meetingId = meetingId
-        self.audioSources = audioSources
-        self.screenshotIntervalMs = screenshotIntervalMs
-        self.screenshotThreshold = screenshotThreshold
-        self.recordVideo = recordVideo
-        self.autoGenerateNotes = autoGenerateNotes
-        self.captureTarget = CaptureTargetWire(.display)
-    }
-
-    /// Create params with a specific window capture target.
     init(
         meetingId: String,
         audioSources: AudioSourcesWire,
@@ -286,7 +233,9 @@ struct RecordingStartParams: Encodable {
         screenshotThreshold: Float,
         recordVideo: Bool,
         autoGenerateNotes: Bool,
-        captureTarget: CaptureTarget
+        captureTarget: CaptureTargetDTO = .primaryDisplay,
+        width: UInt32? = nil,
+        height: UInt32? = nil
     ) {
         self.meetingId = meetingId
         self.audioSources = audioSources
@@ -294,7 +243,9 @@ struct RecordingStartParams: Encodable {
         self.screenshotThreshold = screenshotThreshold
         self.recordVideo = recordVideo
         self.autoGenerateNotes = autoGenerateNotes
-        self.captureTarget = CaptureTargetWire(captureTarget)
+        self.captureTarget = captureTarget
+        self.width = width
+        self.height = height
     }
 }
 

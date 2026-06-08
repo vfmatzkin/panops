@@ -410,26 +410,43 @@ struct IpcClientCodecTests {
         #expect(json.contains("\"params\":[{}]"), "expected [{}] params, got: \(json)")
     }
 
-    @Test("CaptureTarget.display encodes correctly")
-    func captureTarget_display_encodes() throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let wire = CaptureTargetWire(.display)
-        let data = try encoder.encode(wire)
+    @Test("recording.start params nest the kind-tagged capture target")
+    func recordingStartParams_nestCaptureTarget() throws {
+        let params = RecordingStartParams(
+            meetingId: "m1",
+            audioSources: .systemAndMic,
+            screenshotIntervalMs: 500,
+            screenshotThreshold: 0.15,
+            recordVideo: true,
+            autoGenerateNotes: true,
+            captureTarget: .window(windowID: 456),
+            width: 1280,
+            height: 720
+        )
+        let data = try encoder.encode(params)
         let json = String(data: data, encoding: .utf8)!
-        #expect(json.contains("\"kind\":\"display\""))
-        #expect(!json.contains("\"window_id\""), "window_id should be omitted for display: \(json)")
-    }
-
-    @Test("CaptureTarget.window encodes correctly")
-    func captureTarget_window_encodes() throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let wire = CaptureTargetWire(.window(windowId: 456))
-        let data = try encoder.encode(wire)
-        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"capture_target\":{"))
         #expect(json.contains("\"kind\":\"window\""))
         #expect(json.contains("\"window_id\":456"))
+        #expect(json.contains("\"width\":1280"))
+        #expect(json.contains("\"height\":720"))
+    }
+
+    @Test("recording.start omits width/height when native")
+    func recordingStartParams_omitNativeResolution() throws {
+        let params = RecordingStartParams(
+            meetingId: "m1",
+            audioSources: .systemAndMic,
+            screenshotIntervalMs: 500,
+            screenshotThreshold: 0.15,
+            recordVideo: false,
+            autoGenerateNotes: true
+        )
+        let data = try encoder.encode(params)
+        let json = String(data: data, encoding: .utf8)!
+        #expect(!json.contains("\"width\""), "width should be omitted for native: \(json)")
+        #expect(!json.contains("\"height\""), "height should be omitted for native: \(json)")
+        #expect(json.contains("\"kind\":\"display\""))
     }
 
     // MARK: - Organization (Phase B) decode

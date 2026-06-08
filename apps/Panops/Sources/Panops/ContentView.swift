@@ -1071,8 +1071,7 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
                     activeSetup = setup
                     Task { @MainActor in await startNewRecording(setup: setup) }
                 },
-                onCancel: { showNewRecordingSheet = false },
-                fetchWindows: { try await vm.captureWindows() }
+                onCancel: { showNewRecordingSheet = false }
             )
         }
         .task {

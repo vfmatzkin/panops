@@ -10,7 +10,9 @@ private actor CapturingRecordingIpcClient: LiveRecordingIpcClient {
     private(set) var threshold: Float?
     private(set) var recordVideo: Bool?
     private(set) var autoGenerateNotes: Bool?
-    private(set) var captureTarget: CaptureTarget?
+    private(set) var captureTarget: CaptureTargetDTO?
+    private(set) var width: UInt32?
+    private(set) var height: UInt32?
 
     func recordingStart(
         meetingId: String,
@@ -19,7 +21,9 @@ private actor CapturingRecordingIpcClient: LiveRecordingIpcClient {
         screenshotThreshold: Float,
         recordVideo: Bool,
         autoGenerateNotes: Bool,
-        captureTarget: CaptureTarget
+        captureTarget: CaptureTargetDTO,
+        width: UInt32?,
+        height: UInt32?
     ) async throws -> RecordingAccepted {
         self.audioSources = audioSources
         self.intervalMs = screenshotIntervalMs
@@ -27,6 +31,8 @@ private actor CapturingRecordingIpcClient: LiveRecordingIpcClient {
         self.recordVideo = recordVideo
         self.autoGenerateNotes = autoGenerateNotes
         self.captureTarget = captureTarget
+        self.width = width
+        self.height = height
         return RecordingAccepted(recordingId: "rec-1")
     }
 

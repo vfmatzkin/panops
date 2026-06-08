@@ -114,11 +114,24 @@ struct LiveRecordingControllerTests {
         let fake = FakeLiveRecordingIpcClient()
         let controller = LiveRecordingController(ipcClient: fake)
 
-        let options = RecordingOptions(captureTarget: .window(windowId: 123))
+        let options = RecordingOptions(captureTarget: .window(windowID: 123))
         try await controller.start(meetingId: "meeting-1", options: options)
 
         let target = await fake.lastCaptureTargetValue()
-        #expect(target == .window(windowId: 123))
+        #expect(target == .window(windowID: 123))
+    }
+
+    @Test("start passes output resolution to engine")
+    func startRecordsResolution() async throws {
+        let fake = FakeLiveRecordingIpcClient()
+        let controller = LiveRecordingController(ipcClient: fake)
+
+        let options = RecordingOptions(width: 1280, height: 720)
+        try await controller.start(meetingId: "meeting-1", options: options)
+
+        let resolution = await fake.lastResolutionValue()
+        #expect(resolution.width == 1280)
+        #expect(resolution.height == 720)
     }
 
     @Test("stop surfaces the engine-issued auto-notes job id")
@@ -192,7 +205,9 @@ private actor FakeLiveRecordingIpcClient: LiveRecordingIpcClient {
     private let stopped: RecordingStopped
     private var lastRecordVideo: Bool = false
     private var lastAutoGenerateNotes: Bool = false
-    private var lastCaptureTarget: CaptureTarget = .display
+    private var lastCaptureTarget: CaptureTargetDTO = .primaryDisplay
+    private var lastWidth: UInt32?
+    private var lastHeight: UInt32?
 
     init(
         startDelayNanoseconds: UInt64 = 0,
@@ -221,12 +236,16 @@ private actor FakeLiveRecordingIpcClient: LiveRecordingIpcClient {
         screenshotThreshold: Float,
         recordVideo: Bool,
         autoGenerateNotes: Bool,
-        captureTarget: CaptureTarget
+        captureTarget: CaptureTargetDTO,
+        width: UInt32?,
+        height: UInt32?
     ) async throws -> RecordingAccepted {
         startCalls += 1
         lastRecordVideo = recordVideo
         lastAutoGenerateNotes = autoGenerateNotes
         lastCaptureTarget = captureTarget
+        lastWidth = width
+        lastHeight = height
         if startDelayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: startDelayNanoseconds)
         }
@@ -264,7 +283,11 @@ private actor FakeLiveRecordingIpcClient: LiveRecordingIpcClient {
         []
     }
 
-    func lastCaptureTargetValue() -> CaptureTarget {
+    func lastCaptureTargetValue() -> CaptureTargetDTO {
         lastCaptureTarget
+    }
+
+    func lastResolutionValue() -> (width: UInt32?, height: UInt32?) {
+        (lastWidth, lastHeight)
     }
 }
