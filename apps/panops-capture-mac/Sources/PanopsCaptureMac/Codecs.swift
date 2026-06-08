@@ -13,6 +13,8 @@ struct CaptureParams: Decodable {
     let screenshotThreshold: Float?
     let recordVideo: Bool?               // also mux a playable recording.mov
     let captureTarget: CaptureTarget?    // what the SCStream captures (default: display)
+    let width: UInt32?                   // output width (native if nil)
+    let height: UInt32?                  // output height (native if nil)
 
     enum CodingKeys: String, CodingKey {
         case meetingId = "meeting_id"
@@ -24,19 +26,35 @@ struct CaptureParams: Decodable {
         case screenshotThreshold = "screenshot_threshold"
         case recordVideo = "record_video"
         case captureTarget = "capture_target"
+        case width
+        case height
     }
 }
 
-/// Wire form of `capture_target`: `{"kind":"display"}` (default) or
-/// `{"kind":"window","window_id":<u32>}`. Decoded leniently — domain mapping
-/// (and the display fallback for malformed shapes) lives in `CaptureTargetKind`.
+/// Wire form of `capture_target`: `{"kind":"display"}` (default),
+/// `{"kind":"window","window_id":<u32>}`, `{"kind":"app","bundle_id":"..."}`,
+/// or `{"kind":"region","display_id":0,"x":10,"y":20,"w":640,"h":480}`.
+/// Decoded leniently — domain mapping (and the display fallback for malformed
+/// shapes) lives in `CaptureTargetKind`.
 struct CaptureTarget: Decodable {
-    let kind: String                     // "display" | "window"
+    let kind: String                     // "display" | "window" | "app" | "region"
     let windowId: UInt32?                // present when kind == "window"
+    let bundleId: String?                // present when kind == "app"
+    let displayId: UInt32?               // present when kind == "region" (default: 0)
+    let x: UInt32?                       // present when kind == "region"
+    let y: UInt32?                       // present when kind == "region"
+    let w: UInt32?                       // present when kind == "region"
+    let h: UInt32?                       // present when kind == "region"
 
     enum CodingKeys: String, CodingKey {
         case kind
         case windowId = "window_id"
+        case bundleId = "bundle_id"
+        case displayId = "display_id"
+        case x
+        case y
+        case w
+        case h
     }
 }
 
