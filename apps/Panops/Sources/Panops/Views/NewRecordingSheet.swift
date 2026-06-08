@@ -9,11 +9,13 @@ struct NewRecordingSheet: View {
     /// Display order for the audio picker: the most common pick first.
     private static let audioChoices: [AudioSourcesWire] = [.systemAndMic, .micOnly, .systemOnly]
 
+    /// Shared with the recording screen so the live preview + audio meters keep
+    /// running from selection through recording. Owned by `ContentView`.
+    @ObservedObject var preview: CapturePreviewController
     let onStart: (RecordingSetup) -> Void
     let onCancel: () -> Void
 
     @State private var setup = RecordingSetup.default
-    @StateObject private var preview = CapturePreviewController()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -28,7 +30,6 @@ struct NewRecordingSheet: View {
             footer
         }
         .frame(width: 460)
-        .onDisappear { preview.teardown() }
     }
 
     private var settingsForm: some View {

@@ -18,77 +18,51 @@ enum RecordingClock {
     }
 }
 
-/// The full recording screen: a large client-side timer, the capture-source
-/// indicators chosen in the setup sheet, the honest trust strip, and a
-/// prominent Stop. Shown while `controller.isRecording`. Deliberately shows no
-/// live transcript — transcript + notes are produced only after Stop.
+/// The full recording screen: the app's own live preview (the same source the
+/// sidecar records), live mic/system meters, a recording-health line proving
+/// bytes are landing on disk, and a prominent Stop. Shown while
+/// `controller.isRecording`. Deliberately shows no live transcript — transcript
+/// + notes are produced only after Stop.
 struct RecordingScreen<Controller: RecordingController & ObservableObject>: View {
     @ObservedObject var controller: Controller
+    @ObservedObject var preview: CapturePreviewController
     let setup: RecordingSetup
+    /// Meeting directory whose growing artifacts the health line polls.
+    let meetingDirPath: String?
     let onRecordingStopped: (RecordingStopOutcome) async throws -> Void
 
     @State private var isStopping = false
     @State private var errorMessage: String?
     @State private var startDate: Date?
+    @State private var bytesWritten: Int64 = 0
 
     init(
         controller: Controller,
+        preview: CapturePreviewController,
         setup: RecordingSetup,
+        meetingDirPath: String?,
         onRecordingStopped: @escaping (RecordingStopOutcome) async throws -> Void = { _ in }
     ) {
         self._controller = ObservedObject(wrappedValue: controller)
+        self._preview = ObservedObject(wrappedValue: preview)
         self.setup = setup
+        self.meetingDirPath = meetingDirPath
         self.onRecordingStopped = onRecordingStopped
     }
 
     var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
-
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(Color.red)
-                    .frame(width: 11, height: 11)
-                Text("Recording")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-            }
-
-            TimelineView(.periodic(from: startDate ?? Date(), by: 1)) { context in
-                Text(RecordingClock.label(seconds: elapsedSeconds(asOf: context.date)))
-                    .font(.system(size: 60, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-            }
-
-            captureSourceIndicators
-
-            Text("Transcript & notes appear after recording stops.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-
-            Button(role: .destructive) {
-                Task { @MainActor in await stop() }
-            } label: {
-                Label("Stop Recording", systemImage: "stop.fill")
-                    .padding(.horizontal, 12)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .tint(.red)
-            // Disabled until the engine accepts the start (canStop). `isRecording`
-            // flips optimistically before acceptance, so gating on it alone would
-            // show an enabled Stop that no-ops during a slow start.
-            .disabled(isStopping || !controller.canStop)
-            .help("Stop recording and generate notes")
-
-            Spacer()
+        VStack(spacing: 18) {
+            header
+            previewPane
+            metersRow
+            healthLine
+            stopButton
             TrustStrip()
-                .padding(.bottom, 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
         .onAppear { if startDate == nil { startDate = Date() } }
+        .task(id: meetingDirPath) { await pollHealth() }
         .alert("Recording error", isPresented: errorPresented) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -96,36 +70,108 @@ struct RecordingScreen<Controller: RecordingController & ObservableObject>: View
         }
     }
 
-    /// Active capture sources, derived from the chosen setup. Static-from-config
-    /// is honest here: there are no live capture-status events to reflect.
-    private var captureSourceIndicators: some View {
+    private var header: some View {
         HStack(spacing: 8) {
-            ForEach(activeSources) { source in
-                TrustChip(systemImage: source.icon, label: source.label)
+            Circle().fill(Color.red).frame(width: 11, height: 11)
+            Text("Recording").font(.headline).foregroundStyle(.secondary)
+            TimelineView(.periodic(from: startDate ?? Date(), by: 1)) { context in
+                Text(RecordingClock.label(seconds: elapsedSeconds(asOf: context.date)))
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
             }
         }
     }
 
-    private struct CaptureSource: Identifiable {
-        let id: String
-        let icon: String
-        let label: String
+    /// The live preview, when the app's preview stream is running. Falls back to
+    /// a neutral note while it spins up or if it couldn't start.
+    @ViewBuilder
+    private var previewPane: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.9))
+            if preview.state == .live {
+                CapturePreviewView(layer: preview.displayLayer)
+            } else {
+                Text("Recording in progress — preview unavailable.")
+                    .font(.callout)
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+        }
+        .frame(maxWidth: 560, maxHeight: 300)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    private var activeSources: [CaptureSource] {
-        // One audio chip labelled from the shared `displayLabel` so its wording
-        // matches the New Recording picker exactly, plus the screenshots chip.
-        var sources: [CaptureSource] = [
-            CaptureSource(
-                id: "audio",
-                icon: setup.audioSources.icon,
-                label: setup.audioSources.displayLabel
-            )
-        ]
-        if setup.captureScreenshots {
-            sources.append(CaptureSource(id: "screenshots", icon: "photo", label: "Screenshots"))
+    private var metersRow: some View {
+        VStack(spacing: 6) {
+            if setup.audioSources != .micOnly {
+                LevelMeter(label: "System", systemImage: "speaker.wave.2", db: preview.systemDb)
+            }
+            if setup.audioSources != .systemOnly {
+                LevelMeter(label: "Mic", systemImage: "mic", db: preview.micDb)
+            }
         }
-        return sources
+        .frame(maxWidth: 360)
+    }
+
+    private var healthLine: some View {
+        TimelineView(.periodic(from: startDate ?? Date(), by: 1)) { context in
+            Text(healthText(asOf: context.date))
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(bytesWritten > 0 ? .secondary : Color.orange)
+        }
+    }
+
+    private var stopButton: some View {
+        Button(role: .destructive) {
+            Task { @MainActor in await stop() }
+        } label: {
+            Label("Stop Recording", systemImage: "stop.fill").padding(.horizontal, 12)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .tint(.red)
+        // Disabled until the engine accepts the start (canStop). `isRecording`
+        // flips optimistically before acceptance, so gating on it alone would
+        // show an enabled Stop that no-ops during a slow start.
+        .disabled(isStopping || !controller.canStop)
+        .help("Stop recording and generate notes")
+    }
+
+    /// "● MM:SS · 1.2 MB" — the elapsed clock plus the on-disk size, the proof
+    /// that audio/video are actually being written. Orange until bytes appear.
+    private func healthText(asOf now: Date) -> String {
+        let clock = RecordingClock.label(seconds: elapsedSeconds(asOf: now))
+        if bytesWritten > 0 {
+            return "● \(clock) · \(Self.humanBytes(bytesWritten)) written"
+        }
+        return "● \(clock) · waiting for data…"
+    }
+
+    /// Poll the meeting directory's growing artifacts (~1 Hz) so the health line
+    /// reflects real bytes on disk — the override for the dropped sidecar
+    /// health-event channel.
+    private func pollHealth() async {
+        while !Task.isCancelled {
+            bytesWritten = Self.recordingBytes(in: meetingDirPath)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+    }
+
+    private static func recordingBytes(in dirPath: String?) -> Int64 {
+        guard let dirPath, PathValidator.isUnderPanopsDataDir(dirPath) else { return 0 }
+        var total: Int64 = 0
+        for name in ["recording.mov", "system.wav", "mic.wav"] {
+            let path = (dirPath as NSString).appendingPathComponent(name)
+            if let size = try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64 {
+                total += size
+            }
+        }
+        return total
+    }
+
+    private static func humanBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
     }
 
     private func elapsedSeconds(asOf now: Date) -> Int {

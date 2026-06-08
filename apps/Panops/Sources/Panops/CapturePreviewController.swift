@@ -43,8 +43,13 @@ final class CapturePreviewController: NSObject, ObservableObject {
     @Published private(set) var sourceContentSize: CGSize = .zero
     /// Whether a crop region is currently applied to a display target.
     @Published private(set) var isCropped = false
+    /// Live system-audio level (dBFS) from the preview stream. -120 = silence.
+    @Published private(set) var systemDb: Float = -120
+    /// Live microphone level (dBFS) from the preview stream (macOS 15+).
+    @Published private(set) var micDb: Float = -120
 
     private let sampleQueue = DispatchQueue(label: "ar.tzk.panops.preview.samples")
+    private let audioQueue = DispatchQueue(label: "ar.tzk.panops.preview.audio")
     private lazy var observer = CapturePickerObserver(controller: self)
     private var stream: SCStream?
     private var output: PreviewStreamOutput?
@@ -80,13 +85,24 @@ final class CapturePreviewController: NSObject, ObservableObject {
         }
     }
 
-    /// Stop the picker observer + preview stream. Call when the sheet closes.
+    /// Stop the picker observer + preview stream and reset to a clean state so
+    /// the next sheet opens fresh. Call on sheet cancel and when recording ends.
     func teardown() {
         SCContentSharingPicker.shared.remove(observer)
         let stopping = stream
         stream = nil
         output = nil
+        currentFilter = nil
         Task { try? await stopping?.stopCapture() }
+        state = .idle
+        target = nil
+        isDisplayTarget = false
+        isCropped = false
+        sourceRect = nil
+        nativePixelHeight = 0
+        sourceContentSize = .zero
+        systemDb = -120
+        micDb = -120
     }
 
     // MARK: - Picker observer callbacks (hopped to the main actor)
@@ -154,16 +170,31 @@ final class CapturePreviewController: NSObject, ObservableObject {
         await stopStream()
         state = .starting
         let config = makeConfig(for: filter)
-        let newOutput = PreviewStreamOutput(displayLayer: displayLayer)
+        let newOutput = PreviewStreamOutput(displayLayer: displayLayer, onAudioLevel: makeLevelSink())
         let newStream = SCStream(filter: filter, configuration: config, delegate: nil)
         do {
             try newStream.addStreamOutput(newOutput, type: .screen, sampleHandlerQueue: sampleQueue)
+            try newStream.addStreamOutput(newOutput, type: .audio, sampleHandlerQueue: audioQueue)
+            if #available(macOS 15.0, *) {
+                try newStream.addStreamOutput(newOutput, type: .microphone, sampleHandlerQueue: audioQueue)
+            }
             try await newStream.startCapture()
             stream = newStream
             output = newOutput
             state = .live
         } catch {
             state = Self.mapStartError(error)
+        }
+    }
+
+    /// A `@Sendable` audio-level sink that hops each per-buffer dBFS reading back
+    /// to the main actor and publishes it as the system or mic meter level.
+    private func makeLevelSink() -> @Sendable (Float, Bool) -> Void {
+        { [weak self] db, isMic in
+            Task { @MainActor in
+                guard let self else { return }
+                if isMic { self.micDb = db } else { self.systemDb = db }
+            }
         }
     }
 
@@ -190,6 +221,15 @@ final class CapturePreviewController: NSObject, ObservableObject {
         config.queueDepth = 5
         config.showsCursor = true
         config.scalesToFit = true
+        // Capture audio so the meters reflect what's actually flowing. This is
+        // the app's own monitor stream; the sidecar records independently.
+        config.capturesAudio = true
+        config.excludesCurrentProcessAudio = true
+        config.sampleRate = 16_000
+        config.channelCount = 1
+        if #available(macOS 15.0, *) {
+            config.captureMicrophone = true
+        }
         if let rect = sourceRect {
             config.sourceRect = rect
         }
@@ -264,24 +304,38 @@ private final class CapturePickerObserver: NSObject, SCContentSharingPickerObser
     }
 }
 
-/// Receives preview frames on a background queue and enqueues complete ones into
-/// the display layer. `@unchecked Sendable`: the only shared state is the layer,
-/// touched solely from the single serial sample queue.
+/// Receives preview frames + audio on background queues: complete video frames
+/// go to the display layer, audio buffers are reduced to a per-buffer dBFS level
+/// and reported via `onAudioLevel`. `@unchecked Sendable`: the layer is touched
+/// only from the serial sample queue; `onAudioLevel` is itself `@Sendable`.
 private final class PreviewStreamOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     private let displayLayer: AVSampleBufferDisplayLayer
+    private let onAudioLevel: @Sendable (Float, Bool) -> Void
 
-    init(displayLayer: AVSampleBufferDisplayLayer) {
+    init(displayLayer: AVSampleBufferDisplayLayer, onAudioLevel: @escaping @Sendable (Float, Bool) -> Void) {
         self.displayLayer = displayLayer
+        self.onAudioLevel = onAudioLevel
         super.init()
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen,
-            CMSampleBufferDataIsReady(sampleBuffer),
-            Self.isCompleteFrame(sampleBuffer)
-        else { return }
-        if displayLayer.status == .failed { displayLayer.flush() }
-        displayLayer.enqueue(sampleBuffer)
+        guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
+        switch type {
+        case .screen:
+            guard Self.isCompleteFrame(sampleBuffer) else { return }
+            if displayLayer.status == .failed { displayLayer.flush() }
+            displayLayer.enqueue(sampleBuffer)
+        case .audio:
+            if let samples = Self.samples(from: sampleBuffer) {
+                onAudioLevel(rmsDbFS(samples), false)
+            }
+        case .microphone:
+            if let samples = Self.samples(from: sampleBuffer) {
+                onAudioLevel(rmsDbFS(samples), true)
+            }
+        default:
+            break
+        }
     }
 
     /// A `.screen` frame is renderable only when ScreenCaptureKit marks it
@@ -294,6 +348,24 @@ private final class PreviewStreamOutput: NSObject, SCStreamOutput, @unchecked Se
             let status = SCFrameStatus(rawValue: raw)
         else { return false }
         return status == .complete
+    }
+
+    /// Extract mono Float samples from a ScreenCaptureKit audio buffer (channel 0).
+    private static func samples(from sampleBuffer: CMSampleBuffer) -> [Float]? {
+        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
+            let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc),
+            let format = AVAudioFormat(streamDescription: asbd)
+        else { return nil }
+        let frames = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard frames > 0,
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))
+        else { return nil }
+        buffer.frameLength = AVAudioFrameCount(frames)
+        let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            sampleBuffer, at: 0, frameCount: Int32(frames), into: buffer.mutableAudioBufferList
+        )
+        guard status == noErr, let channel = buffer.floatChannelData else { return nil }
+        return Array(UnsafeBufferPointer(start: channel[0], count: Int(frames)))
     }
 }
 
