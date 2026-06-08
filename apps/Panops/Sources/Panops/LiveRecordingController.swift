@@ -30,7 +30,7 @@ final class LiveRecordingController: RecordingController, ObservableObject {
         self.ipcClient = ipcClient
     }
 
-    func start(meetingId: String) async throws {
+    func start(meetingId: String, options: RecordingOptions) async throws {
         guard !isRecording else { return }
         isRecording = true
         recordingId = nil
@@ -38,9 +38,9 @@ final class LiveRecordingController: RecordingController, ObservableObject {
         do {
             let accepted = try await ipcClient.recordingStart(
                 meetingId: meetingId,
-                audioSources: .systemAndMic,
-                screenshotIntervalMs: 500,
-                screenshotThreshold: 0.15
+                audioSources: options.audioSources,
+                screenshotIntervalMs: options.screenshotIntervalMs,
+                screenshotThreshold: options.screenshotThreshold
             )
             recordingId = accepted.recordingId
         } catch {

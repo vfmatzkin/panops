@@ -571,12 +571,20 @@ actor IpcClient {
     /// loop.
     func meetingStart() async throws -> String {
         // meeting.start takes a MeetingConfig param (optional title/language);
-        // it is NOT a no-param method. EmptyParams() encodes to {} (an
-        // all-default MeetingConfig), so the wire params decode cleanly —
-        // sending no params here yields jsonrpsee -32602 Invalid params.
+        // it is NOT a no-param method. An all-nil MeetingConfig encodes to {}
+        // (an all-default config), so the wire params decode cleanly — sending
+        // no params here yields jsonrpsee -32602 Invalid params.
+        try await meetingStart(config: MeetingConfig(title: nil, language: nil))
+    }
+
+    /// `ipc.meeting.start` with an explicit config (optional title + language).
+    /// Auto-creates a meeting row and returns the meeting_id (a bare JSON
+    /// string). `nil` config fields are omitted on the wire so the engine
+    /// applies its defaults (title="", language="auto").
+    func meetingStart(config: MeetingConfig) async throws -> String {
         let result: String = try await sendRequest(
             method: "ipc.meeting.start",
-            params: EmptyParams()
+            params: config
         )
         return result
     }
