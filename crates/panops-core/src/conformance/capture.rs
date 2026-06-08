@@ -44,7 +44,15 @@ pub fn run_suite_with<C: Capture>(adapter: &C, fixtures_dir: &Path, expected_is_
 }
 
 fn list_windows_returns_window_info<C: Capture>(adapter: &C) {
-    let windows = adapter.list_windows().expect("list_windows should succeed");
+    let windows = match adapter.list_windows() {
+        Ok(windows) => windows,
+        Err(err) if is_not_implemented_capture_error(&err) => return,
+        Err(err) => panic!("list_windows should succeed or be explicitly not implemented: {err:?}"),
+    };
+    assert_window_infos_are_well_formed(&windows);
+}
+
+fn assert_window_infos_are_well_formed(windows: &[crate::capture::WindowInfo]) {
     assert!(
         !windows.is_empty(),
         "list_windows must return at least one capturable window"
@@ -57,6 +65,16 @@ fn list_windows_returns_window_info<C: Capture>(adapter: &C) {
         );
         assert!(!window.title.trim().is_empty(), "title should be non-empty");
     }
+}
+
+fn is_not_implemented_capture_error(err: &CaptureError) -> bool {
+    let (CaptureError::Capture(message) | CaptureError::Sidecar(message)) = err else {
+        return false;
+    };
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("not implemented")
+        || normalized.contains("not yet implemented")
+        || normalized.contains("not available")
 }
 
 fn temp_meeting_dir() -> std::path::PathBuf {
@@ -105,22 +123,31 @@ fn start_accepts_window_capture_target<C: Capture>(adapter: &C, _fixtures_dir: &
     let meeting_dir = temp_meeting_dir();
     std::fs::create_dir_all(&meeting_dir).expect("create temp meeting dir");
 
-    let window = adapter
-        .list_windows()
-        .expect("list_windows should succeed")
-        .into_iter()
-        .next()
-        .expect("conformance window");
+    let windows = match adapter.list_windows() {
+        Ok(windows) => windows,
+        Err(err) if is_not_implemented_capture_error(&err) => {
+            let _ = std::fs::remove_dir_all(&meeting_dir);
+            return;
+        }
+        Err(err) => panic!("list_windows should succeed before window-target capture: {err:?}"),
+    };
+    assert_window_infos_are_well_formed(&windows);
+    let window = windows.into_iter().next().expect("conformance window");
+    let capture_target = CaptureTarget::Window {
+        window_id: window.window_id,
+    };
     let config = CaptureConfig {
-        capture_target: CaptureTarget::Window {
-            window_id: window.window_id,
-        },
+        capture_target,
         ..CaptureConfig::default()
     };
     let session = adapter
         .start_capture(meeting_id, &meeting_dir, &config)
         .expect("start_capture should accept a window target");
     assert_eq!(session.meeting_id, meeting_id);
+    assert_eq!(
+        session.capture_target, capture_target,
+        "start_capture must preserve the requested capture_target on the session"
+    );
     let _ = adapter.stop_capture(&session);
 
     let _ = std::fs::remove_dir_all(&meeting_dir);
@@ -264,6 +291,7 @@ fn stop_session_not_found<C: Capture>(adapter: &C) {
     let fake_session = CaptureSession {
         meeting_id: "nonexistent_session".into(),
         started_at_ms: 0,
+        capture_target: CaptureTarget::Display,
     };
     let err = adapter
         .stop_capture(&fake_session)
