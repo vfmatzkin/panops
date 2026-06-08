@@ -163,15 +163,16 @@ while !shutdownRequested, let line = readLine(strippingNewline: true) {
             }
         }
         do {
+            let target = CaptureTargetKind(wire: params.captureTarget) ?? .display
             let recorder = try Recorder(
                 plan: plan,
                 systemPath: params.systemAudioPath,
                 micPath: params.micAudioPath,
                 videoPath: videoPath,
-                target: CaptureTargetKind(wire: params.captureTarget) ?? .display,
+                target: target,
                 outputWidth: params.width,
                 outputHeight: params.height,
-                region: nil
+                region: target.regionRect
             )
             let screenshotter = try Screenshotter(
                 dir: params.screenshotsDir ?? FileManager.default.temporaryDirectory.path,

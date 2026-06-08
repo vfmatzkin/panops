@@ -63,5 +63,9 @@ struct CapturePlan {
             self.w = Int(w)
             self.h = Int(h)
         }
+
+        /// This rect as a `CGRect` in the source's native coordinate space —
+        /// the shape `SCStreamConfiguration.sourceRect` expects.
+        var cgRect: CGRect { CGRect(x: x, y: y, width: w, height: h) }
     }
 }
