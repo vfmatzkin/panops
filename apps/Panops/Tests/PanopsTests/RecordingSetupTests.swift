@@ -42,6 +42,49 @@ struct RecordingSetupTests {
         #expect(options.screenshotIntervalMs == 500)
         #expect(options.screenshotThreshold == 0.15)
     }
+
+    @Test("recordingOptions carries recordVideo flag")
+    func recordingOptionsRecordVideo() {
+        let setup = RecordingSetup(recordVideo: true)
+        #expect(setup.recordingOptions.recordVideo == true)
+
+        let setupFalse = RecordingSetup(recordVideo: false)
+        #expect(setupFalse.recordingOptions.recordVideo == false)
+    }
+
+    @Test("recordVideo defaults to false")
+    func recordVideoDefaults() {
+        let setup = RecordingSetup()
+        #expect(setup.recordVideo == false)
+        #expect(setup.recordingOptions.recordVideo == false)
+    }
+}
+
+@Suite("RecordingStartParams encoding")
+struct RecordingStartParamsEncodingTests {
+    private var encoder: JSONEncoder {
+        let e = JSONEncoder()
+        e.outputFormatting = [.sortedKeys]
+        return e
+    }
+
+    @Test("params encode with snake_case keys including record_video")
+    func encoding() throws {
+        let params = RecordingStartParams(
+            meetingId: "m1",
+            audioSources: .systemAndMic,
+            screenshotIntervalMs: 500,
+            screenshotThreshold: 0.25,
+            recordVideo: true
+        )
+        let data = try encoder.encode(params)
+        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"meeting_id\":\"m1\""))
+        #expect(json.contains("\"audio_sources\":\"system_and_mic\""))
+        #expect(json.contains("\"screenshot_interval_ms\":500"))
+        #expect(json.contains("\"screenshot_threshold\":0.25"))
+        #expect(json.contains("\"record_video\":true"))
+    }
 }
 
 @Suite("MeetingConfig encoding")

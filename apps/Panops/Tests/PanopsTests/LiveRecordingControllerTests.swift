@@ -94,6 +94,19 @@ struct LiveRecordingControllerTests {
         }
         #expect(controller.isRecording == true)
     }
+
+    @Test("start records recordVideo flag")
+    func startRecordsRecordVideo() async throws {
+        let fake = FakeLiveRecordingIpcClient()
+        let controller = LiveRecordingController(ipcClient: fake)
+
+        let options = RecordingOptions(recordVideo: true)
+        try await controller.start(meetingId: "meeting-1", options: options)
+
+        let (startCalls, lastRecordVideo) = await fake.startCallCountAndRecordVideo()
+        #expect(startCalls == 1)
+        #expect(lastRecordVideo == true)
+    }
 }
 
 private enum TestRecordingError: Error {
@@ -109,6 +122,7 @@ private actor FakeLiveRecordingIpcClient: LiveRecordingIpcClient {
     private let stopError: (any Error)?
     private let accepted: RecordingAccepted
     private let stopped: RecordingStopped
+    private var lastRecordVideo: Bool = false
 
     init(
         startDelayNanoseconds: UInt64 = 0,
@@ -134,9 +148,11 @@ private actor FakeLiveRecordingIpcClient: LiveRecordingIpcClient {
         meetingId: String,
         audioSources: AudioSourcesWire,
         screenshotIntervalMs: UInt64,
-        screenshotThreshold: Float
+        screenshotThreshold: Float,
+        recordVideo: Bool
     ) async throws -> RecordingAccepted {
         startCalls += 1
+        lastRecordVideo = recordVideo
         if startDelayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: startDelayNanoseconds)
         }
@@ -154,11 +170,19 @@ private actor FakeLiveRecordingIpcClient: LiveRecordingIpcClient {
         return stopped
     }
 
+    func meetingDeleteVideo(meetingId: String) async throws -> (deleted: Bool, freedBytes: UInt64) {
+        (deleted: true, freedBytes: 0)
+    }
+
     func startCallCount() -> Int {
         startCalls
     }
 
     func stopCallCount() -> Int {
         stopCalls
+    }
+
+    func startCallCountAndRecordVideo() -> (Int, Bool) {
+        (startCalls, lastRecordVideo)
     }
 }

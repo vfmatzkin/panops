@@ -244,6 +244,12 @@ final class AppViewModel: ObservableObject {
         await refreshMeetings()
     }
 
+    /// Delete a meeting's video file via `meeting.deleteVideo`; does not remove
+    /// the meeting row itself. Returns the deleted status and freed bytes.
+    func deleteVideoForMeeting(meetingId: String) async throws -> (deleted: Bool, freedBytes: UInt64) {
+        try await client.meetingDeleteVideo(meetingId: meetingId)
+    }
+
     /// Open a path (typically a meeting directory) in Finder, guarded to the
     /// panops data dir.
     func openInFinder(path: String) {

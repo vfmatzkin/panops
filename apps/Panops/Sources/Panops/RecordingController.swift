@@ -7,11 +7,13 @@ struct RecordingOptions: Equatable {
     var audioSources: AudioSourcesWire
     var screenshotIntervalMs: UInt64
     var screenshotThreshold: Float
+    var recordVideo: Bool
 
     static let `default` = RecordingOptions(
         audioSources: .systemAndMic,
         screenshotIntervalMs: 500,
-        screenshotThreshold: 0.15
+        screenshotThreshold: 0.15,
+        recordVideo: false
     )
 }
 
@@ -54,6 +56,7 @@ struct RecordingSetup: Equatable {
     /// this stays `true` and drives only the recording-screen indicator. See
     /// the screenshots follow-up note.
     var captureScreenshots: Bool = true
+    var recordVideo: Bool = false
 
     static let `default` = RecordingSetup()
 
@@ -73,7 +76,8 @@ struct RecordingSetup: Equatable {
         RecordingOptions(
             audioSources: audioSources,
             screenshotIntervalMs: RecordingOptions.default.screenshotIntervalMs,
-            screenshotThreshold: RecordingOptions.default.screenshotThreshold
+            screenshotThreshold: RecordingOptions.default.screenshotThreshold,
+            recordVideo: recordVideo
         )
     }
 }

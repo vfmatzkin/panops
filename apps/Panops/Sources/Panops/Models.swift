@@ -180,12 +180,14 @@ struct RecordingStartParams: Encodable {
     let audioSources: AudioSourcesWire
     let screenshotIntervalMs: UInt64
     let screenshotThreshold: Float
+    let recordVideo: Bool
 
     enum CodingKeys: String, CodingKey {
         case meetingId = "meeting_id"
         case audioSources = "audio_sources"
         case screenshotIntervalMs = "screenshot_interval_ms"
         case screenshotThreshold = "screenshot_threshold"
+        case recordVideo = "record_video"
     }
 }
 
@@ -219,6 +221,17 @@ struct RecordingStopped: Decodable {
         case micAudioPath = "mic_audio_path"
         case screenshotPaths = "screenshot_paths"
         case durationMs = "duration_ms"
+    }
+}
+
+/// Response from `ipc.meeting.deleteVideo`.
+struct MeetingDeleteVideoResult: Decodable {
+    let deleted: Bool
+    let freedBytes: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case deleted
+        case freedBytes = "freed_bytes"
     }
 }
 
@@ -338,6 +351,15 @@ struct MeetingStopParams: Encodable {
 /// Outgoing params for `ipc.meeting.delete`.
 struct MeetingDeleteParams: Encodable {
     let id: String
+}
+
+/// Outgoing params for `ipc.meeting.deleteVideo`.
+struct MeetingDeleteVideoParams: Encodable {
+    let meetingId: String
+
+    enum CodingKeys: String, CodingKey {
+        case meetingId = "meeting_id"
+    }
 }
 
 /// Response from `ipc.meeting.get`. Mirrors `panops-protocol::Meeting`.
