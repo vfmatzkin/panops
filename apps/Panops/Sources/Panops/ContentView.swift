@@ -30,6 +30,11 @@ final class AppViewModel: ObservableObject {
     /// The displayed meeting list — `allMeetings` narrowed by the current
     /// sidebar selection. The content list renders this.
     @Published var meetings: [MeetingSummary] = []
+    /// Monotonic token, bumped on every sidebar-selection change, used to drop
+    /// out-of-order filtered-fetch results: an in-flight `meeting.list` that
+    /// resolves after a newer selection started must not overwrite `meetings`.
+    /// Main-actor guarded (the view model is `@MainActor`), so not `@Published`.
+    private var loadGeneration: UInt64 = 0
     /// The full unfiltered meeting list (Phase B). Smart Views filter this
     /// client-side; space/project/tag selections refetch via the engine.
     @Published private(set) var allMeetings: [MeetingSummary] = []
@@ -490,22 +495,31 @@ final class AppViewModel: ObservableObject {
     /// Smart Views filter the loaded `allMeetings` client-side; space / project
     /// / tag selections refetch through the engine's `meeting.list` filters.
     func applySidebarSelection() async {
+        // Bump the generation for every selection (incl. the synchronous Smart
+        // View path) so any older in-flight filtered fetch is dropped when it
+        // resolves — prevents a stale fetch clobbering the current list.
+        loadGeneration &+= 1
+        let token = loadGeneration
         switch sidebarSelection {
         case .smart(let view):
             meetings = meetingsForSmartView(view)
         case .space(let id):
-            await loadFilteredMeetings(MeetingListParams(spaceId: id))
+            await loadFilteredMeetings(MeetingListParams(spaceId: id), token: token)
         case .project(let id):
-            await loadFilteredMeetings(MeetingListParams(projectId: id))
+            await loadFilteredMeetings(MeetingListParams(projectId: id), token: token)
         case .tag(let id):
-            await loadFilteredMeetings(MeetingListParams(tagId: id))
+            await loadFilteredMeetings(MeetingListParams(tagId: id), token: token)
         }
     }
 
-    private func loadFilteredMeetings(_ filter: MeetingListParams) async {
+    private func loadFilteredMeetings(_ filter: MeetingListParams, token: UInt64) async {
         do {
-            meetings = try await client.meetingList(filter: filter)
+            let result = try await client.meetingList(filter: filter)
+            // Drop the result if a newer selection superseded us mid-flight.
+            guard token == loadGeneration else { return }
+            meetings = result
         } catch {
+            guard token == loadGeneration else { return }
             Self.logFullError("meeting.list.filter", error)
             meetings = []
         }

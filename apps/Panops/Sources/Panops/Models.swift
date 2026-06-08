@@ -738,25 +738,24 @@ struct MeetingAssignParams: Encodable {
 }
 
 /// Optional filters for `ipc.meeting.list`. Mirrors
-/// `panops-protocol::MeetingListParams`. `nil` filter fields are omitted on
-/// the wire; `unsorted` is always sent (engine default is `false`).
+/// `panops-protocol::MeetingListParams`. Unset filter fields are omitted on
+/// the wire (synthesized `encodeIfPresent`), which the engine treats as "no
+/// filter". Inbox is filtered client-side via `space_id == nil`, so there's no
+/// server-side `unsorted` flag.
 struct MeetingListParams: Encodable {
     let spaceId: String?
     let projectId: String?
     let tagId: String?
-    let unsorted: Bool
 
-    init(spaceId: String? = nil, projectId: String? = nil, tagId: String? = nil, unsorted: Bool = false) {
+    init(spaceId: String? = nil, projectId: String? = nil, tagId: String? = nil) {
         self.spaceId = spaceId
         self.projectId = projectId
         self.tagId = tagId
-        self.unsorted = unsorted
     }
 
     enum CodingKeys: String, CodingKey {
         case spaceId = "space_id"
         case projectId = "project_id"
         case tagId = "tag_id"
-        case unsorted
     }
 }

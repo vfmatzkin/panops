@@ -517,12 +517,11 @@ struct IpcClientCodecTests {
 
     // MARK: - Organization (Phase B) encode
 
-    @Test("MeetingListParams encodes only the set filter plus unsorted")
+    @Test("MeetingListParams encodes only the set filter, omitting unset ones")
     func meetingListParams_encodesFilter() throws {
         let data = try encoder.encode(MeetingListParams(spaceId: "s1"))
         let json = String(data: data, encoding: .utf8)!
         #expect(json.contains("\"space_id\":\"s1\""), "space_id missing: \(json)")
-        #expect(json.contains("\"unsorted\":false"), "unsorted missing: \(json)")
         // Unset optional filters must be omitted, not sent as null.
         #expect(!json.contains("project_id"), "project_id should be omitted: \(json)")
         #expect(!json.contains("tag_id"), "tag_id should be omitted: \(json)")
