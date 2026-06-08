@@ -69,6 +69,9 @@ struct CaptureSourcePane: View {
             CapturePreviewView(layer: controller.displayLayer)
                 .opacity(controller.state == .live ? 1 : 0)
             CapturePreviewOverlay(state: controller.state, onRetry: { controller.retry() })
+            if controller.state == .live, controller.isDisplayTarget {
+                CropOverlay(controller: controller)
+            }
         }
         .frame(height: 200)
         .clipShape(RoundedRectangle(cornerRadius: 8))

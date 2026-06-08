@@ -39,6 +39,10 @@ final class CapturePreviewController: NSObject, ObservableObject {
     @Published private(set) var nativePixelHeight: Int = 0
     /// True only for whole-display targets — drag-crop applies to those alone.
     @Published private(set) var isDisplayTarget = false
+    /// Source size in display points — the space a drag-crop rectangle maps onto.
+    @Published private(set) var sourceContentSize: CGSize = .zero
+    /// Whether a crop region is currently applied to a display target.
+    @Published private(set) var isCropped = false
 
     private let sampleQueue = DispatchQueue(label: "ar.tzk.panops.preview.samples")
     private lazy var observer = CapturePickerObserver(controller: self)
@@ -47,6 +51,8 @@ final class CapturePreviewController: NSObject, ObservableObject {
     private var currentFilter: SCContentFilter?
     /// Sub-rectangle to preview, in display points; set by the drag-crop overlay.
     private var sourceRect: CGRect?
+    /// Display id of the current display target, for building a `region` target.
+    private var currentDisplayID: UInt32 = 0
 
     override init() {
         super.init()
@@ -89,12 +95,49 @@ final class CapturePreviewController: NSObject, ObservableObject {
         currentFilter = filter
         let dto = Self.captureTarget(from: filter)
         target = dto
-        if case .display = dto { isDisplayTarget = true } else { isDisplayTarget = false }
+        if case let .display(displayID) = dto {
+            isDisplayTarget = true
+            currentDisplayID = displayID
+        } else {
+            isDisplayTarget = false
+        }
         // Native pixel height straight off the filter — avoids `SCShareableContent`
         // and the global screen-recording prompt it triggers.
         nativePixelHeight = Int((filter.contentRect.height * CGFloat(filter.pointPixelScale)).rounded())
+        sourceContentSize = filter.contentRect.size
+        // A fresh source clears any prior crop.
         sourceRect = nil
+        isCropped = false
         Task { await restartPreview(with: filter) }
+    }
+
+    // MARK: - Drag-crop region (display targets only)
+
+    /// Apply a drag-crop rectangle (display points) to a display target: switch
+    /// the target to a `region` and live-reframe the preview to it.
+    func applyCrop(_ rect: CaptureRect) {
+        guard isDisplayTarget else { return }
+        sourceRect = CGRect(x: Int(rect.x), y: Int(rect.y), width: Int(rect.w), height: Int(rect.h))
+        target = .region(displayID: currentDisplayID, x: rect.x, y: rect.y, w: rect.w, h: rect.h)
+        isCropped = true
+        Task { await updateStreamConfig() }
+    }
+
+    /// Drop the crop and reframe the preview back to the full display.
+    func clearCrop() {
+        sourceRect = nil
+        isCropped = false
+        target = .display(displayID: currentDisplayID)
+        Task { await updateStreamConfig() }
+    }
+
+    private func updateStreamConfig() async {
+        guard let filter = currentFilter, let stream else { return }
+        do {
+            try await stream.updateConfiguration(makeConfig(for: filter))
+        } catch {
+            state = Self.mapStartError(error)
+        }
     }
 
     fileprivate func didCancelPick() {
