@@ -31,8 +31,13 @@ cp target/release/panops-engine "$RES/panops-engine"
 # bundle has no such path, so copy them next to the engine — its rpath is
 # @executable_path (= Resources/). Missing → the engine dies on launch with
 # "dyld: Library not loaded: @rpath/libonnxruntime…" and nothing records.
-cp target/release/libonnxruntime.*.dylib "$RES/"
-cp target/release/libsherpa-onnx-c-api.dylib "$RES/"
+# Derive the exact filenames from the binary (not a glob) so a version bump or a
+# stale copy left in target/release can't bundle the wrong dylib. The engine's
+# direct @rpath deps also cover the transitive chain (sherpa-onnx-c-api links
+# only onnxruntime, already listed); the launch smoke test below is the backstop.
+for dylib in $(otool -L target/release/panops-engine | awk '/@rpath\/.*\.dylib/ {sub(/@rpath\//,"",$1); print $1}'); do
+  cp "target/release/$dylib" "$RES/$dylib"
+done
 cp apps/Panops/.build/release/Panops "$MACOS/Panops"
 cp apps/panops-asr-mac/.build/release/panops-asr-mac "$RES/panops-asr-mac"
 cp apps/panops-llm-mac/.build/release/panops-llm-mac "$RES/panops-llm-mac"

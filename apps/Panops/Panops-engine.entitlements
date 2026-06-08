@@ -7,6 +7,12 @@
   from the loading process (ad-hoc signatures carry no Team ID), so the engine
   needs disable-library-validation or it crashes on launch with a dyld
   "different Team IDs" error.
+
+  Trade-off: this lets the engine load any dylib found in its rpath, not just the
+  bundled copies. Acceptable here — the .app is code-signed, so tampering with
+  Resources/ breaks the signature (Gatekeeper blocks the app), and without an
+  Apple Developer ID we can't instead sign the dylibs with the app's Team ID.
+  Revisit if a Developer ID signing channel lands.
 -->
 <plist version="1.0"><dict>
   <key>com.apple.security.cs.disable-library-validation</key><true/>
