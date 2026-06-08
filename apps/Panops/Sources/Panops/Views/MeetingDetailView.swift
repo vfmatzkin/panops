@@ -28,6 +28,10 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
     /// Cached video file URL, if present
     @State private var videoFileURL: URL?
 
+    /// Guards against a rapid double-tap spawning two concurrent delete tasks
+    /// (two confirm alerts, racy state).
+    @State private var isDeletingVideo = false
+
     enum DetailTab: String, CaseIterable, Identifiable {
         case notes = "Notes"
         case transcript = "Transcript"
@@ -339,6 +343,7 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
                     Label("Delete video", systemImage: "xmark.circle")
                         .foregroundStyle(.red)
                 }
+                .disabled(isDeletingVideo)
                 .help("Delete video to reclaim space")
                 .foregroundStyle(.red)
             }
@@ -517,7 +522,13 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
 
     @MainActor
     private func deleteVideo() async {
+        // A rapid double-tap can enqueue two delete tasks before the button's
+        // .disabled(isDeletingVideo) takes effect; bail on the second one.
+        guard !isDeletingVideo else { return }
         guard let url = videoFileURL else { return }
+
+        isDeletingVideo = true
+        defer { isDeletingVideo = false }
 
         let alert = NSAlert()
         alert.messageText = "Delete video file?"
