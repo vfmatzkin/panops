@@ -297,6 +297,11 @@ pub struct RecordingStartParams {
     /// the video-recording toggle landed.
     #[serde(default)]
     pub record_video: bool,
+    /// Whether to enqueue the notes pipeline automatically after a successful
+    /// `recording.stop`. Defaults false so old clients keep record-only
+    /// behavior unless they opt in.
+    #[serde(default)]
+    pub auto_generate_notes: bool,
     #[serde(default = "default_screenshot_interval")]
     pub screenshot_interval_ms: u64,
     #[serde(default = "default_screenshot_threshold")]
@@ -331,6 +336,7 @@ impl From<&RecordingStartParams> for panops_core::capture::CaptureConfig {
         Self {
             audio_sources: value.audio_sources.into(),
             record_video: value.record_video,
+            auto_generate_notes: value.auto_generate_notes,
             screenshot_interval_ms: value.screenshot_interval_ms,
             screenshot_threshold: value.screenshot_threshold,
         }
@@ -634,11 +640,16 @@ mod tests {
             meeting_id: "m1".into(),
             audio_sources: AudioSourcesWire::SystemAndMic,
             record_video: true,
+            auto_generate_notes: true,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
         };
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains(r#""record_video":true"#), "got: {json}");
+        assert!(
+            json.contains(r#""auto_generate_notes":true"#),
+            "got: {json}"
+        );
         let back: RecordingStartParams = serde_json::from_str(&json).unwrap();
         assert_eq!(back, p);
     }
@@ -650,6 +661,7 @@ mod tests {
         assert_eq!(p.meeting_id, "m1");
         assert_eq!(p.audio_sources, AudioSourcesWire::SystemAndMic); // default
         assert!(!p.record_video); // default/back-compat
+        assert!(!p.auto_generate_notes); // default/back-compat
         assert_eq!(p.screenshot_interval_ms, 500); // default
         assert_eq!(p.screenshot_threshold, 0.15); // default
     }
@@ -661,6 +673,7 @@ mod tests {
             meeting_id: "m1".into(),
             audio_sources: AudioSourcesWire::MicOnly,
             record_video: true,
+            auto_generate_notes: true,
             screenshot_interval_ms: 250,
             screenshot_threshold: 0.2,
         };
@@ -670,6 +683,7 @@ mod tests {
             panops_core::capture::AudioSources::MicOnly
         );
         assert!(cfg.record_video);
+        assert!(cfg.auto_generate_notes);
         assert_eq!(cfg.screenshot_interval_ms, 250);
         assert_eq!(cfg.screenshot_threshold, 0.2);
 
