@@ -30,6 +30,10 @@ struct NewRecordingSheet: View {
             footer
         }
         .frame(width: 460)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // The user may have just granted Screen Recording in System Settings.
+            preview.retryIfPermissionDenied()
+        }
     }
 
     private var settingsForm: some View {

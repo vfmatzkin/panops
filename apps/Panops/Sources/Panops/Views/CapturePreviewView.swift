@@ -68,7 +68,11 @@ struct CaptureSourcePane: View {
             RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.9))
             CapturePreviewView(layer: controller.displayLayer)
                 .opacity(controller.state == .live ? 1 : 0)
-            CapturePreviewOverlay(state: controller.state, onRetry: { controller.retry() })
+            CapturePreviewOverlay(
+                state: controller.state,
+                onRetry: { controller.retry() },
+                onOpenSettings: { controller.openScreenRecordingSettings() }
+            )
             if controller.state == .live, controller.isDisplayTarget {
                 CropOverlay(controller: controller)
             }
@@ -100,6 +104,7 @@ struct CaptureSourcePane: View {
 struct CapturePreviewOverlay: View {
     let state: CapturePreviewState
     let onRetry: () -> Void
+    let onOpenSettings: () -> Void
 
     var body: some View {
         switch state {
@@ -120,12 +125,17 @@ struct CapturePreviewOverlay: View {
     }
 
     private var permissionCTA: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             message(
                 icon: "lock.shield",
-                text: "Panops needs Screen Recording to preview and record.\nGrant it in System Settings, then retry."
+                text: "Panops needs Screen Recording to preview and record.\nGrant it in System Settings, then Retry."
             )
-            Button("Retry", action: onRetry).controlSize(.small)
+            HStack(spacing: 8) {
+                Button("Open System Settings", action: onOpenSettings)
+                    .buttonStyle(.borderedProminent)
+                Button("Retry", action: onRetry)
+            }
+            .controlSize(.small)
         }
     }
 
