@@ -5,7 +5,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 # Preflight: the ASR (WhisperKit/CoreML) + LLM (FoundationModels) sidecars need
 # FULL Xcode, not just the Command Line Tools.
-if [[ "$(xcode-select -p 2>/dev/null)" == *CommandLineTools* ]]; then
+if [[ "$(xcode-select -p 2>/dev/null)" == "/Library/Developer/CommandLineTools" ]]; then
   echo "error: full Xcode required (xcode-select points at CommandLineTools)." >&2
   echo "  Install Xcode, then: sudo xcode-select -s /Applications/Xcode.app" >&2
   exit 1
