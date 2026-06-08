@@ -47,18 +47,15 @@ struct MeetingListView: View {
                         Section(section.title) {
                             ForEach(section.meetings, id: \.id) { meeting in
                                 let status = vm.status(for: meeting)
-                                MeetingRow(meeting: meeting, status: status)
-                                    .tag(meeting.id)
-                                    .contextMenu {
-                                        Button(role: .destructive) {
-                                            Task { await vm.deleteMeeting(id: meeting.id) }
-                                        } label: {
-                                            Label("Delete", systemImage: "trash")
-                                        }
-                                        // Don't delete a meeting whose capture or
-                                        // notes work is still in flight.
-                                        .disabled(!status.isDeletable)
-                                    }
+                                MeetingRow(
+                                    meeting: meeting,
+                                    status: status,
+                                    tagNames: meeting.tags.map { vm.tagName($0) }
+                                )
+                                .tag(meeting.id)
+                                .contextMenu {
+                                    MeetingContextMenu(vm: vm, meeting: meeting, status: status)
+                                }
                             }
                         }
                     }
@@ -143,10 +140,12 @@ struct MeetingListView: View {
     }
 }
 
-/// A rich sidebar row: title + status pill, then time · duration · language.
+/// A rich sidebar row: title + status pill, then time · duration · language,
+/// then tag chips (Phase B) when the meeting carries any.
 struct MeetingRow: View {
     let meeting: MeetingSummary
     let status: MeetingStatus
+    var tagNames: [String] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -170,8 +169,32 @@ struct MeetingRow: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+            if !tagNames.isEmpty {
+                tagChips
+            }
         }
         .padding(.vertical, 2)
+    }
+
+    private var tagChips: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "tag")
+                .imageScale(.small)
+                .foregroundStyle(.secondary)
+            ForEach(Array(tagNames.prefix(4)), id: \.self) { name in
+                Text(name)
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Color.accentColor.opacity(0.15))
+                    .clipShape(Capsule())
+            }
+            if tagNames.count > 4 {
+                Text("+\(tagNames.count - 4)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var metaLine: String {
