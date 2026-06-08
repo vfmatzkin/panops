@@ -348,19 +348,7 @@ impl Capture for ScreenCaptureKitCapture {
         meeting_dir: &Path,
         config: &CaptureConfig,
     ) -> Result<CaptureSession, CaptureError> {
-        let (system_audio_path, mic_audio_path) = track_paths(meeting_dir, config.audio_sources);
-        let params = serde_json::json!({
-            "meeting_id": meeting_id,
-            "system_audio_path": system_audio_path,
-            "mic_audio_path": mic_audio_path,
-            "screenshots_dir": meeting_dir.join("screenshots").display().to_string(),
-            "audio_sources": audio_sources_str(config.audio_sources),
-            "record_video": config.record_video,
-            "video_path": meeting_dir.join("recording.mov").display().to_string(),
-            "screenshot_interval_ms": config.screenshot_interval_ms,
-            "screenshot_threshold": config.screenshot_threshold,
-            "capture_target": capture_target_json(&config.capture_target),
-        });
+        let params = capture_start_params(meeting_id, meeting_dir, config);
         let started: StartedResult = self.call("capture.start", params)?;
         // Insert into the sessions map AFTER successful sidecar call.
         // If the lock is poisoned after a successful start, make a best-effort
@@ -450,6 +438,39 @@ fn audio_sources_str(sources: AudioSources) -> &'static str {
     }
 }
 
+/// Build the `capture.start` params JSON from the meeting + config. Pure so the
+/// wire shape — including the optional `width`/`height` resolution preset — is
+/// unit-testable without spawning the sidecar. `width`/`height` are omitted when
+/// `None` so the sidecar keeps native capture dimensions.
+fn capture_start_params(
+    meeting_id: &str,
+    meeting_dir: &Path,
+    config: &CaptureConfig,
+) -> serde_json::Value {
+    let (system_audio_path, mic_audio_path) = track_paths(meeting_dir, config.audio_sources);
+    let mut params = serde_json::json!({
+        "meeting_id": meeting_id,
+        "system_audio_path": system_audio_path,
+        "mic_audio_path": mic_audio_path,
+        "screenshots_dir": meeting_dir.join("screenshots").display().to_string(),
+        "audio_sources": audio_sources_str(config.audio_sources),
+        "record_video": config.record_video,
+        "video_path": meeting_dir.join("recording.mov").display().to_string(),
+        "screenshot_interval_ms": config.screenshot_interval_ms,
+        "screenshot_threshold": config.screenshot_threshold,
+        "capture_target": capture_target_json(&config.capture_target),
+    });
+    // Forward the resolution preset so the sidecar applies it; omit when unset
+    // so it falls back to native dimensions (Codecs.swift decodes both keys).
+    if let Some(w) = config.width {
+        params["width"] = serde_json::json!(w);
+    }
+    if let Some(h) = config.height {
+        params["height"] = serde_json::json!(h);
+    }
+    params
+}
+
 /// Map `CaptureTarget` to the sidecar control-protocol shape.
 fn capture_target_json(target: &CaptureTarget) -> serde_json::Value {
     match target {
@@ -526,6 +547,28 @@ mod tests {
             audio_sources_str(AudioSources::SystemAndMic),
             "system_and_mic"
         );
+    }
+
+    #[test]
+    fn start_params_includes_resolution_when_set() {
+        let dir = Path::new("/tmp/meeting");
+        let config = CaptureConfig {
+            width: Some(1280),
+            height: Some(720),
+            ..CaptureConfig::default()
+        };
+        let params = capture_start_params("m1", dir, &config);
+        assert_eq!(params["width"], serde_json::json!(1280));
+        assert_eq!(params["height"], serde_json::json!(720));
+    }
+
+    #[test]
+    fn start_params_omits_resolution_when_none() {
+        let dir = Path::new("/tmp/meeting");
+        let config = CaptureConfig::default(); // width/height default to None
+        let params = capture_start_params("m1", dir, &config);
+        assert!(params.get("width").is_none());
+        assert!(params.get("height").is_none());
     }
 
     #[test]
