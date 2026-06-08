@@ -39,6 +39,12 @@ final class Screenshotter: NSObject, SCStreamOutput, @unchecked Sendable {
     let threshold: Float
     let queue = DispatchQueue(label: "ar.tzk.panops.capture.screen")
 
+    /// Optional tap fed every raw `.screen` `CMSampleBuffer` this screenshotter
+    /// receives, BEFORE the dedup/interval gate — lets the video recorder reuse
+    /// the SAME frames without a second SCStream output. Set once before
+    /// capture starts; read only on `queue`.
+    var videoTap: ((CMSampleBuffer) -> Void)?
+
     private let dir: URL
     private let lock = NSLock()
     private let ciContext = CIContext()
@@ -79,6 +85,10 @@ final class Screenshotter: NSObject, SCStreamOutput, @unchecked Sendable {
     ) {
         guard type == .screen, CMSampleBufferDataIsReady(sampleBuffer) else { return }
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        // Forward to the video recorder (if any) BEFORE the interval/dedup gate
+        // so it receives every frame; screenshot cadence below is independent.
+        videoTap?(sampleBuffer)
 
         lock.lock()
         defer { lock.unlock() }

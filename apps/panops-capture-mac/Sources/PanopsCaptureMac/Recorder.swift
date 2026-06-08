@@ -52,17 +52,20 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
     )!
 
     private let plan: TrackPlan
+    private let videoPath: String?
     private let lock = NSLock()
     private var stream: SCStream?
     private var systemWriter: WavWriter?
     private var micWriter: WavWriter?
     private var systemConverter: AVAudioConverter?
     private var micConverter: AVAudioConverter?
+    private var videoWriter: VideoWriter?
     private let sampleQueue = DispatchQueue(label: "ar.tzk.panops.capture.audio")
     private(set) var startedAtMs: UInt64 = 0
 
-    init(plan: TrackPlan, systemPath: String?, micPath: String?) throws {
+    init(plan: TrackPlan, systemPath: String?, micPath: String?, videoPath: String?) throws {
         self.plan = plan
+        self.videoPath = videoPath
         super.init()
 
         guard !plan.wantsSystem || systemPath != nil else {
@@ -119,8 +122,29 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         config.height = display.height
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.queueDepth = 5
-        if let s = screenshotter {
+        // Frame cadence: a video recording needs a smooth rate, but the
+        // screenshotter alone wants only its (coarse) interval. The
+        // screenshotter keeps its own internal interval gate either way, so
+        // raising the rate for video does not change screenshot cadence.
+        if videoPath != nil {
+            config.minimumFrameInterval = VideoWriter.frameInterval
+        } else if let s = screenshotter {
             config.minimumFrameInterval = CMTime(value: Int64(s.intervalMs), timescale: 1000)
+        }
+
+        // Build the video writer up front (when requested) so a setup failure is
+        // visible before the stream starts. Once running, writer errors are
+        // best-effort: audio + screenshots continue regardless (see VideoWriter).
+        var writer: VideoWriter?
+        if let path = videoPath {
+            do {
+                writer = try VideoWriter(
+                    url: URL(fileURLWithPath: path), width: display.width, height: display.height
+                )
+            } catch {
+                FileHandle.standardError.write(
+                    Data("video writer init failed; recording disabled: \(error)\n".utf8))
+            }
         }
 
         let stream = SCStream(filter: filter, configuration: config, delegate: nil)
@@ -131,6 +155,14 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
             try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: sampleQueue)
         }
         if let s = screenshotter {
+            // Tap the EXISTING `.screen` callback: the screenshotter forwards
+            // each complete frame to the video writer. No second stream/output.
+            if let w = writer {
+                s.videoTap = { [weak w] sample in
+                    guard VideoWriter.isCompleteFrame(sample) else { return }
+                    w?.appendVideo(sample)
+                }
+            }
             try stream.addStreamOutput(s, type: .screen, sampleHandlerQueue: s.queue)
         }
         do {
@@ -145,6 +177,7 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         lock.withLock {
             self.stream = stream
             self.startedAtMs = now
+            self.videoWriter = writer
         }
         screenshotter?.markStarted(atMs: now)
     }
@@ -154,6 +187,11 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
     func stop() async throws -> (system: String?, mic: String?, durationMs: UInt64) {
         let stream = lock.withLock { self.stream }
         try await stream?.stopCapture()
+
+        // Finalize the recording after the stream is fully stopped (no more
+        // sample callbacks). Best-effort: the WAV finalize below runs regardless.
+        let writer = lock.withLock { self.videoWriter }
+        await writer?.finish()
 
         return try lock.withLock {
             try systemWriter?.finalize()
@@ -172,9 +210,18 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         of type: SCStreamOutputType
     ) {
         guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
+        // Snapshot the writer under lock (set once before frames flow), then
+        // forward ONE source's raw buffers to it: prefer system audio (the
+        // remote participants); fall back to mic when system isn't captured.
+        // A single audio track keeps the recording universally playable.
+        let writer = lock.withLock { self.videoWriter }
         switch type {
-        case .audio: appendAudio(sampleBuffer, system: true)
-        case .microphone: appendAudio(sampleBuffer, system: false)
+        case .audio:
+            if plan.wantsSystem { writer?.appendAudio(sampleBuffer) }
+            appendAudio(sampleBuffer, system: true)
+        case .microphone:
+            if !plan.wantsSystem { writer?.appendAudio(sampleBuffer) }
+            appendAudio(sampleBuffer, system: false)
         default: break   // `.screen` is handled by the Screenshotter output
         }
     }
