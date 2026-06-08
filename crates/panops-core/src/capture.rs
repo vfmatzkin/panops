@@ -25,13 +25,28 @@ pub enum AudioSources {
 }
 
 /// Screen target to capture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureTarget {
-    /// Capture the full display.
-    #[default]
-    Display,
-    /// Capture a specific window by ScreenCaptureKit window id.
+    /// A whole display. `display_id` 0 = primary.
+    Display { display_id: u32 },
+    /// A specific window by ScreenCaptureKit window id.
     Window { window_id: u32 },
+    /// All windows of an app, by bundle id.
+    App { bundle_id: String },
+    /// A sub-rectangle of a display (origin + size, in display points).
+    Region {
+        display_id: u32,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+    },
+}
+
+impl Default for CaptureTarget {
+    fn default() -> Self {
+        CaptureTarget::Display { display_id: 0 }
+    }
 }
 
 /// Window metadata returned by [`Capture::list_windows`].
@@ -55,6 +70,10 @@ pub struct CaptureConfig {
     pub screenshot_threshold: f32,
     /// Screen target to capture. Defaults to full-display capture.
     pub capture_target: CaptureTarget,
+    /// Output width in pixels. `None` = native (no downscale).
+    pub width: Option<u32>,
+    /// Output height in pixels. `None` = native. Set both or neither.
+    pub height: Option<u32>,
 }
 
 impl Default for CaptureConfig {
@@ -64,7 +83,9 @@ impl Default for CaptureConfig {
             record_video: false,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
-            capture_target: CaptureTarget::Display,
+            capture_target: CaptureTarget::Display { display_id: 0 },
+            width: None,
+            height: None,
         }
     }
 }
@@ -157,12 +178,47 @@ mod tests {
         assert!(!cfg.record_video);
         assert_eq!(cfg.screenshot_interval_ms, 500);
         assert!(cfg.screenshot_threshold > 0.0 && cfg.screenshot_threshold < 1.0);
-        assert_eq!(cfg.capture_target, CaptureTarget::Display);
+        assert_eq!(cfg.capture_target, CaptureTarget::Display { display_id: 0 });
     }
 
     #[test]
     fn capture_target_default_is_display() {
-        assert_eq!(CaptureTarget::default(), CaptureTarget::Display);
+        assert_eq!(
+            CaptureTarget::default(),
+            CaptureTarget::Display { display_id: 0 }
+        );
+    }
+
+    #[test]
+    fn capture_target_variants_construct() {
+        let _ = CaptureTarget::Display { display_id: 0 };
+        let _ = CaptureTarget::Window { window_id: 9 };
+        let _ = CaptureTarget::App {
+            bundle_id: "com.apple.Safari".into(),
+        };
+        let _ = CaptureTarget::Region {
+            display_id: 0,
+            x: 10,
+            y: 20,
+            w: 640,
+            h: 480,
+        };
+    }
+
+    #[test]
+    fn capture_target_default_is_primary_display() {
+        assert_eq!(
+            CaptureTarget::default(),
+            CaptureTarget::Display { display_id: 0 }
+        );
+    }
+
+    #[test]
+    fn capture_config_default_has_no_explicit_resolution() {
+        let cfg = CaptureConfig::default();
+        assert_eq!(cfg.width, None);
+        assert_eq!(cfg.height, None);
+        assert_eq!(cfg.capture_target, CaptureTarget::Display { display_id: 0 });
     }
 
     #[test]
@@ -177,11 +233,11 @@ mod tests {
         let s = CaptureSession {
             meeting_id: "abc123".into(),
             started_at_ms: 1_700_000_000_000,
-            capture_target: CaptureTarget::Display,
+            capture_target: CaptureTarget::Display { display_id: 0 },
         };
         assert_eq!(s.meeting_id, "abc123");
         assert_eq!(s.started_at_ms, 1_700_000_000_000);
-        assert_eq!(s.capture_target, CaptureTarget::Display);
+        assert_eq!(s.capture_target, CaptureTarget::Display { display_id: 0 });
     }
 
     #[test]

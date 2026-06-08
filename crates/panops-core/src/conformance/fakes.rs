@@ -1160,14 +1160,14 @@ impl Capture for FakeCapture {
                 started_at_ms,
                 audio_sources: config.audio_sources,
                 record_video: config.record_video,
-                capture_target: config.capture_target,
+                capture_target: config.capture_target.clone(),
             },
         );
 
         Ok(CaptureSession {
             meeting_id: meeting_id.to_string(),
             started_at_ms,
-            capture_target: config.capture_target,
+            capture_target: config.capture_target.clone(),
         })
     }
 
