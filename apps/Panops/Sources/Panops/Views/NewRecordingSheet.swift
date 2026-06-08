@@ -1,13 +1,53 @@
 import SwiftUI
 
-/// Example windows for preview mode when IpcClient isn't available.
-private struct IpcClientMock {
-    static func captureWindows() async throws -> [WindowInfo] {
-        return [
-            WindowInfo(windowId: 1, appName: "Safari", title: "panops - Example Window"),
-            WindowInfo(windowId: 2, appName: "Xcode", title: "PanopsApp.swift"),
-            WindowInfo(windowId: 3, appName: "Terminal", title: "zsh")
-        ]
+/// Radio choice for the capture-target picker. File-scope (not nested) so the
+/// pure `CaptureTargetResolver` and its tests can reference it.
+enum CaptureTargetChoice: String, CaseIterable, Identifiable {
+    case display = "Full display"
+    case window = "Window…"
+
+    var id: String { rawValue }
+}
+
+/// Pure mapping from the sheet's capture-target UI state to the `CaptureTarget`
+/// submitted to `recording.start`. Extracted from the View so the
+/// window-selection guard is unit-testable without driving SwiftUI.
+enum CaptureTargetResolver {
+    /// Sentinel target used while "Window…" is chosen but no real window is
+    /// selected yet. The Start guard treats it as not-submittable so window_id 0
+    /// never reaches the engine.
+    static let unselectedWindow: CaptureTarget = .window(windowId: 0)
+
+    /// Resolve the capture target from the radio choice, the selected window id,
+    /// and the currently-available window list:
+    /// - `.display` choice → `.display`.
+    /// - `.window` with a real selected id present in the list → `.window(id)`.
+    /// - `.window` with no windows available → `.display` (fall back).
+    /// - `.window` with windows available but none chosen → `unselectedWindow`.
+    static func resolve(
+        choice: CaptureTargetChoice,
+        selectedWindowId: UInt32?,
+        windowList: [WindowInfo]
+    ) -> CaptureTarget {
+        switch choice {
+        case .display:
+            return .display
+        case .window:
+            if let id = selectedWindowId,
+               id != 0,
+               windowList.contains(where: { $0.windowId == id }) {
+                return .window(windowId: id)
+            }
+            if windowList.isEmpty {
+                return .display
+            }
+            return unselectedWindow
+        }
+    }
+
+    /// A target is submittable unless it's the awaiting-a-pick sentinel.
+    static func canStart(target: CaptureTarget) -> Bool {
+        target != unselectedWindow
     }
 }
 
@@ -21,21 +61,34 @@ struct NewRecordingSheet: View {
 
     let onStart: (RecordingSetup) -> Void
     let onCancel: () -> Void
+    /// Window-list provider. Production injects the real engine IPC
+    /// (`IpcClient.captureWindows()` via the view model); tests/previews inject a
+    /// fake list so they never touch a socket. `@MainActor` so it can safely
+    /// reach the main-actor view model.
+    let fetchWindows: @MainActor () async throws -> [WindowInfo]
+
+    init(
+        onStart: @escaping (RecordingSetup) -> Void,
+        onCancel: @escaping () -> Void,
+        fetchWindows: @escaping @MainActor () async throws -> [WindowInfo]
+    ) {
+        self.onStart = onStart
+        self.onCancel = onCancel
+        self.fetchWindows = fetchWindows
+    }
 
     @State private var setup = RecordingSetup.default
     @State private var windowList: [WindowInfo] = []
     @State private var isFetchingWindows = false
     @State private var windowsError: Error?
     @State private var selectedWindowId: UInt32?
-
-    private enum CaptureTargetChoice: String, CaseIterable, Identifiable {
-        case display = "Full display"
-        case window = "Window…"
-
-        var id: String { rawValue }
-    }
-
     @State private var selectedChoice: CaptureTargetChoice = .display
+
+    /// Start is blocked only when the chosen target is the awaiting-a-pick
+    /// sentinel; the display and a real window both submit.
+    private var canStart: Bool {
+        CaptureTargetResolver.canStart(target: setup.captureTarget)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -89,77 +142,12 @@ struct NewRecordingSheet: View {
                 }
                 .pickerStyle(.radioGroup)
                 .onChange(of: selectedChoice) { _, newValue in
-                    switch newValue {
-                    case .display:
-                        setup.captureTarget = .display
-                        selectedWindowId = nil
-                    case .window:
-                        setup.captureTarget = .window(windowId: 0)  // Placeholder, will be set from list
-                    }
+                    if newValue == .display { selectedWindowId = nil }
+                    reconcileCaptureTarget()
                 }
 
                 if selectedChoice == .window {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            if isFetchingWindows {
-                                ProgressView()
-                            } else if let error = windowsError {
-                                Text("Error: \(error.localizedDescription)")
-                                    .foregroundColor(.red)
-                                    .font(.caption)
-                            } else {
-                                Text("Select a window to capture")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if !isFetchingWindows && windowList.isEmpty && windowsError == nil {
-                                Button("Refresh") {
-                                    Task { @MainActor in
-                                        await fetchWindows()
-                                    }
-                                }
-                                .font(.caption)
-                            }
-                        }
-
-                        if isFetchingWindows {
-                            Text("Loading windows…")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else if windowsError != nil {
-                            Text("No windows available — recording the full display instead")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Button("Try again") {
-                                Task { @MainActor in
-                                    await fetchWindows()
-                                }
-                            }
-                        } else if windowList.isEmpty {
-                            Text("No windows available — recording the full display instead")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Button("Try again") {
-                                Task { @MainActor in
-                                    await fetchWindows()
-                                }
-                            }
-                        } else {
-                            Picker("Window", selection: $selectedWindowId) {
-                                ForEach(windowList) { window in
-                                    Text("\(window.appName): \(window.title)")
-                                        .tag(window.windowId)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .onChange(of: selectedWindowId) { _, newValue in
-                                if let id = newValue {
-                                    setup.captureTarget = .window(windowId: id)
-                                }
-                            }
-                        }
-                    }
+                    windowSelection
                 }
             }
             .formStyle(.grouped)
@@ -172,31 +160,98 @@ struct NewRecordingSheet: View {
                 Button("Start") { onStart(setup) }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
+                    .disabled(!canStart)
             }
             .padding(20)
         }
         .frame(width: 420)
         .onAppear {
             Task { @MainActor in
-                await fetchWindows()
+                await loadWindows()
             }
         }
     }
 
-    private func fetchWindows() async {
+    /// The window-selection block shown under "Window…": a loading state, a
+    /// fall-back note + retry when no windows exist (or the fetch failed), or the
+    /// window menu when windows are available.
+    @ViewBuilder
+    private var windowSelection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if isFetchingWindows {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading windows…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if windowList.isEmpty {
+                // No windows (none available, or the fetch failed): the resolver
+                // has already fallen back to the full display, so Start stays
+                // enabled. Offer a retry.
+                HStack {
+                    Text(windowsError == nil
+                        ? "No windows available — recording the full display instead."
+                        : "Couldn't load windows — recording the full display instead.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Try again") {
+                        Task { @MainActor in await loadWindows() }
+                    }
+                    .font(.caption)
+                }
+            } else {
+                Text("Select a window to capture.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Window", selection: $selectedWindowId) {
+                    Text("Select a window…").tag(UInt32?.none)
+                    ForEach(windowList) { window in
+                        Text("\(window.appName): \(window.title)")
+                            .tag(UInt32?.some(window.windowId))
+                    }
+                }
+                .pickerStyle(.menu)
+                .onChange(of: selectedWindowId) { _, _ in
+                    reconcileCaptureTarget()
+                }
+            }
+        }
+    }
+
+    /// Recompute `setup.captureTarget` from the current UI state. Keeps Start
+    /// gated so a window target is only submitted with a real, selected window
+    /// (never window_id 0); falls back to the full display when no windows exist.
+    @MainActor
+    private func reconcileCaptureTarget() {
+        setup.captureTarget = CaptureTargetResolver.resolve(
+            choice: selectedChoice,
+            selectedWindowId: selectedWindowId,
+            windowList: windowList
+        )
+    }
+
+    /// Fetch the capturable window list from the injected provider (the real
+    /// engine IPC in production). On failure or an empty list, fall back to the
+    /// full display so the sheet stays usable and never submits window_id 0.
+    @MainActor
+    private func loadWindows() async {
         isFetchingWindows = true
         windowsError = nil
         defer { isFetchingWindows = false }
 
         do {
-            let windows = try await IpcClientMock.captureWindows()
-            windowList = windows
+            windowList = try await fetchWindows()
         } catch {
             windowsError = error
-            // On error, fall back to display mode
-            selectedChoice = .display
-            setup.captureTarget = .display
+            windowList = []
+        }
+        // Drop a stale selection no longer in the refreshed list, then recompute
+        // the target (which falls back to display when the list is empty).
+        if let id = selectedWindowId, !windowList.contains(where: { $0.windowId == id }) {
             selectedWindowId = nil
         }
+        reconcileCaptureTarget()
     }
 }
