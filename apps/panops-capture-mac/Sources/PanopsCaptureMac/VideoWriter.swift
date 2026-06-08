@@ -90,33 +90,51 @@ final class VideoWriter: @unchecked Sendable {
 
     private func append(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput) {
         guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        guard !failed, !finishing else { return }
-        guard startSessionLocked(sampleBuffer) else { return }
-        // Cross-track delivery can interleave, so PTS is not globally monotonic;
-        // drop anything timestamped before the session origin.
-        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        if let start = sessionStartTime, pts < start { return }
-        guard input.isReadyForMoreMediaData else { return }   // back-pressure: drop
-        if !input.append(sampleBuffer) {
-            markFailedLocked("append refused")
+        // Do every state mutation under the lock, but NEVER touch stderr here:
+        // `FileHandle.standardError.write` blocks if the pipe is full or a
+        // debugger is paused, and the audio path forwards its buffers through
+        // this same lock — a stalled write would freeze all sample intake.
+        // Surface any failure reason and log it once after unlocking.
+        let failureReason: String? = lock.withLock {
+            guard !failed, !finishing else { return nil }
+            switch startSessionLocked(sampleBuffer) {
+            case .failed(let reason): return reason
+            case .notReady: return nil
+            case .ready: break
+            }
+            // Cross-track delivery can interleave, so PTS is not globally
+            // monotonic; drop anything timestamped before the session origin.
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            if let start = sessionStartTime, pts < start { return nil }
+            guard input.isReadyForMoreMediaData else { return nil }   // back-pressure: drop
+            if !input.append(sampleBuffer) {
+                return markFailedLocked("append refused")
+            }
+            return nil
         }
+        if let failureReason { logFailure(failureReason) }
+    }
+
+    /// Outcome of a lazy session start, computed under the lock.
+    private enum SessionStart {
+        case ready              // session active — proceed with the append
+        case notReady           // can't start yet (invalid PTS) — skip this sample
+        case failed(String)     // startWriting failed — reason to log after unlock
     }
 
     /// Lazily `startWriting` + start the session on the first valid sample of
-    /// either track. Returns false (silencing the writer) if startup fails.
-    private func startSessionLocked(_ sampleBuffer: CMSampleBuffer) -> Bool {
-        if sessionStartTime != nil { return true }
+    /// either track. Does no I/O; on startup failure it flips `failed` and
+    /// returns the reason for the caller to log after releasing the lock.
+    private func startSessionLocked(_ sampleBuffer: CMSampleBuffer) -> SessionStart {
+        if sessionStartTime != nil { return .ready }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        guard pts.isValid else { return false }
+        guard pts.isValid else { return .notReady }
         guard writer.startWriting() else {
-            markFailedLocked("startWriting")
-            return false
+            return .failed(markFailedLocked("startWriting"))
         }
         writer.startSession(atSourceTime: pts)
         sessionStartTime = pts
-        return true
+        return .ready
     }
 
     // MARK: - Finalize
@@ -133,20 +151,28 @@ final class VideoWriter: @unchecked Sendable {
         }
         guard shouldFinish else { return }
         await writer.finishWriting()
+        // Logged outside the lock — `lock.withLock` above has already returned.
         if writer.status == .failed {
             let detail = writer.error.map { "\($0)" } ?? "unknown"
-            FileHandle.standardError.write(
-                Data("video finishWriting failed: \(detail); audio + screenshots unaffected\n".utf8))
+            logFailure("video finishWriting failed: \(detail); audio + screenshots unaffected")
         }
     }
 
     // MARK: - Helpers
 
-    private func markFailedLocked(_ reason: String) {
+    /// Flips `failed` and returns the message to log. Does NO I/O — callers
+    /// invoke `logFailure` with the returned string AFTER releasing `lock`
+    /// (a blocked stderr write must not stall sample intake). Each call site is
+    /// guarded by `!failed`, so the flip and the log happen exactly once.
+    private func markFailedLocked(_ reason: String) -> String {
         failed = true
         let detail = writer.error.map { ", error: \($0)" } ?? ""
-        FileHandle.standardError.write(
-            Data("video writer disabled (\(reason)\(detail)); capture continues\n".utf8))
+        return "video writer disabled (\(reason)\(detail)); capture continues"
+    }
+
+    /// Write a one-line failure message to stderr. MUST be called outside `lock`.
+    private func logFailure(_ message: String) {
+        FileHandle.standardError.write(Data("\(message)\n".utf8))
     }
 
     /// True only for `.complete` frames, which carry fresh pixels.
