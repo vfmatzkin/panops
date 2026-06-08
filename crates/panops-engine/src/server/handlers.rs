@@ -27,10 +27,13 @@ use panops_core::notes::pipeline::NotesGenerator;
 use panops_core::notes::raw_transcript::write_raw_transcript;
 use panops_protocol::{
     CaptureWindowsParams, CaptureWindowsResult, Event, IpcError, JobAccepted, JobDoneEvent,
-    JobErrorEvent, JobProgressEvent, Meeting, MeetingConfig, MeetingDeleteVideoParams,
-    MeetingDeleteVideoResult, MeetingSummary, NotesDialect, NotesGenerateParams,
-    NotesGenerateResult, RecordingAccepted, RecordingStartParams, RecordingStopParams,
-    RecordingStopped, ServerInfo, WindowInfo,
+    JobErrorEvent, JobProgressEvent, Meeting, MeetingAssignParams, MeetingConfig,
+    MeetingDeleteVideoParams, MeetingDeleteVideoResult, MeetingListParams, MeetingSummary,
+    NotesDialect, NotesGenerateParams, NotesGenerateResult, Project, ProjectCreateParams,
+    ProjectDeleteParams, ProjectListParams, ProjectListResult, ProjectRenameParams,
+    RecordingAccepted, RecordingStartParams, RecordingStopParams, RecordingStopped, ServerInfo,
+    Space, SpaceCreateParams, SpaceDeleteParams, SpaceListResult, SpaceRenameParams, Tag,
+    TagAssignParams, TagCreateParams, TagDeleteParams, TagListResult, WindowInfo,
 };
 use tokio::sync::broadcast;
 
@@ -58,7 +61,10 @@ pub(super) trait Ipc {
     ) -> Result<JobAccepted, ErrorObjectOwned>;
 
     #[method(name = "meeting.list")]
-    async fn meeting_list(&self) -> Result<Vec<MeetingSummary>, ErrorObjectOwned>;
+    async fn meeting_list(
+        &self,
+        params: Option<MeetingListParams>,
+    ) -> Result<Vec<MeetingSummary>, ErrorObjectOwned>;
 
     #[method(name = "server.info")]
     async fn server_info(&self) -> Result<ServerInfo, ErrorObjectOwned>;
@@ -81,11 +87,59 @@ pub(super) trait Ipc {
     #[method(name = "meeting.delete")]
     async fn meeting_delete(&self, params: MeetingIdParam) -> Result<(), ErrorObjectOwned>;
 
+    #[method(name = "meeting.assign")]
+    async fn meeting_assign(&self, params: MeetingAssignParams) -> Result<(), ErrorObjectOwned>;
+
     #[method(name = "meeting.deleteVideo")]
     async fn meeting_delete_video(
         &self,
         params: MeetingDeleteVideoParams,
     ) -> Result<MeetingDeleteVideoResult, ErrorObjectOwned>;
+
+    #[method(name = "space.create")]
+    async fn space_create(&self, params: SpaceCreateParams) -> Result<Space, ErrorObjectOwned>;
+
+    #[method(name = "space.list")]
+    async fn space_list(&self) -> Result<SpaceListResult, ErrorObjectOwned>;
+
+    #[method(name = "space.rename")]
+    async fn space_rename(&self, params: SpaceRenameParams) -> Result<(), ErrorObjectOwned>;
+
+    #[method(name = "space.delete")]
+    async fn space_delete(&self, params: SpaceDeleteParams) -> Result<(), ErrorObjectOwned>;
+
+    #[method(name = "project.create")]
+    async fn project_create(
+        &self,
+        params: ProjectCreateParams,
+    ) -> Result<Project, ErrorObjectOwned>;
+
+    #[method(name = "project.list")]
+    async fn project_list(
+        &self,
+        params: Option<ProjectListParams>,
+    ) -> Result<ProjectListResult, ErrorObjectOwned>;
+
+    #[method(name = "project.rename")]
+    async fn project_rename(&self, params: ProjectRenameParams) -> Result<(), ErrorObjectOwned>;
+
+    #[method(name = "project.delete")]
+    async fn project_delete(&self, params: ProjectDeleteParams) -> Result<(), ErrorObjectOwned>;
+
+    #[method(name = "tag.create")]
+    async fn tag_create(&self, params: TagCreateParams) -> Result<Tag, ErrorObjectOwned>;
+
+    #[method(name = "tag.list")]
+    async fn tag_list(&self) -> Result<TagListResult, ErrorObjectOwned>;
+
+    #[method(name = "tag.delete")]
+    async fn tag_delete(&self, params: TagDeleteParams) -> Result<(), ErrorObjectOwned>;
+
+    #[method(name = "tag.assign")]
+    async fn tag_assign(&self, params: TagAssignParams) -> Result<(), ErrorObjectOwned>;
+
+    #[method(name = "tag.unassign")]
+    async fn tag_unassign(&self, params: TagAssignParams) -> Result<(), ErrorObjectOwned>;
 
     #[method(name = "recording.start")]
     async fn recording_start(
@@ -143,19 +197,21 @@ impl IpcServer for IpcImpl {
         ))
     }
 
-    async fn meeting_list(&self) -> Result<Vec<MeetingSummary>, ErrorObjectOwned> {
+    async fn meeting_list(
+        &self,
+        params: Option<MeetingListParams>,
+    ) -> Result<Vec<MeetingSummary>, ErrorObjectOwned> {
         let storage = self.services.storage.clone();
-        let rows = tokio::task::spawn_blocking(move || storage.list_meetings())
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "meeting.list spawn_blocking join");
-                ipc_error_to_obj(IpcError::Internal {
-                    message: "meeting.list internal error".into(),
-                })
-            })?
-            .map_err(|e| ipc_error_to_obj(e.into()))?;
-
-        Ok(rows.into_iter().map(MeetingSummary::from).collect())
+        spawn_blocking_into_ipc("meeting.list", move || {
+            let rows = match params {
+                Some(params) => storage
+                    .list_meetings_filtered(params.into())
+                    .map_err(IpcError::from)?,
+                None => storage.list_meetings().map_err(IpcError::from)?,
+            };
+            Ok(rows.into_iter().map(MeetingSummary::from).collect())
+        })
+        .await
     }
 
     async fn server_info(&self) -> Result<ServerInfo, ErrorObjectOwned> {
@@ -269,6 +325,16 @@ impl IpcServer for IpcImpl {
         .await
     }
 
+    async fn meeting_assign(&self, params: MeetingAssignParams) -> Result<(), ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("meeting.assign", move || {
+            storage
+                .assign_meeting(&params.meeting_id, params.space_id, params.project_id)
+                .map_err(IpcError::from)
+        })
+        .await
+    }
+
     async fn meeting_delete_video(
         &self,
         params: MeetingDeleteVideoParams,
@@ -324,6 +390,152 @@ impl IpcServer for IpcImpl {
                     })
                 }
             }
+        })
+        .await
+    }
+
+    async fn space_create(&self, params: SpaceCreateParams) -> Result<Space, ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("space.create", move || {
+            storage
+                .create_space(&params.name)
+                .map(Space::from)
+                .map_err(IpcError::from)
+        })
+        .await
+    }
+
+    async fn space_list(&self) -> Result<SpaceListResult, ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("space.list", move || {
+            let spaces = storage
+                .list_spaces()
+                .map_err(IpcError::from)?
+                .into_iter()
+                .map(Space::from)
+                .collect();
+            Ok(SpaceListResult { spaces })
+        })
+        .await
+    }
+
+    async fn space_rename(&self, params: SpaceRenameParams) -> Result<(), ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("space.rename", move || {
+            storage
+                .rename_space(&params.id, &params.name)
+                .map_err(IpcError::from)
+        })
+        .await
+    }
+
+    async fn space_delete(&self, params: SpaceDeleteParams) -> Result<(), ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("space.delete", move || {
+            storage.delete_space(&params.id).map_err(IpcError::from)
+        })
+        .await
+    }
+
+    async fn project_create(
+        &self,
+        params: ProjectCreateParams,
+    ) -> Result<Project, ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("project.create", move || {
+            storage
+                .create_project(&params.space_id, &params.name)
+                .map(Project::from)
+                .map_err(IpcError::from)
+        })
+        .await
+    }
+
+    async fn project_list(
+        &self,
+        params: Option<ProjectListParams>,
+    ) -> Result<ProjectListResult, ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("project.list", move || {
+            let space_id = params.as_ref().and_then(|p| p.space_id.as_deref());
+            let projects = storage
+                .list_projects(space_id)
+                .map_err(IpcError::from)?
+                .into_iter()
+                .map(Project::from)
+                .collect();
+            Ok(ProjectListResult { projects })
+        })
+        .await
+    }
+
+    async fn project_rename(&self, params: ProjectRenameParams) -> Result<(), ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("project.rename", move || {
+            storage
+                .rename_project(&params.id, &params.name)
+                .map_err(IpcError::from)
+        })
+        .await
+    }
+
+    async fn project_delete(&self, params: ProjectDeleteParams) -> Result<(), ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("project.delete", move || {
+            storage.delete_project(&params.id).map_err(IpcError::from)
+        })
+        .await
+    }
+
+    async fn tag_create(&self, params: TagCreateParams) -> Result<Tag, ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("tag.create", move || {
+            storage
+                .create_tag(&params.name)
+                .map(Tag::from)
+                .map_err(IpcError::from)
+        })
+        .await
+    }
+
+    async fn tag_list(&self) -> Result<TagListResult, ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("tag.list", move || {
+            let tags = storage
+                .list_tags()
+                .map_err(IpcError::from)?
+                .into_iter()
+                .map(Tag::from)
+                .collect();
+            Ok(TagListResult { tags })
+        })
+        .await
+    }
+
+    async fn tag_delete(&self, params: TagDeleteParams) -> Result<(), ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("tag.delete", move || {
+            storage.delete_tag(&params.id).map_err(IpcError::from)
+        })
+        .await
+    }
+
+    async fn tag_assign(&self, params: TagAssignParams) -> Result<(), ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("tag.assign", move || {
+            storage
+                .tag_meeting(&params.meeting_id, &params.tag_id)
+                .map_err(IpcError::from)
+        })
+        .await
+    }
+
+    async fn tag_unassign(&self, params: TagAssignParams) -> Result<(), ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("tag.unassign", move || {
+            storage
+                .untag_meeting(&params.meeting_id, &params.tag_id)
+                .map_err(IpcError::from)
         })
         .await
     }

@@ -207,6 +207,16 @@ pub struct MeetingSummary {
     pub language: String,
     /// Whether at least one note row exists for this meeting.
     pub has_notes: bool,
+    /// Optional organization space assignment. `None` means the meeting
+    /// is in the implicit Inbox/unsorted bucket.
+    #[serde(default)]
+    pub space_id: Option<String>,
+    /// Optional organization project assignment.
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// Tag ids assigned to this meeting.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Full meeting record returned by `meeting.get` / `meeting.start` /
@@ -238,6 +248,214 @@ impl From<panops_core::storage::MeetingSummary> for MeetingSummary {
             duration_ms: value.duration_ms,
             language: value.language,
             has_notes: value.has_notes,
+            space_id: value.space_id,
+            project_id: value.project_id,
+            tags: value.tags,
+        }
+    }
+}
+
+/// Wire organization space.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Space {
+    pub id: String,
+    pub name: String,
+    pub position: i64,
+}
+
+/// Wire organization project.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Project {
+    pub id: String,
+    pub space_id: String,
+    pub name: String,
+    pub position: i64,
+}
+
+/// Wire organization tag.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Tag {
+    pub id: String,
+    pub name: String,
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<panops_core::storage::Space> for Space {
+    fn from(value: panops_core::storage::Space) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            position: value.position,
+        }
+    }
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<Space> for panops_core::storage::Space {
+    fn from(value: Space) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            position: value.position,
+        }
+    }
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<panops_core::storage::Project> for Project {
+    fn from(value: panops_core::storage::Project) -> Self {
+        Self {
+            id: value.id,
+            space_id: value.space_id,
+            name: value.name,
+            position: value.position,
+        }
+    }
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<Project> for panops_core::storage::Project {
+    fn from(value: Project) -> Self {
+        Self {
+            id: value.id,
+            space_id: value.space_id,
+            name: value.name,
+            position: value.position,
+        }
+    }
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<panops_core::storage::Tag> for Tag {
+    fn from(value: panops_core::storage::Tag) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+        }
+    }
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<Tag> for panops_core::storage::Tag {
+    fn from(value: Tag) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpaceCreateParams {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpaceListResult {
+    pub spaces: Vec<Space>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpaceRenameParams {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpaceDeleteParams {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectCreateParams {
+    pub space_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectListParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectListResult {
+    pub projects: Vec<Project>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectRenameParams {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectDeleteParams {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TagCreateParams {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TagListResult {
+    pub tags: Vec<Tag>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TagDeleteParams {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TagAssignParams {
+    pub meeting_id: String,
+    pub tag_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MeetingAssignParams {
+    pub meeting_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MeetingListParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag_id: Option<String>,
+    #[serde(default)]
+    pub unsorted: bool,
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<MeetingListParams> for panops_core::storage::MeetingListFilter {
+    fn from(value: MeetingListParams) -> Self {
+        Self {
+            space_id: value.space_id,
+            project_id: value.project_id,
+            tag_id: value.tag_id,
+            unsorted: value.unsorted,
+        }
+    }
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<panops_core::storage::MeetingListFilter> for MeetingListParams {
+    fn from(value: panops_core::storage::MeetingListFilter) -> Self {
+        Self {
+            space_id: value.space_id,
+            project_id: value.project_id,
+            tag_id: value.tag_id,
+            unsorted: value.unsorted,
         }
     }
 }
@@ -698,10 +916,227 @@ mod tests {
             duration_ms: 60_000,
             language: "en".into(),
             has_notes: true,
+            space_id: Some("space_1".into()),
+            project_id: Some("project_1".into()),
+            tags: vec!["tag_1".into()],
         };
         let back: MeetingSummary =
             serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
         assert_eq!(back, m);
+    }
+
+    #[test]
+    fn meeting_summary_accepts_legacy_payload_without_org_fields() {
+        let json = r#"{"id":"m1","title":"Test","started_at":"2026-05-02T10:00:00Z","ended_at":null,"duration_ms":0,"language":"auto","has_notes":false}"#;
+        let m: MeetingSummary = serde_json::from_str(json).unwrap();
+        assert_eq!(m.space_id, None);
+        assert_eq!(m.project_id, None);
+        assert!(m.tags.is_empty());
+    }
+
+    #[test]
+    fn organization_wire_shapes_round_trip() {
+        let space = Space {
+            id: "space_1".into(),
+            name: "Work".into(),
+            position: 0,
+        };
+        assert_eq!(
+            serde_json::to_string(&space).unwrap(),
+            r#"{"id":"space_1","name":"Work","position":0}"#
+        );
+        let spaces = SpaceListResult {
+            spaces: vec![space.clone()],
+        };
+        assert_eq!(
+            serde_json::to_string(&spaces).unwrap(),
+            r#"{"spaces":[{"id":"space_1","name":"Work","position":0}]}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<SpaceListResult>(&serde_json::to_string(&spaces).unwrap())
+                .unwrap(),
+            spaces
+        );
+
+        let project = Project {
+            id: "project_1".into(),
+            space_id: "space_1".into(),
+            name: "Panops".into(),
+            position: 1,
+        };
+        let projects = ProjectListResult {
+            projects: vec![project],
+        };
+        assert_eq!(
+            serde_json::to_string(&projects).unwrap(),
+            r#"{"projects":[{"id":"project_1","space_id":"space_1","name":"Panops","position":1}]}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ProjectListResult>(&serde_json::to_string(&projects).unwrap())
+                .unwrap(),
+            projects
+        );
+
+        let tag = Tag {
+            id: "tag_1".into(),
+            name: "follow-up".into(),
+        };
+        let tags = TagListResult { tags: vec![tag] };
+        assert_eq!(
+            serde_json::to_string(&tags).unwrap(),
+            r#"{"tags":[{"id":"tag_1","name":"follow-up"}]}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<TagListResult>(&serde_json::to_string(&tags).unwrap()).unwrap(),
+            tags
+        );
+    }
+
+    #[test]
+    fn organization_param_shapes_round_trip() {
+        assert_eq!(
+            serde_json::to_string(&SpaceCreateParams {
+                name: "Work".into()
+            })
+            .unwrap(),
+            r#"{"name":"Work"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&SpaceRenameParams {
+                id: "space_1".into(),
+                name: "Study".into()
+            })
+            .unwrap(),
+            r#"{"id":"space_1","name":"Study"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&SpaceDeleteParams {
+                id: "space_1".into()
+            })
+            .unwrap(),
+            r#"{"id":"space_1"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ProjectCreateParams {
+                space_id: "space_1".into(),
+                name: "Panops".into()
+            })
+            .unwrap(),
+            r#"{"space_id":"space_1","name":"Panops"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ProjectListParams {
+                space_id: Some("space_1".into())
+            })
+            .unwrap(),
+            r#"{"space_id":"space_1"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ProjectRenameParams {
+                id: "project_1".into(),
+                name: "Phase B".into()
+            })
+            .unwrap(),
+            r#"{"id":"project_1","name":"Phase B"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ProjectDeleteParams {
+                id: "project_1".into()
+            })
+            .unwrap(),
+            r#"{"id":"project_1"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&TagCreateParams {
+                name: "follow-up".into()
+            })
+            .unwrap(),
+            r#"{"name":"follow-up"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&TagDeleteParams { id: "tag_1".into() }).unwrap(),
+            r#"{"id":"tag_1"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&TagAssignParams {
+                meeting_id: "m1".into(),
+                tag_id: "tag_1".into()
+            })
+            .unwrap(),
+            r#"{"meeting_id":"m1","tag_id":"tag_1"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&MeetingAssignParams {
+                meeting_id: "m1".into(),
+                space_id: Some("space_1".into()),
+                project_id: None,
+            })
+            .unwrap(),
+            r#"{"meeting_id":"m1","space_id":"space_1"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&MeetingListParams {
+                space_id: Some("space_1".into()),
+                project_id: None,
+                tag_id: Some("tag_1".into()),
+                unsorted: false,
+            })
+            .unwrap(),
+            r#"{"space_id":"space_1","tag_id":"tag_1","unsorted":false}"#
+        );
+        let empty_list_params: MeetingListParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty_list_params, MeetingListParams::default());
+    }
+
+    #[cfg(feature = "domain-conversions")]
+    #[test]
+    fn organization_wire_converts_both_directions() {
+        let domain_space = panops_core::storage::Space {
+            id: "space_1".into(),
+            name: "Work".into(),
+            position: 0,
+        };
+        let wire_space = Space::from(domain_space.clone());
+        assert_eq!(wire_space.id, "space_1");
+        assert_eq!(panops_core::storage::Space::from(wire_space), domain_space);
+
+        let domain_project = panops_core::storage::Project {
+            id: "project_1".into(),
+            space_id: "space_1".into(),
+            name: "Panops".into(),
+            position: 1,
+        };
+        let wire_project = Project::from(domain_project.clone());
+        assert_eq!(wire_project.space_id, "space_1");
+        assert_eq!(
+            panops_core::storage::Project::from(wire_project),
+            domain_project
+        );
+
+        let domain_tag = panops_core::storage::Tag {
+            id: "tag_1".into(),
+            name: "follow-up".into(),
+        };
+        let wire_tag = Tag::from(domain_tag.clone());
+        assert_eq!(wire_tag.name, "follow-up");
+        assert_eq!(panops_core::storage::Tag::from(wire_tag), domain_tag);
+    }
+
+    #[cfg(feature = "domain-conversions")]
+    #[test]
+    fn meeting_list_params_convert_to_filter_and_back() {
+        let params = MeetingListParams {
+            space_id: Some("space_1".into()),
+            project_id: Some("project_1".into()),
+            tag_id: Some("tag_1".into()),
+            unsorted: true,
+        };
+        let filter = panops_core::storage::MeetingListFilter::from(params.clone());
+        assert_eq!(filter.space_id.as_deref(), Some("space_1"));
+        assert_eq!(filter.project_id.as_deref(), Some("project_1"));
+        assert_eq!(filter.tag_id.as_deref(), Some("tag_1"));
+        assert!(filter.unsorted);
+        assert_eq!(MeetingListParams::from(filter), params);
     }
 
     // === Recording IPC type tests (slice 11) ===
