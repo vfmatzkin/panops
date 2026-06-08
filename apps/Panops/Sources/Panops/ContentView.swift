@@ -647,7 +647,18 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
                     controller: recordingController,
                     setup: activeSetup,
                     onRecordingStopped: { _ in
-                        try await vm.finishActiveLiveRecording()
+                        // The controller already cleared isRecording, so this
+                        // RecordingScreen unmounts the instant stop succeeds and
+                        // its local alert can never be seen. Route a finalize
+                        // failure to ContentView's own error state, which stays
+                        // mounted, so the user actually learns stop/finalize
+                        // failed instead of silently dropping back to the list.
+                        do {
+                            try await vm.finishActiveLiveRecording()
+                        } catch {
+                            AppViewModel.logFullError("recording.finish", error)
+                            toolbarRecordingError = "Recording stopped, but finishing the meeting failed."
+                        }
                     }
                 )
             } else if let meeting = vm.selectedMeeting {
