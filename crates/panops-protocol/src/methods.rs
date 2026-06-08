@@ -496,14 +496,33 @@ pub enum AudioSourcesWire {
 }
 
 /// Screen target selection for `recording.start`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CaptureTarget {
-    #[default]
-    Display,
+    Display {
+        #[serde(default)]
+        display_id: u32,
+    },
     Window {
         window_id: u32,
     },
+    App {
+        bundle_id: String,
+    },
+    Region {
+        #[serde(default)]
+        display_id: u32,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+    },
+}
+
+impl Default for CaptureTarget {
+    fn default() -> Self {
+        CaptureTarget::Display { display_id: 0 }
+    }
 }
 
 /// Capturable window metadata.
@@ -557,6 +576,12 @@ pub struct RecordingStartParams {
     /// Screen target to capture. Defaults to full-display capture.
     #[serde(default)]
     pub capture_target: CaptureTarget,
+    /// Output width in px. `None` = native. Set both width+height or neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    /// Output height in px. `None` = native.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
 }
 
 #[cfg(feature = "domain-conversions")]
@@ -585,8 +610,22 @@ impl From<panops_core::capture::AudioSources> for AudioSourcesWire {
 impl From<CaptureTarget> for panops_core::capture::CaptureTarget {
     fn from(value: CaptureTarget) -> Self {
         match value {
-            CaptureTarget::Display => Self::Display,
+            CaptureTarget::Display { display_id } => Self::Display { display_id },
             CaptureTarget::Window { window_id } => Self::Window { window_id },
+            CaptureTarget::App { bundle_id } => Self::App { bundle_id },
+            CaptureTarget::Region {
+                display_id,
+                x,
+                y,
+                w,
+                h,
+            } => Self::Region {
+                display_id,
+                x,
+                y,
+                w,
+                h,
+            },
         }
     }
 }
@@ -595,8 +634,24 @@ impl From<CaptureTarget> for panops_core::capture::CaptureTarget {
 impl From<panops_core::capture::CaptureTarget> for CaptureTarget {
     fn from(value: panops_core::capture::CaptureTarget) -> Self {
         match value {
-            panops_core::capture::CaptureTarget::Display => Self::Display,
+            panops_core::capture::CaptureTarget::Display { display_id } => {
+                Self::Display { display_id }
+            }
             panops_core::capture::CaptureTarget::Window { window_id } => Self::Window { window_id },
+            panops_core::capture::CaptureTarget::App { bundle_id } => Self::App { bundle_id },
+            panops_core::capture::CaptureTarget::Region {
+                display_id,
+                x,
+                y,
+                w,
+                h,
+            } => Self::Region {
+                display_id,
+                x,
+                y,
+                w,
+                h,
+            },
         }
     }
 }
@@ -620,7 +675,9 @@ impl From<&RecordingStartParams> for panops_core::capture::CaptureConfig {
             record_video: value.record_video,
             screenshot_interval_ms: value.screenshot_interval_ms,
             screenshot_threshold: value.screenshot_threshold,
-            capture_target: value.capture_target.into(),
+            capture_target: value.capture_target.clone().into(),
+            width: value.width,
+            height: value.height,
         }
     }
 }
@@ -1151,6 +1208,8 @@ mod tests {
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
             capture_target: CaptureTarget::Window { window_id: 42 },
+            width: None,
+            height: None,
         };
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains(r#""record_video":true"#), "got: {json}");
@@ -1176,7 +1235,7 @@ mod tests {
         assert!(!p.auto_generate_notes); // default/back-compat
         assert_eq!(p.screenshot_interval_ms, 500); // default
         assert_eq!(p.screenshot_threshold, 0.15); // default
-        assert_eq!(p.capture_target, CaptureTarget::Display); // default
+        assert_eq!(p.capture_target, CaptureTarget::Display { display_id: 0 }); // default
     }
 
     #[cfg(feature = "domain-conversions")]
@@ -1190,6 +1249,8 @@ mod tests {
             screenshot_interval_ms: 250,
             screenshot_threshold: 0.2,
             capture_target: CaptureTarget::Window { window_id: 99 },
+            width: None,
+            height: None,
         };
         let cfg = panops_core::capture::CaptureConfig::from(&p);
         assert_eq!(
@@ -1214,8 +1275,8 @@ mod tests {
     #[test]
     fn capture_target_wire_contracts_are_snake_case_tagged() {
         assert_eq!(
-            serde_json::to_string(&CaptureTarget::Display).unwrap(),
-            r#"{"kind":"display"}"#
+            serde_json::to_string(&CaptureTarget::Display { display_id: 0 }).unwrap(),
+            r#"{"kind":"display","display_id":0}"#
         );
         assert_eq!(
             serde_json::to_string(&CaptureTarget::Window { window_id: 42 }).unwrap(),
@@ -1223,7 +1284,54 @@ mod tests {
         );
         let defaulted: RecordingStartParams =
             serde_json::from_str(r#"{"meeting_id":"m1"}"#).unwrap();
-        assert_eq!(defaulted.capture_target, CaptureTarget::Display);
+        assert_eq!(
+            defaulted.capture_target,
+            CaptureTarget::Display { display_id: 0 }
+        );
+    }
+
+    #[test]
+    fn capture_target_wire_new_variants_round_trip() {
+        for t in [
+            CaptureTarget::Display { display_id: 0 },
+            CaptureTarget::Window { window_id: 42 },
+            CaptureTarget::App {
+                bundle_id: "com.apple.Safari".into(),
+            },
+            CaptureTarget::Region {
+                display_id: 1,
+                x: 10,
+                y: 20,
+                w: 640,
+                h: 480,
+            },
+        ] {
+            let back: CaptureTarget =
+                serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+            assert_eq!(back, t);
+        }
+    }
+
+    #[test]
+    fn capture_target_wire_display_back_compat() {
+        // Old clients send {"kind":"display"} with no display_id.
+        let t: CaptureTarget = serde_json::from_str(r#"{"kind":"display"}"#).unwrap();
+        assert_eq!(t, CaptureTarget::Display { display_id: 0 });
+    }
+
+    #[test]
+    fn recording_start_params_carry_resolution() {
+        let json = r#"{"meeting_id":"m1","width":1280,"height":720}"#;
+        let p: RecordingStartParams = serde_json::from_str(json).unwrap();
+        assert_eq!(p.width, Some(1280));
+        assert_eq!(p.height, Some(720));
+    }
+
+    #[test]
+    fn recording_start_params_resolution_defaults_none() {
+        let p: RecordingStartParams = serde_json::from_str(r#"{"meeting_id":"m1"}"#).unwrap();
+        assert_eq!(p.width, None);
+        assert_eq!(p.height, None);
     }
 
     #[test]

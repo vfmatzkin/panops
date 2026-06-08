@@ -137,7 +137,7 @@ fn start_accepts_window_capture_target<C: Capture>(adapter: &C, _fixtures_dir: &
         window_id: window.window_id,
     };
     let config = CaptureConfig {
-        capture_target,
+        capture_target: capture_target.clone(),
         ..CaptureConfig::default()
     };
     let session = adapter
@@ -291,7 +291,7 @@ fn stop_session_not_found<C: Capture>(adapter: &C) {
     let fake_session = CaptureSession {
         meeting_id: "nonexistent_session".into(),
         started_at_ms: 0,
-        capture_target: CaptureTarget::Display,
+        capture_target: CaptureTarget::Display { display_id: 0 },
     };
     let err = adapter
         .stop_capture(&fake_session)

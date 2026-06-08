@@ -359,7 +359,7 @@ impl Capture for ScreenCaptureKitCapture {
             "video_path": meeting_dir.join("recording.mov").display().to_string(),
             "screenshot_interval_ms": config.screenshot_interval_ms,
             "screenshot_threshold": config.screenshot_threshold,
-            "capture_target": capture_target_json(config.capture_target),
+            "capture_target": capture_target_json(&config.capture_target),
         });
         let started: StartedResult = self.call("capture.start", params)?;
         // Insert into the sessions map AFTER successful sidecar call.
@@ -385,7 +385,7 @@ impl Capture for ScreenCaptureKitCapture {
         Ok(CaptureSession {
             meeting_id: meeting_id.to_string(),
             started_at_ms: started.started_at_ms,
-            capture_target: config.capture_target,
+            capture_target: config.capture_target.clone(),
         })
     }
 
@@ -451,12 +451,31 @@ fn audio_sources_str(sources: AudioSources) -> &'static str {
 }
 
 /// Map `CaptureTarget` to the sidecar control-protocol shape.
-fn capture_target_json(target: CaptureTarget) -> serde_json::Value {
+fn capture_target_json(target: &CaptureTarget) -> serde_json::Value {
     match target {
-        CaptureTarget::Display => serde_json::json!({ "kind": "display" }),
+        CaptureTarget::Display { display_id } => {
+            serde_json::json!({ "kind": "display", "display_id": display_id })
+        }
         CaptureTarget::Window { window_id } => {
             serde_json::json!({ "kind": "window", "window_id": window_id })
         }
+        CaptureTarget::App { bundle_id } => {
+            serde_json::json!({ "kind": "app", "bundle_id": bundle_id })
+        }
+        CaptureTarget::Region {
+            display_id,
+            x,
+            y,
+            w,
+            h,
+        } => serde_json::json!({
+            "kind": "region",
+            "display_id": display_id,
+            "x": x,
+            "y": y,
+            "w": w,
+            "h": h,
+        }),
     }
 }
 
@@ -512,11 +531,11 @@ mod tests {
     #[test]
     fn capture_target_json_uses_pinned_shape() {
         assert_eq!(
-            capture_target_json(CaptureTarget::Display),
-            serde_json::json!({ "kind": "display" })
+            capture_target_json(&CaptureTarget::Display { display_id: 0 }),
+            serde_json::json!({ "kind": "display", "display_id": 0 })
         );
         assert_eq!(
-            capture_target_json(CaptureTarget::Window { window_id: 42 }),
+            capture_target_json(&CaptureTarget::Window { window_id: 42 }),
             serde_json::json!({ "kind": "window", "window_id": 42 })
         );
     }
@@ -547,7 +566,7 @@ mod tests {
         let session = CaptureSession {
             meeting_id: "never_started".into(),
             started_at_ms: 0,
-            capture_target: CaptureTarget::Display,
+            capture_target: CaptureTarget::Display { display_id: 0 },
         };
         let err = cap.stop_capture(&session).expect_err("should fail");
         assert!(matches!(err, CaptureError::SessionNotFound(id) if id == "never_started"));

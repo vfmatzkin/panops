@@ -1972,7 +1972,9 @@ mod recording_auto_generate_tests {
             auto_generate_notes: true,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
-            capture_target: panops_protocol::CaptureTarget::Display,
+            capture_target: panops_protocol::CaptureTarget::Display { display_id: 0 },
+            width: None,
+            height: None,
         })
         .await
         .expect("recording.start");
@@ -2039,7 +2041,9 @@ mod recording_auto_generate_tests {
             auto_generate_notes: true,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
-            capture_target: panops_protocol::CaptureTarget::Display,
+            capture_target: panops_protocol::CaptureTarget::Display { display_id: 0 },
+            width: None,
+            height: None,
         })
         .await
         .expect("recording.start");
@@ -2109,7 +2113,9 @@ mod recording_auto_generate_tests {
             auto_generate_notes: true,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
-            capture_target: panops_protocol::CaptureTarget::Display,
+            capture_target: panops_protocol::CaptureTarget::Display { display_id: 0 },
+            width: None,
+            height: None,
         })
         .await
         .expect("recording.start");
