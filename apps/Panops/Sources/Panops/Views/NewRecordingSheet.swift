@@ -32,7 +32,7 @@ struct NewRecordingSheet: View {
 
                 Picker("Audio", selection: $setup.audioSources) {
                     ForEach(Self.audioChoices, id: \.self) { source in
-                        Text(audioLabel(source)).tag(source)
+                        Text(source.displayLabel).tag(source)
                     }
                 }
 
@@ -58,13 +58,5 @@ struct NewRecordingSheet: View {
             .padding(20)
         }
         .frame(width: 420)
-    }
-
-    private func audioLabel(_ source: AudioSourcesWire) -> String {
-        switch source {
-        case .systemAndMic: return "System + Mic"
-        case .micOnly: return "Mic only"
-        case .systemOnly: return "System only"
-        }
     }
 }

@@ -133,6 +133,26 @@ enum AudioSourcesWire: String, Codable {
     case systemOnly = "system_only"
     case micOnly = "mic_only"
     case systemAndMic = "system_and_mic"
+
+    /// Single source of truth for how an audio choice reads to the user. Used by
+    /// the New Recording picker and the recording-screen capture chip so the two
+    /// can't drift apart.
+    var displayLabel: String {
+        switch self {
+        case .systemAndMic: return "System + Mic"
+        case .micOnly: return "Mic only"
+        case .systemOnly: return "System only"
+        }
+    }
+
+    /// SF Symbol paired with `displayLabel` in the capture chip.
+    var icon: String {
+        switch self {
+        case .systemAndMic: return "waveform"
+        case .micOnly: return "mic"
+        case .systemOnly: return "speaker.wave.2"
+        }
+    }
 }
 
 /// Outgoing params for `ipc.meeting.start`. Mirrors `panops-protocol::MeetingConfig`.
