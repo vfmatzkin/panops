@@ -118,11 +118,27 @@ while !shutdownRequested, let line = readLine(strippingNewline: true) {
             continue
         }
         let plan = TrackPlan(audioSources: params.audioSources ?? "system_and_mic")
+        // Derive recording.mov in the meeting dir from the existing paths; a
+        // boolean flag is all the engine sends. If the dir can't be resolved we
+        // log and skip video (capture proceeds without it).
+        var videoPath: String?
+        if params.recordVideo == true {
+            videoPath = VideoWriter.outputURL(
+                systemAudioPath: params.systemAudioPath,
+                micAudioPath: params.micAudioPath,
+                screenshotsDir: params.screenshotsDir
+            )?.path
+            if videoPath == nil {
+                FileHandle.standardError.write(
+                    Data("record_video set but no meeting dir derivable; video disabled\n".utf8))
+            }
+        }
         do {
             let recorder = try Recorder(
                 plan: plan,
                 systemPath: params.systemAudioPath,
-                micPath: params.micAudioPath
+                micPath: params.micAudioPath,
+                videoPath: videoPath
             )
             let screenshotter = try Screenshotter(
                 dir: params.screenshotsDir ?? FileManager.default.temporaryDirectory.path,

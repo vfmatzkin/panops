@@ -11,6 +11,7 @@ struct CaptureParams: Decodable {
     let audioSources: String?            // "system_only" | "mic_only" | "system_and_mic"
     let screenshotIntervalMs: UInt64?
     let screenshotThreshold: Float?
+    let recordVideo: Bool?               // also mux a playable recording.mov
 
     enum CodingKeys: String, CodingKey {
         case meetingId = "meeting_id"
@@ -20,6 +21,7 @@ struct CaptureParams: Decodable {
         case audioSources = "audio_sources"
         case screenshotIntervalMs = "screenshot_interval_ms"
         case screenshotThreshold = "screenshot_threshold"
+        case recordVideo = "record_video"
     }
 }
 
