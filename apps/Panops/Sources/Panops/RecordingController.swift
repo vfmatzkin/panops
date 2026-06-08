@@ -9,7 +9,11 @@ struct RecordingOptions: Equatable {
     var screenshotThreshold: Float
     var recordVideo: Bool
     var autoGenerateNotes: Bool
-    var captureTarget: CaptureTarget
+    var captureTarget: CaptureTargetDTO
+    /// Output width in px. `nil` = native (no downscale). Set with `height`.
+    var width: UInt32?
+    /// Output height in px. `nil` = native.
+    var height: UInt32?
 
     init(
         audioSources: AudioSourcesWire = .systemAndMic,
@@ -17,7 +21,9 @@ struct RecordingOptions: Equatable {
         screenshotThreshold: Float = 0.15,
         recordVideo: Bool = false,
         autoGenerateNotes: Bool = true,
-        captureTarget: CaptureTarget = .display
+        captureTarget: CaptureTargetDTO = .primaryDisplay,
+        width: UInt32? = nil,
+        height: UInt32? = nil
     ) {
         self.audioSources = audioSources
         self.screenshotIntervalMs = screenshotIntervalMs
@@ -25,6 +31,8 @@ struct RecordingOptions: Equatable {
         self.recordVideo = recordVideo
         self.autoGenerateNotes = autoGenerateNotes
         self.captureTarget = captureTarget
+        self.width = width
+        self.height = height
     }
 
     static let `default` = RecordingOptions()
@@ -71,7 +79,13 @@ struct RecordingSetup: Equatable {
     var captureScreenshots: Bool = true
     var recordVideo: Bool = false
     var autoGenerateNotes: Bool = true
-    var captureTarget: CaptureTarget = .display
+    var captureTarget: CaptureTargetDTO = .primaryDisplay
+    /// Chosen output-resolution preset. Resolved against `captureNativeHeight`
+    /// into concrete `width`/`height` on the wire.
+    var resolution: ResolutionPreset = .native
+    /// Native pixel height of the picked source, learned from the live preview.
+    /// `0` = unknown (the preset still applies; the no-upscale guard is skipped).
+    var captureNativeHeight: Int = 0
 
     static let `default` = RecordingSetup()
 
@@ -85,16 +99,30 @@ struct RecordingSetup: Equatable {
         )
     }
 
+    /// The full capture description: source + resolution + audio + screenshots.
+    var captureSelection: CaptureSelection {
+        CaptureSelection(
+            target: captureTarget,
+            resolution: resolution,
+            audioSources: audioSources,
+            captureScreenshots: captureScreenshots
+        )
+    }
+
     /// `recording.start` options. Screenshot sampling stays at engine defaults
-    /// (no off-switch on the wire yet).
+    /// (no off-switch on the wire yet); the resolution preset resolves to
+    /// concrete output dimensions (or native when it would upscale).
     var recordingOptions: RecordingOptions {
-        RecordingOptions(
+        let dimensions = resolution.dimensions(nativeHeight: captureNativeHeight)
+        return RecordingOptions(
             audioSources: audioSources,
             screenshotIntervalMs: RecordingOptions.default.screenshotIntervalMs,
             screenshotThreshold: RecordingOptions.default.screenshotThreshold,
             recordVideo: recordVideo,
             autoGenerateNotes: autoGenerateNotes,
-            captureTarget: captureTarget
+            captureTarget: captureTarget,
+            width: dimensions.map { UInt32($0.width) },
+            height: dimensions.map { UInt32($0.height) }
         )
     }
 }

@@ -779,7 +779,9 @@ actor IpcClient {
         screenshotThreshold: Float = 0.15,
         recordVideo: Bool = false,
         autoGenerateNotes: Bool = true,
-        captureTarget: CaptureTarget = .display
+        captureTarget: CaptureTargetDTO = .primaryDisplay,
+        width: UInt32? = nil,
+        height: UInt32? = nil
     ) async throws -> RecordingAccepted {
         let params = RecordingStartParams(
             meetingId: meetingId,
@@ -788,7 +790,9 @@ actor IpcClient {
             screenshotThreshold: screenshotThreshold,
             recordVideo: recordVideo,
             autoGenerateNotes: autoGenerateNotes,
-            captureTarget: captureTarget
+            captureTarget: captureTarget,
+            width: width,
+            height: height
         )
         return try await sendRequest(
             method: "ipc.recording.start",
