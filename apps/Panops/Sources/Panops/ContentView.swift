@@ -970,6 +970,10 @@ struct LlmProviderChip: View {
 struct ContentView<Controller: RecordingController & ObservableObject>: View {
     @ObservedObject var vm: AppViewModel
     @ObservedObject var recordingController: Controller
+    /// The app's own capture preview, shared by the New Recording sheet and the
+    /// recording screen so the preview + audio meters stay live across the
+    /// hand-off from setup to recording.
+    @StateObject private var preview = CapturePreviewController()
     @State private var isStartingNewRecording = false
     @State private var toolbarRecordingError: String?
     @State private var showNewRecordingSheet = false
@@ -989,7 +993,9 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
             if recordingController.isRecording {
                 RecordingScreen(
                     controller: recordingController,
+                    preview: preview,
                     setup: activeSetup,
+                    meetingDirPath: vm.selectedMeeting?.dirPath,
                     onRecordingStopped: { outcome in
                         // The controller already cleared isRecording, so this
                         // RecordingScreen unmounts the instant stop succeeds and
@@ -1066,12 +1072,16 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
         }
         .sheet(isPresented: $showNewRecordingSheet) {
             NewRecordingSheet(
+                preview: preview,
                 onStart: { setup in
                     showNewRecordingSheet = false
                     activeSetup = setup
                     Task { @MainActor in await startNewRecording(setup: setup) }
                 },
-                onCancel: { showNewRecordingSheet = false }
+                onCancel: {
+                    showNewRecordingSheet = false
+                    preview.teardown()
+                }
             )
         }
         .task {
@@ -1090,7 +1100,12 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
             // ends we reset here. That way the next non-sheet start already has
             // accurate capture chips before its RecordingScreen can appear,
             // instead of showing a stale setup from a prior sheet run.
-            if !recording { activeSetup = .default }
+            if !recording {
+                activeSetup = .default
+                // The recording ended (or never started) — stop the shared
+                // preview stream so it doesn't keep capturing in the background.
+                preview.teardown()
+            }
         }
     }
 
@@ -1128,8 +1143,10 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
             toolbarRecordingError = "Couldn't start recording."
             // A failed sheet start may never flip isRecording (e.g. meeting.start
             // threw), so the isRecording reset can't fire — clear the chosen
-            // setup here too so a later non-sheet start doesn't inherit it.
+            // setup here too so a later non-sheet start doesn't inherit it, and
+            // stop the preview stream that the sheet left running.
             activeSetup = .default
+            preview.teardown()
         }
     }
 
