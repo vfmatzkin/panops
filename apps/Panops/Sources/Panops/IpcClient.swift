@@ -634,14 +634,16 @@ actor IpcClient {
         audioSources: AudioSourcesWire = .systemAndMic,
         screenshotIntervalMs: UInt64 = 500,
         screenshotThreshold: Float = 0.15,
-        recordVideo: Bool = false
+        recordVideo: Bool = false,
+        autoGenerateNotes: Bool = true
     ) async throws -> RecordingAccepted {
         let params = RecordingStartParams(
             meetingId: meetingId,
             audioSources: audioSources,
             screenshotIntervalMs: screenshotIntervalMs,
             screenshotThreshold: screenshotThreshold,
-            recordVideo: recordVideo
+            recordVideo: recordVideo,
+            autoGenerateNotes: autoGenerateNotes
         )
         return try await sendRequest(
             method: "ipc.recording.start",

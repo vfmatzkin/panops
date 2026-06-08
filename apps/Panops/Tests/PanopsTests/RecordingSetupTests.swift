@@ -52,6 +52,22 @@ struct RecordingSetupTests {
         #expect(setupFalse.recordingOptions.recordVideo == false)
     }
 
+    @Test("recordingOptions carries autoGenerateNotes flag")
+    func recordingOptionsAutoGenerateNotes() {
+        let setup = RecordingSetup(autoGenerateNotes: true)
+        #expect(setup.recordingOptions.autoGenerateNotes == true)
+
+        let setupFalse = RecordingSetup(autoGenerateNotes: false)
+        #expect(setupFalse.recordingOptions.autoGenerateNotes == false)
+    }
+
+    @Test("autoGenerateNotes defaults to true")
+    func autoGenerateNotesDefaults() {
+        let setup = RecordingSetup()
+        #expect(setup.autoGenerateNotes == true)
+        #expect(setup.recordingOptions.autoGenerateNotes == true)
+    }
+
     @Test("recordVideo defaults to false")
     func recordVideoDefaults() {
         let setup = RecordingSetup()
@@ -68,14 +84,15 @@ struct RecordingStartParamsEncodingTests {
         return e
     }
 
-    @Test("params encode with snake_case keys including record_video")
+    @Test("params encode with snake_case keys including auto_generate_notes")
     func encoding() throws {
         let params = RecordingStartParams(
             meetingId: "m1",
             audioSources: .systemAndMic,
             screenshotIntervalMs: 500,
             screenshotThreshold: 0.25,
-            recordVideo: true
+            recordVideo: true,
+            autoGenerateNotes: true
         )
         let data = try encoder.encode(params)
         let json = String(data: data, encoding: .utf8)!
@@ -84,6 +101,7 @@ struct RecordingStartParamsEncodingTests {
         #expect(json.contains("\"screenshot_interval_ms\":500"))
         #expect(json.contains("\"screenshot_threshold\":0.25"))
         #expect(json.contains("\"record_video\":true"))
+        #expect(json.contains("\"auto_generate_notes\":true"))
     }
 }
 

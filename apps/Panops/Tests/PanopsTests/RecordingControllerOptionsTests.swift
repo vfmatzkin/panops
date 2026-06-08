@@ -9,18 +9,21 @@ private actor CapturingRecordingIpcClient: LiveRecordingIpcClient {
     private(set) var intervalMs: UInt64?
     private(set) var threshold: Float?
     private(set) var recordVideo: Bool?
+    private(set) var autoGenerateNotes: Bool?
 
     func recordingStart(
         meetingId: String,
         audioSources: AudioSourcesWire,
         screenshotIntervalMs: UInt64,
         screenshotThreshold: Float,
-        recordVideo: Bool
+        recordVideo: Bool,
+        autoGenerateNotes: Bool
     ) async throws -> RecordingAccepted {
         self.audioSources = audioSources
         self.intervalMs = screenshotIntervalMs
         self.threshold = screenshotThreshold
         self.recordVideo = recordVideo
+        self.autoGenerateNotes = autoGenerateNotes
         return RecordingAccepted(recordingId: "rec-1")
     }
 
@@ -46,13 +49,17 @@ struct RecordingControllerOptionsTests {
             options: RecordingOptions(
                 audioSources: .micOnly,
                 screenshotIntervalMs: 1000,
-                screenshotThreshold: 0.5
+                screenshotThreshold: 0.5,
+                recordVideo: true,
+                autoGenerateNotes: false
             )
         )
 
         #expect(await fake.audioSources == .micOnly)
         #expect(await fake.intervalMs == 1000)
         #expect(await fake.threshold == 0.5)
+        #expect(await fake.recordVideo == true)
+        #expect(await fake.autoGenerateNotes == false)
         #expect(controller.isRecording)
     }
 
@@ -66,5 +73,7 @@ struct RecordingControllerOptionsTests {
         #expect(await fake.audioSources == .systemAndMic)
         #expect(await fake.intervalMs == 500)
         #expect(await fake.threshold == 0.15)
+        #expect(await fake.recordVideo == false)
+        #expect(await fake.autoGenerateNotes == true)
     }
 }
