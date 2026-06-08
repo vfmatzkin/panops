@@ -5,13 +5,15 @@
 //! capture); for now everything lives in one registry DB.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use panops_core::storage::{
-    Meeting, MeetingDraft, MeetingSummary, Note, NoteDraft, Storage, StorageError,
+    Meeting, MeetingDraft, MeetingListFilter, MeetingSummary, Note, NoteDraft, Project, Space,
+    Storage, StorageError, Tag,
 };
 
 /// Lock the connection mutex, mapping a poisoned mutex to a
@@ -58,7 +60,7 @@ fn map_meeting_constraint_violation(
     StorageError::sql(err)
 }
 
-const EXPECTED_SCHEMA_VERSION: u32 = 1;
+const EXPECTED_SCHEMA_VERSION: u32 = 2;
 
 // `PRAGMA foreign_keys = ON` is set per-connection in `new()`, not in DDL —
 // the DDL `PRAGMA` would be redundant on a fresh DB and a no-op on re-open
@@ -71,7 +73,9 @@ CREATE TABLE IF NOT EXISTS meeting (
     ended_at TEXT,
     duration_ms INTEGER,
     language TEXT NOT NULL DEFAULT 'auto',
-    dir_path TEXT NOT NULL UNIQUE
+    dir_path TEXT NOT NULL UNIQUE,
+    space_id TEXT REFERENCES space(id) ON DELETE SET NULL,
+    project_id TEXT REFERENCES project(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_meeting_started_at ON meeting(started_at DESC);
@@ -86,7 +90,74 @@ CREATE TABLE IF NOT EXISTS note (
 );
 
 CREATE INDEX IF NOT EXISTS idx_note_meeting_id ON note(meeting_id);
+
+CREATE TABLE IF NOT EXISTS space (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project (
+    id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL REFERENCES space(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tag (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS meeting_tag (
+    meeting_id TEXT NOT NULL REFERENCES meeting(id) ON DELETE CASCADE,
+    tag_id TEXT NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+    PRIMARY KEY (meeting_id, tag_id)
+);
 ";
+
+const MIGRATE_V1_TO_V2: &str = r"
+CREATE TABLE IF NOT EXISTS space (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project (
+    id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL REFERENCES space(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tag (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS meeting_tag (
+    meeting_id TEXT NOT NULL REFERENCES meeting(id) ON DELETE CASCADE,
+    tag_id TEXT NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+    PRIMARY KEY (meeting_id, tag_id)
+);
+";
+
+static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn new_id(prefix: &str) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let n = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}_{now:x}_{n:x}")
+}
 
 pub struct RusqliteStorage {
     conn: Arc<Mutex<Connection>>,
@@ -111,6 +182,10 @@ impl RusqliteStorage {
             conn.execute_batch(DDL).map_err(StorageError::sql)?;
             conn.execute_batch(&format!("PRAGMA user_version = {EXPECTED_SCHEMA_VERSION};"))
                 .map_err(StorageError::sql)?;
+        } else if actual == 1 {
+            migrate_v1_to_v2(&conn)?;
+            conn.execute_batch(&format!("PRAGMA user_version = {EXPECTED_SCHEMA_VERSION};"))
+                .map_err(StorageError::sql)?;
         } else if actual != EXPECTED_SCHEMA_VERSION {
             return Err(StorageError::SchemaMismatch {
                 actual,
@@ -122,6 +197,37 @@ impl RusqliteStorage {
             conn: Arc::new(Mutex::new(conn)),
         })
     }
+}
+
+fn migrate_v1_to_v2(conn: &Connection) -> Result<(), StorageError> {
+    conn.execute_batch(MIGRATE_V1_TO_V2)
+        .map_err(StorageError::sql)?;
+    if !column_exists(conn, "meeting", "space_id")? {
+        conn.execute_batch(
+            "ALTER TABLE meeting ADD COLUMN space_id TEXT REFERENCES space(id) ON DELETE SET NULL;",
+        )
+        .map_err(StorageError::sql)?;
+    }
+    if !column_exists(conn, "meeting", "project_id")? {
+        conn.execute_batch("ALTER TABLE meeting ADD COLUMN project_id TEXT REFERENCES project(id) ON DELETE SET NULL;")
+            .map_err(StorageError::sql)?;
+    }
+    Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, StorageError> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table});"))
+        .map_err(StorageError::sql)?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(StorageError::sql)?;
+    for row in rows {
+        if row.map_err(StorageError::sql)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn map_meeting_row(r: &rusqlite::Row) -> rusqlite::Result<Meeting> {
@@ -292,6 +398,13 @@ impl Storage for RusqliteStorage {
     }
 
     fn list_meetings(&self) -> Result<Vec<MeetingSummary>, StorageError> {
+        self.list_meetings_filtered(MeetingListFilter::default())
+    }
+
+    fn list_meetings_filtered(
+        &self,
+        filter: MeetingListFilter,
+    ) -> Result<Vec<MeetingSummary>, StorageError> {
         let conn = lock(&self.conn)?;
         let mut stmt = conn
             .prepare(
@@ -302,7 +415,9 @@ impl Storage for RusqliteStorage {
                      ended_at,
                      COALESCE(duration_ms, 0),
                      language,
-                     EXISTS (SELECT 1 FROM note WHERE note.meeting_id = meeting.id)
+                     EXISTS (SELECT 1 FROM note WHERE note.meeting_id = meeting.id),
+                     space_id,
+                     project_id
                  FROM meeting ORDER BY started_at DESC",
             )
             .map_err(StorageError::sql)?;
@@ -318,12 +433,35 @@ impl Storage for RusqliteStorage {
                     duration_ms: r.get::<_, i64>(4)?.max(0) as u64,
                     language: r.get(5)?,
                     has_notes: r.get(6)?,
+                    space_id: r.get(7)?,
+                    project_id: r.get(8)?,
+                    tags: Vec::new(),
                 })
             })
             .map_err(StorageError::sql)?;
         let mut out = Vec::new();
         for r in rows {
-            out.push(r.map_err(StorageError::sql)?);
+            let mut summary = r.map_err(StorageError::sql)?;
+            summary.tags = tag_ids_for_meeting(&conn, &summary.id)?;
+            if filter.unsorted && summary.space_id.is_some() {
+                continue;
+            }
+            if let Some(space_id) = &filter.space_id {
+                if summary.space_id.as_deref() != Some(space_id.as_str()) {
+                    continue;
+                }
+            }
+            if let Some(project_id) = &filter.project_id {
+                if summary.project_id.as_deref() != Some(project_id.as_str()) {
+                    continue;
+                }
+            }
+            if let Some(tag_id) = &filter.tag_id {
+                if !summary.tags.iter().any(|id| id == tag_id) {
+                    continue;
+                }
+            }
+            out.push(summary);
         }
         Ok(out)
     }
@@ -462,6 +600,351 @@ impl Storage for RusqliteStorage {
         }
         Ok(out)
     }
+
+    fn create_space(&self, name: &str) -> Result<Space, StorageError> {
+        let conn = lock(&self.conn)?;
+        let id = new_id("space");
+        let position = next_position(&conn, "space", None)?;
+        let created_at = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO space (id, name, position, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![id, name, position, created_at],
+        )
+        .map_err(StorageError::sql)?;
+        Ok(Space {
+            id,
+            name: name.into(),
+            position,
+        })
+    }
+
+    fn list_spaces(&self) -> Result<Vec<Space>, StorageError> {
+        let conn = lock(&self.conn)?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, position FROM space ORDER BY position ASC, name ASC")
+            .map_err(StorageError::sql)?;
+        collect_mapped(stmt.query_map([], map_space).map_err(StorageError::sql)?)
+    }
+
+    fn rename_space(&self, id: &str, name: &str) -> Result<(), StorageError> {
+        let conn = lock(&self.conn)?;
+        let n = conn
+            .execute(
+                "UPDATE space SET name = ?2 WHERE id = ?1",
+                params![id, name],
+            )
+            .map_err(StorageError::sql)?;
+        if n == 0 {
+            return Err(StorageError::NotFound {
+                id: id.into(),
+                kind: "space",
+            });
+        }
+        Ok(())
+    }
+
+    fn delete_space(&self, id: &str) -> Result<(), StorageError> {
+        let conn = lock(&self.conn)?;
+        let n = conn
+            .execute("DELETE FROM space WHERE id = ?1", params![id])
+            .map_err(StorageError::sql)?;
+        if n == 0 {
+            return Err(StorageError::NotFound {
+                id: id.into(),
+                kind: "space",
+            });
+        }
+        Ok(())
+    }
+
+    fn create_project(&self, space_id: &str, name: &str) -> Result<Project, StorageError> {
+        let conn = lock(&self.conn)?;
+        ensure_row_exists(&conn, "space", space_id)?;
+        let id = new_id("project");
+        let position = next_position(&conn, "project", Some(space_id))?;
+        let created_at = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO project (id, space_id, name, position, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, space_id, name, position, created_at],
+        )
+        .map_err(StorageError::sql)?;
+        Ok(Project {
+            id,
+            space_id: space_id.into(),
+            name: name.into(),
+            position,
+        })
+    }
+
+    fn list_projects(&self, space_id: Option<&str>) -> Result<Vec<Project>, StorageError> {
+        let conn = lock(&self.conn)?;
+        if let Some(space_id) = space_id {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, space_id, name, position
+                     FROM project WHERE space_id = ?1
+                     ORDER BY position ASC, name ASC",
+                )
+                .map_err(StorageError::sql)?;
+            collect_mapped(
+                stmt.query_map(params![space_id], map_project)
+                    .map_err(StorageError::sql)?,
+            )
+        } else {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, space_id, name, position
+                     FROM project ORDER BY space_id ASC, position ASC, name ASC",
+                )
+                .map_err(StorageError::sql)?;
+            collect_mapped(stmt.query_map([], map_project).map_err(StorageError::sql)?)
+        }
+    }
+
+    fn rename_project(&self, id: &str, name: &str) -> Result<(), StorageError> {
+        let conn = lock(&self.conn)?;
+        let n = conn
+            .execute(
+                "UPDATE project SET name = ?2 WHERE id = ?1",
+                params![id, name],
+            )
+            .map_err(StorageError::sql)?;
+        if n == 0 {
+            return Err(StorageError::NotFound {
+                id: id.into(),
+                kind: "project",
+            });
+        }
+        Ok(())
+    }
+
+    fn delete_project(&self, id: &str) -> Result<(), StorageError> {
+        let conn = lock(&self.conn)?;
+        let n = conn
+            .execute("DELETE FROM project WHERE id = ?1", params![id])
+            .map_err(StorageError::sql)?;
+        if n == 0 {
+            return Err(StorageError::NotFound {
+                id: id.into(),
+                kind: "project",
+            });
+        }
+        Ok(())
+    }
+
+    fn create_tag(&self, name: &str) -> Result<Tag, StorageError> {
+        let conn = lock(&self.conn)?;
+        if let Some(tag) = get_tag_by_name(&conn, name)? {
+            return Ok(tag);
+        }
+        let id = new_id("tag");
+        let created_at = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO tag (id, name, created_at) VALUES (?1, ?2, ?3)",
+            params![id, name, created_at],
+        )
+        .map_err(StorageError::sql)?;
+        Ok(Tag {
+            id,
+            name: name.into(),
+        })
+    }
+
+    fn list_tags(&self) -> Result<Vec<Tag>, StorageError> {
+        let conn = lock(&self.conn)?;
+        let mut stmt = conn
+            .prepare("SELECT id, name FROM tag ORDER BY name ASC, id ASC")
+            .map_err(StorageError::sql)?;
+        collect_mapped(stmt.query_map([], map_tag).map_err(StorageError::sql)?)
+    }
+
+    fn delete_tag(&self, id: &str) -> Result<(), StorageError> {
+        let conn = lock(&self.conn)?;
+        let n = conn
+            .execute("DELETE FROM tag WHERE id = ?1", params![id])
+            .map_err(StorageError::sql)?;
+        if n == 0 {
+            return Err(StorageError::NotFound {
+                id: id.into(),
+                kind: "tag",
+            });
+        }
+        Ok(())
+    }
+
+    fn tag_meeting(&self, meeting_id: &str, tag_id: &str) -> Result<(), StorageError> {
+        let conn = lock(&self.conn)?;
+        ensure_row_exists(&conn, "meeting", meeting_id)?;
+        ensure_row_exists(&conn, "tag", tag_id)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO meeting_tag (meeting_id, tag_id) VALUES (?1, ?2)",
+            params![meeting_id, tag_id],
+        )
+        .map_err(StorageError::sql)?;
+        Ok(())
+    }
+
+    fn untag_meeting(&self, meeting_id: &str, tag_id: &str) -> Result<(), StorageError> {
+        let conn = lock(&self.conn)?;
+        ensure_row_exists(&conn, "meeting", meeting_id)?;
+        ensure_row_exists(&conn, "tag", tag_id)?;
+        conn.execute(
+            "DELETE FROM meeting_tag WHERE meeting_id = ?1 AND tag_id = ?2",
+            params![meeting_id, tag_id],
+        )
+        .map_err(StorageError::sql)?;
+        Ok(())
+    }
+
+    fn list_tags_for_meeting(&self, meeting_id: &str) -> Result<Vec<Tag>, StorageError> {
+        let conn = lock(&self.conn)?;
+        ensure_row_exists(&conn, "meeting", meeting_id)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT tag.id, tag.name
+                 FROM tag
+                 INNER JOIN meeting_tag ON meeting_tag.tag_id = tag.id
+                 WHERE meeting_tag.meeting_id = ?1
+                 ORDER BY tag.name ASC, tag.id ASC",
+            )
+            .map_err(StorageError::sql)?;
+        collect_mapped(
+            stmt.query_map(params![meeting_id], map_tag)
+                .map_err(StorageError::sql)?,
+        )
+    }
+
+    fn assign_meeting(
+        &self,
+        meeting_id: &str,
+        space_id: Option<String>,
+        project_id: Option<String>,
+    ) -> Result<(), StorageError> {
+        let conn = lock(&self.conn)?;
+        ensure_row_exists(&conn, "meeting", meeting_id)?;
+        let (space_id, project_id) = if let Some(project_id) = project_id {
+            let project_space_id: String = conn
+                .query_row(
+                    "SELECT space_id FROM project WHERE id = ?1",
+                    params![project_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(StorageError::sql)?
+                .ok_or_else(|| StorageError::NotFound {
+                    id: project_id.clone(),
+                    kind: "project",
+                })?;
+            (Some(project_space_id), Some(project_id))
+        } else {
+            if let Some(space_id) = space_id.as_deref() {
+                ensure_row_exists(&conn, "space", space_id)?;
+            }
+            (space_id, None)
+        };
+        conn.execute(
+            "UPDATE meeting SET space_id = ?2, project_id = ?3 WHERE id = ?1",
+            params![meeting_id, space_id, project_id],
+        )
+        .map_err(StorageError::sql)?;
+        Ok(())
+    }
+}
+
+fn next_position(
+    conn: &Connection,
+    table: &str,
+    project_space_id: Option<&str>,
+) -> Result<i64, StorageError> {
+    let value: Option<i64> = if table == "project" {
+        conn.query_row(
+            "SELECT MAX(position) FROM project WHERE space_id = ?1",
+            params![project_space_id],
+            |r| r.get(0),
+        )
+        .map_err(StorageError::sql)?
+    } else {
+        conn.query_row("SELECT MAX(position) FROM space", [], |r| r.get(0))
+            .map_err(StorageError::sql)?
+    };
+    Ok(value.map_or(0, |v| v + 1))
+}
+
+fn ensure_row_exists(conn: &Connection, table: &'static str, id: &str) -> Result<(), StorageError> {
+    let sql = format!("SELECT 1 FROM {table} WHERE id = ?1");
+    let exists = conn
+        .query_row(&sql, params![id], |_| Ok(true))
+        .optional()
+        .map_err(StorageError::sql)?
+        .unwrap_or(false);
+    if exists {
+        Ok(())
+    } else {
+        Err(StorageError::NotFound {
+            id: id.into(),
+            kind: table,
+        })
+    }
+}
+
+fn tag_ids_for_meeting(conn: &Connection, meeting_id: &str) -> Result<Vec<String>, StorageError> {
+    let mut stmt = conn
+        .prepare("SELECT tag_id FROM meeting_tag WHERE meeting_id = ?1 ORDER BY tag_id ASC")
+        .map_err(StorageError::sql)?;
+    let rows = stmt
+        .query_map(params![meeting_id], |r| r.get::<_, String>(0))
+        .map_err(StorageError::sql)?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(StorageError::sql)?);
+    }
+    Ok(out)
+}
+
+fn get_tag_by_name(conn: &Connection, name: &str) -> Result<Option<Tag>, StorageError> {
+    conn.query_row(
+        "SELECT id, name FROM tag WHERE name = ?1",
+        params![name],
+        map_tag,
+    )
+    .optional()
+    .map_err(StorageError::sql)
+}
+
+fn map_space(r: &rusqlite::Row) -> rusqlite::Result<Space> {
+    Ok(Space {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        position: r.get(2)?,
+    })
+}
+
+fn map_project(r: &rusqlite::Row) -> rusqlite::Result<Project> {
+    Ok(Project {
+        id: r.get(0)?,
+        space_id: r.get(1)?,
+        name: r.get(2)?,
+        position: r.get(3)?,
+    })
+}
+
+fn map_tag(r: &rusqlite::Row) -> rusqlite::Result<Tag> {
+    Ok(Tag {
+        id: r.get(0)?,
+        name: r.get(1)?,
+    })
+}
+
+fn collect_mapped<T, F>(rows: rusqlite::MappedRows<'_, F>) -> Result<Vec<T>, StorageError>
+where
+    F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+{
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(StorageError::sql)?);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -498,5 +981,87 @@ mod tests {
         let storage = RusqliteStorage::new(&db).unwrap();
         let m = storage.get_meeting("a").unwrap();
         assert_eq!(m.id, "a");
+    }
+
+    #[test]
+    fn v1_registry_migrates_preserving_meetings_and_notes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("panops.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                r"
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE meeting (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    duration_ms INTEGER,
+                    language TEXT NOT NULL DEFAULT 'auto',
+                    dir_path TEXT NOT NULL UNIQUE
+                );
+                CREATE INDEX idx_meeting_started_at ON meeting(started_at DESC);
+                CREATE TABLE note (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    meeting_id TEXT NOT NULL REFERENCES meeting(id) ON DELETE CASCADE,
+                    dialect TEXT NOT NULL,
+                    content_md TEXT NOT NULL,
+                    primary_path TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX idx_note_meeting_id ON note(meeting_id);
+                INSERT INTO meeting
+                    (id, title, started_at, ended_at, duration_ms, language, dir_path)
+                VALUES
+                    ('m_old', 'Old Meeting', '2026-05-05T10:00:00+00:00', NULL, NULL, 'en', '/tmp/old');
+                INSERT INTO note
+                    (id, meeting_id, dialect, content_md, primary_path, created_at)
+                VALUES
+                    ('n_old', 'm_old', 'basic', '# old', '/tmp/old/notes.md', '2026-05-05T10:01:00+00:00');
+                PRAGMA user_version = 1;
+                ",
+            )
+            .unwrap();
+        }
+
+        let storage = RusqliteStorage::new(&db).expect("migrate v1 to v2");
+        let meeting = storage.get_meeting("m_old").expect("old meeting survives");
+        assert_eq!(meeting.title, "Old Meeting");
+        assert_eq!(meeting.language, "en");
+        let notes = storage
+            .list_notes_for_meeting("m_old")
+            .expect("old notes survive");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, "n_old");
+        let summary = storage
+            .list_meetings()
+            .expect("list after migration")
+            .into_iter()
+            .find(|m| m.id == "m_old")
+            .expect("old summary");
+        assert!(summary.space_id.is_none());
+        assert!(summary.project_id.is_none());
+        assert!(summary.tags.is_empty());
+
+        let conn = Connection::open(&db).unwrap();
+        let v: u32 = conn
+            .query_row("PRAGMA user_version;", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, EXPECTED_SCHEMA_VERSION);
+        for table in ["space", "project", "tag", "meeting_tag"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![table],
+                    |_| Ok(true),
+                )
+                .optional()
+                .unwrap()
+                .unwrap_or(false);
+            assert!(exists, "{table} table should exist after migration");
+        }
+        assert!(column_exists(&conn, "meeting", "space_id").unwrap());
+        assert!(column_exists(&conn, "meeting", "project_id").unwrap());
     }
 }

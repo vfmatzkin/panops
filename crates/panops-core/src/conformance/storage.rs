@@ -14,7 +14,7 @@
 //! - `delete_meeting` removes the row AND cascades note deletion.
 //! - `create_note` round-trips via `list_notes_for_meeting`.
 
-use crate::storage::{MeetingDraft, NoteDraft, Storage, StorageError};
+use crate::storage::{MeetingDraft, MeetingListFilter, NoteDraft, Storage, StorageError};
 
 /// Run the full conformance suite against a `Storage` implementation.
 pub fn run_suite<S: Storage>(adapter: &S) {
@@ -29,6 +29,13 @@ pub fn run_suite<S: Storage>(adapter: &S) {
     create_and_list_notes_for_meeting(adapter);
     create_meeting_with_note_atomic_happy_path(adapter);
     create_meeting_with_note_rolls_back_on_note_collision(adapter);
+    spaces_create_list_rename_delete(adapter);
+    projects_create_list_rename_delete(adapter);
+    tags_create_list_delete_and_idempotent_name(adapter);
+    tag_meeting_untag_and_list_tags_for_meeting(adapter);
+    assign_meeting_handles_space_and_project_sets_space(adapter);
+    list_meetings_supports_org_filters(adapter);
+    deleting_org_rows_preserves_meetings_and_clears_refs(adapter);
 }
 
 fn create_get_round_trip<S: Storage>(adapter: &S) {
@@ -352,6 +359,305 @@ fn create_meeting_with_note_rolls_back_on_note_collision<S: Storage>(adapter: &S
         matches!(look, Err(StorageError::NotFound { .. })),
         "expected new_m to be rolled back, got {look:?}"
     );
+}
+
+fn spaces_create_list_rename_delete<S: Storage>(adapter: &S) {
+    let space = adapter.create_space("Work").expect("create space");
+    assert_eq!(space.name, "Work");
+    assert!(space.position >= 0);
+
+    adapter
+        .rename_space(&space.id, "Deep Work")
+        .expect("rename space");
+    let spaces = adapter.list_spaces().expect("list spaces");
+    assert!(
+        spaces
+            .iter()
+            .any(|s| s.id == space.id && s.name == "Deep Work")
+    );
+
+    adapter.delete_space(&space.id).expect("delete space");
+    let spaces = adapter.list_spaces().expect("list spaces after delete");
+    assert!(!spaces.iter().any(|s| s.id == space.id));
+
+    let err = adapter
+        .rename_space(&space.id, "Missing")
+        .expect_err("renaming deleted space should fail");
+    assert!(matches!(err, StorageError::NotFound { kind: "space", .. }));
+}
+
+fn projects_create_list_rename_delete<S: Storage>(adapter: &S) {
+    let space_a = adapter.create_space("Projects A").expect("space a");
+    let space_b = adapter.create_space("Projects B").expect("space b");
+    let project = adapter
+        .create_project(&space_a.id, "Launch")
+        .expect("create project");
+    let other = adapter
+        .create_project(&space_b.id, "Other")
+        .expect("create other project");
+    assert_eq!(project.space_id, space_a.id);
+
+    adapter
+        .rename_project(&project.id, "Renamed Launch")
+        .expect("rename project");
+    let filtered = adapter
+        .list_projects(Some(&space_a.id))
+        .expect("list projects for one space");
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].id, project.id);
+    assert_eq!(filtered[0].name, "Renamed Launch");
+
+    let all = adapter.list_projects(None).expect("list all projects");
+    assert!(all.iter().any(|p| p.id == other.id));
+
+    adapter.delete_project(&project.id).expect("delete project");
+    let filtered = adapter
+        .list_projects(Some(&space_a.id))
+        .expect("list projects after delete");
+    assert!(filtered.is_empty());
+
+    let err = adapter
+        .create_project("missing-space", "Nope")
+        .expect_err("project in missing space should fail");
+    assert!(matches!(err, StorageError::NotFound { kind: "space", .. }));
+}
+
+fn tags_create_list_delete_and_idempotent_name<S: Storage>(adapter: &S) {
+    let tag = adapter.create_tag("urgent").expect("create tag");
+    let same = adapter
+        .create_tag("urgent")
+        .expect("create tag with same name should be idempotent");
+    assert_eq!(tag, same);
+
+    let tags = adapter.list_tags().expect("list tags");
+    assert!(tags.iter().any(|t| t.id == tag.id && t.name == "urgent"));
+
+    adapter.delete_tag(&tag.id).expect("delete tag");
+    let tags = adapter.list_tags().expect("list tags after delete");
+    assert!(!tags.iter().any(|t| t.id == tag.id));
+}
+
+fn tag_meeting_untag_and_list_tags_for_meeting<S: Storage>(adapter: &S) {
+    let meeting_id = "m_tagging";
+    adapter
+        .create_meeting(draft(meeting_id, "Tagging", "2026-05-09T10:00:00+00:00"))
+        .expect("create meeting");
+    let tag = adapter.create_tag("customer").expect("create tag");
+
+    adapter
+        .tag_meeting(meeting_id, &tag.id)
+        .expect("tag meeting");
+    adapter
+        .tag_meeting(meeting_id, &tag.id)
+        .expect("tag meeting idempotent");
+    let tags = adapter
+        .list_tags_for_meeting(meeting_id)
+        .expect("list tags for meeting");
+    assert_eq!(tags, vec![tag.clone()]);
+
+    let summary = adapter
+        .list_meetings()
+        .expect("list meetings")
+        .into_iter()
+        .find(|m| m.id == meeting_id)
+        .expect("tagged meeting summary");
+    assert_eq!(summary.tags, vec![tag.id.clone()]);
+
+    adapter
+        .untag_meeting(meeting_id, &tag.id)
+        .expect("untag meeting");
+    let tags = adapter
+        .list_tags_for_meeting(meeting_id)
+        .expect("list tags after untag");
+    assert!(tags.is_empty());
+
+    let err = adapter
+        .tag_meeting("missing-meeting", &tag.id)
+        .expect_err("tagging missing meeting should fail");
+    assert!(matches!(
+        err,
+        StorageError::NotFound {
+            kind: "meeting",
+            ..
+        }
+    ));
+}
+
+fn assign_meeting_handles_space_and_project_sets_space<S: Storage>(adapter: &S) {
+    let meeting_id = "m_assign";
+    adapter
+        .create_meeting(draft(meeting_id, "Assign", "2026-05-10T10:00:00+00:00"))
+        .expect("create meeting");
+    let space = adapter.create_space("Assignments").expect("create space");
+    let project = adapter
+        .create_project(&space.id, "Nested")
+        .expect("create project");
+
+    adapter
+        .assign_meeting(meeting_id, Some(space.id.clone()), None)
+        .expect("assign to space");
+    let space_summary = summary(adapter, meeting_id);
+    assert_eq!(space_summary.space_id.as_deref(), Some(space.id.as_str()));
+    assert!(space_summary.project_id.is_none());
+
+    adapter
+        .assign_meeting(meeting_id, None, Some(project.id.clone()))
+        .expect("assign to project");
+    let project_summary = summary(adapter, meeting_id);
+    assert_eq!(project_summary.space_id.as_deref(), Some(space.id.as_str()));
+    assert_eq!(
+        project_summary.project_id.as_deref(),
+        Some(project.id.as_str())
+    );
+
+    adapter
+        .assign_meeting(meeting_id, None, None)
+        .expect("clear assignment");
+    let cleared_summary = summary(adapter, meeting_id);
+    assert!(cleared_summary.space_id.is_none());
+    assert!(cleared_summary.project_id.is_none());
+}
+
+fn list_meetings_supports_org_filters<S: Storage>(adapter: &S) {
+    let inbox_id = "m_filter_inbox";
+    let space_id = "m_filter_space";
+    let project_id = "m_filter_project";
+    adapter
+        .create_meeting(draft(inbox_id, "Inbox", "2026-05-11T10:00:00+00:00"))
+        .expect("create inbox meeting");
+    adapter
+        .create_meeting(draft(space_id, "Space", "2026-05-12T10:00:00+00:00"))
+        .expect("create space meeting");
+    adapter
+        .create_meeting(draft(project_id, "Project", "2026-05-13T10:00:00+00:00"))
+        .expect("create project meeting");
+    let space = adapter.create_space("Filter Space").expect("create space");
+    let project = adapter
+        .create_project(&space.id, "Filter Project")
+        .expect("create project");
+    let tag = adapter.create_tag("filter-tag").expect("create tag");
+    adapter
+        .assign_meeting(space_id, Some(space.id.clone()), None)
+        .expect("assign space meeting");
+    adapter
+        .assign_meeting(project_id, None, Some(project.id.clone()))
+        .expect("assign project meeting");
+    adapter
+        .tag_meeting(project_id, &tag.id)
+        .expect("tag project meeting");
+
+    let inbox_rows = adapter
+        .list_meetings_filtered(MeetingListFilter {
+            unsorted: true,
+            ..MeetingListFilter::default()
+        })
+        .expect("inbox filter");
+    assert!(inbox_rows.iter().any(|m| m.id == inbox_id));
+    assert!(
+        !inbox_rows
+            .iter()
+            .any(|m| m.id == space_id || m.id == project_id)
+    );
+
+    let space_rows = adapter
+        .list_meetings_filtered(MeetingListFilter {
+            space_id: Some(space.id.clone()),
+            ..MeetingListFilter::default()
+        })
+        .expect("space filter");
+    assert!(space_rows.iter().any(|m| m.id == space_id));
+    assert!(space_rows.iter().any(|m| m.id == project_id));
+    assert!(!space_rows.iter().any(|m| m.id == inbox_id));
+
+    let project_rows = adapter
+        .list_meetings_filtered(MeetingListFilter {
+            project_id: Some(project.id.clone()),
+            ..MeetingListFilter::default()
+        })
+        .expect("project filter");
+    assert_eq!(
+        project_rows
+            .iter()
+            .map(|m| m.id.as_str())
+            .filter(|id| [project_id, space_id, inbox_id].contains(id))
+            .collect::<Vec<_>>(),
+        vec![project_id]
+    );
+
+    let tag_rows = adapter
+        .list_meetings_filtered(MeetingListFilter {
+            tag_id: Some(tag.id.clone()),
+            ..MeetingListFilter::default()
+        })
+        .expect("tag filter");
+    assert_eq!(
+        tag_rows
+            .iter()
+            .map(|m| m.id.as_str())
+            .filter(|id| [project_id, space_id, inbox_id].contains(id))
+            .collect::<Vec<_>>(),
+        vec![project_id]
+    );
+}
+
+fn deleting_org_rows_preserves_meetings_and_clears_refs<S: Storage>(adapter: &S) {
+    let project_meeting = "m_delete_project_ref";
+    let space_meeting = "m_delete_space_ref";
+    adapter
+        .create_meeting(draft(
+            project_meeting,
+            "Project Ref",
+            "2026-05-14T10:00:00+00:00",
+        ))
+        .expect("create project ref meeting");
+    adapter
+        .create_meeting(draft(
+            space_meeting,
+            "Space Ref",
+            "2026-05-15T10:00:00+00:00",
+        ))
+        .expect("create space ref meeting");
+
+    let project_space = adapter.create_space("Delete Project Space").expect("space");
+    let project = adapter
+        .create_project(&project_space.id, "Delete Me")
+        .expect("project");
+    adapter
+        .assign_meeting(project_meeting, None, Some(project.id.clone()))
+        .expect("assign project ref");
+    adapter.delete_project(&project.id).expect("delete project");
+    let project_summary = summary(adapter, project_meeting);
+    assert_eq!(
+        project_summary.space_id.as_deref(),
+        Some(project_space.id.as_str()),
+        "deleting only a project should keep the containing space assignment"
+    );
+    assert!(project_summary.project_id.is_none());
+
+    let space = adapter.create_space("Delete Space").expect("space");
+    let project = adapter
+        .create_project(&space.id, "Deleted With Space")
+        .expect("project");
+    adapter
+        .assign_meeting(space_meeting, None, Some(project.id.clone()))
+        .expect("assign space ref");
+    adapter.delete_space(&space.id).expect("delete space");
+    let space_summary = summary(adapter, space_meeting);
+    assert!(space_summary.space_id.is_none());
+    assert!(space_summary.project_id.is_none());
+    assert!(
+        adapter.get_meeting(project_meeting).is_ok() && adapter.get_meeting(space_meeting).is_ok(),
+        "org deletes must not delete meetings"
+    );
+}
+
+fn summary<S: Storage>(adapter: &S, meeting_id: &str) -> crate::storage::MeetingSummary {
+    adapter
+        .list_meetings()
+        .expect("list meetings")
+        .into_iter()
+        .find(|m| m.id == meeting_id)
+        .expect("meeting summary")
 }
 
 fn draft(id: &str, title: &str, started_at: &str) -> MeetingDraft {
