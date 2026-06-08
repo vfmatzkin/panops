@@ -1,5 +1,154 @@
 import SwiftUI
 
+/// Elapsed-time formatting for the recording screen. Pure + testable; the
+/// timer is client-side (counts up from the moment the screen appears) — the
+/// engine emits no authoritative recording clock.
+enum RecordingClock {
+    /// "MM:SS" under an hour, "H:MM:SS" once it passes one. Negatives clamp to
+    /// zero so a clock-skew blip never renders a negative timer.
+    static func label(seconds: Int) -> String {
+        let total = max(0, seconds)
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%02d:%02d", minutes, secs)
+    }
+}
+
+/// The full recording screen: a large client-side timer, the capture-source
+/// indicators chosen in the setup sheet, the honest trust strip, and a
+/// prominent Stop. Shown while `controller.isRecording`. Deliberately shows no
+/// live transcript — transcript + notes are produced only after Stop.
+struct RecordingScreen<Controller: RecordingController & ObservableObject>: View {
+    @ObservedObject var controller: Controller
+    let setup: RecordingSetup
+    let onRecordingStopped: (URL?) async throws -> Void
+
+    @State private var isStopping = false
+    @State private var errorMessage: String?
+    @State private var startDate: Date?
+
+    init(
+        controller: Controller,
+        setup: RecordingSetup,
+        onRecordingStopped: @escaping (URL?) async throws -> Void = { _ in }
+    ) {
+        self._controller = ObservedObject(wrappedValue: controller)
+        self.setup = setup
+        self.onRecordingStopped = onRecordingStopped
+    }
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 11, height: 11)
+                Text("Recording")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+            }
+
+            TimelineView(.periodic(from: startDate ?? Date(), by: 1)) { context in
+                Text(RecordingClock.label(seconds: elapsedSeconds(asOf: context.date)))
+                    .font(.system(size: 60, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+            }
+
+            captureSourceIndicators
+
+            Text("Transcript & notes appear after recording stops.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            Button(role: .destructive) {
+                Task { @MainActor in await stop() }
+            } label: {
+                Label("Stop Recording", systemImage: "stop.fill")
+                    .padding(.horizontal, 12)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(.red)
+            .disabled(isStopping)
+            .help("Stop recording and generate notes")
+
+            Spacer()
+            TrustStrip()
+                .padding(.bottom, 12)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+        .onAppear { if startDate == nil { startDate = Date() } }
+        .alert("Recording error", isPresented: errorPresented) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    /// Active capture sources, derived from the chosen setup. Static-from-config
+    /// is honest here: there are no live capture-status events to reflect.
+    private var captureSourceIndicators: some View {
+        HStack(spacing: 8) {
+            ForEach(activeSources) { source in
+                TrustChip(systemImage: source.icon, label: source.label)
+            }
+        }
+    }
+
+    private struct CaptureSource: Identifiable {
+        let id: String
+        let icon: String
+        let label: String
+    }
+
+    private var activeSources: [CaptureSource] {
+        var sources: [CaptureSource] = []
+        if setup.audioSources == .micOnly || setup.audioSources == .systemAndMic {
+            sources.append(CaptureSource(id: "mic", icon: "mic", label: "Mic"))
+        }
+        if setup.audioSources == .systemOnly || setup.audioSources == .systemAndMic {
+            sources.append(CaptureSource(id: "system", icon: "speaker.wave.2", label: "System audio"))
+        }
+        if setup.captureScreenshots {
+            sources.append(CaptureSource(id: "screenshots", icon: "photo", label: "Screenshots"))
+        }
+        return sources
+    }
+
+    private func elapsedSeconds(asOf now: Date) -> Int {
+        guard let startDate else { return 0 }
+        return Int(now.timeIntervalSince(startDate))
+    }
+
+    private var errorPresented: Binding<Bool> {
+        Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )
+    }
+
+    private func stop() async {
+        guard !isStopping else { return }
+        isStopping = true
+        defer { isStopping = false }
+        do {
+            let audioURL = try await controller.stop()
+            try await onRecordingStopped(audioURL)
+        } catch {
+            AppViewModel.logFullError("recording.stop", error)
+            errorMessage = "Couldn't stop recording."
+        }
+    }
+}
+
 /// Record/Stop control bar backed by an injected RecordingController.
 struct RecordBar<Controller: RecordingController & ObservableObject>: View {
     @ObservedObject var controller: Controller
