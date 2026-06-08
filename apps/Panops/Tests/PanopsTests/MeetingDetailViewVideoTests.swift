@@ -76,14 +76,12 @@ struct MeetingDetailViewVideoTests {
 
         for (size, expected) in testCases {
             let filePath = tempDir.appendingPathComponent("video_\(size).mov")
-            // Create file with exact size
+            // Create an empty file, then truncate to the exact size — sparse on
+            // disk, so the 1 GB case stays cheap (no in-memory buffer).
+            fm.createFile(atPath: filePath.path, contents: nil)
             if let handle = FileHandle(forWritingAtPath: filePath.path) {
                 try? handle.truncate(atOffset: UInt64(size))
                 try? handle.close()
-            } else {
-                // Fallback: write null bytes
-                var empty = Data(count: Int(size))
-                try? empty.write(to: filePath)
             }
 
             let url = filePath

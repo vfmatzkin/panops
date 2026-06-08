@@ -527,19 +527,14 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        // Delete the file
-        let fm = FileManager.default
+        // Route deletion through the engine's path-validated meeting.deleteVideo
+        // IPC — the engine owns the meeting dir and validates the path. Do NOT
+        // delete the file directly. Clear local state only after it succeeds.
         do {
-            try fm.removeItem(at: url)
-            // Update our state
+            _ = try await vm.deleteVideoForMeeting(meetingId: meeting.id)
             videoFileURL = nil
-            // Call the IPC to update the engine's record
-            do {
-                _ = try await vm.deleteVideoForMeeting(meetingId: meeting.id)
-            } catch {
-                AppViewModel.logFullError("meeting.deleteVideo", error)
-            }
         } catch {
+            AppViewModel.logFullError("meeting.deleteVideo", error)
             let errorAlert = NSAlert()
             errorAlert.messageText = "Failed to delete video"
             errorAlert.informativeText = error.localizedDescription
@@ -580,6 +575,7 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
         notesContent = nil
         structuredNotes = nil
         screenshots = nil
+        videoFileURL = nil
         isLoading = true
 
         let dirPath = meeting.dirPath
