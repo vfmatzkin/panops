@@ -174,6 +174,25 @@ struct MarkdownTests {
         #expect(blocks.contains(.paragraph(text: "After the block")))
     }
 
+    @Test("parseBlocks keeps autolinks and emails intact")
+    func keepsAutolinksAndEmails() {
+        let blocks = Markdown.parseBlocks("Visit <https://example.com> or mail <a@b.com>.")
+        let paragraph = blocks.compactMap { block -> String? in
+            if case let .paragraph(text) = block { return text }
+            return nil
+        }.first
+        #expect(paragraph?.contains("<https://example.com>") == true)
+        #expect(paragraph?.contains("<a@b.com>") == true)
+    }
+
+    @Test("sanitizeInline strips known tags but spares autolinks and emails")
+    func sanitizeSparesLinks() {
+        #expect(Markdown.sanitizeInline("a <td>x</td> b") == "a x b")
+        #expect(Markdown.sanitizeInline("see <span>y</span>") == "see y")
+        #expect(Markdown.sanitizeInline("<https://example.com>") == "<https://example.com>")
+        #expect(Markdown.sanitizeInline("<alice@example.com>") == "<alice@example.com>")
+    }
+
     /// Render any block to a string for raw-tag-leak assertions.
     private func describe(_ block: MarkdownBlock) -> String {
         switch block {
