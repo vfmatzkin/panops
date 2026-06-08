@@ -12,6 +12,7 @@ struct CaptureParams: Decodable {
     let screenshotIntervalMs: UInt64?
     let screenshotThreshold: Float?
     let recordVideo: Bool?               // also mux a playable recording.mov
+    let captureTarget: CaptureTarget?    // what the SCStream captures (default: display)
 
     enum CodingKeys: String, CodingKey {
         case meetingId = "meeting_id"
@@ -22,6 +23,20 @@ struct CaptureParams: Decodable {
         case screenshotIntervalMs = "screenshot_interval_ms"
         case screenshotThreshold = "screenshot_threshold"
         case recordVideo = "record_video"
+        case captureTarget = "capture_target"
+    }
+}
+
+/// Wire form of `capture_target`: `{"kind":"display"}` (default) or
+/// `{"kind":"window","window_id":<u32>}`. Decoded leniently — domain mapping
+/// (and the display fallback for malformed shapes) lives in `CaptureTargetKind`.
+struct CaptureTarget: Decodable {
+    let kind: String                     // "display" | "window"
+    let windowId: UInt32?                // present when kind == "window"
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case windowId = "window_id"
     }
 }
 
