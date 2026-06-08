@@ -48,9 +48,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # 4. Ad-hoc sign (inner binaries first, then the app), hardened runtime + entitlements
-for b in "$RES/panops-engine" "$RES/panops-asr-mac" "$RES/panops-llm-mac" "$RES/panops-capture-mac"; do
+for b in "$RES/panops-engine" "$RES/panops-asr-mac" "$RES/panops-llm-mac"; do
   codesign --force --options runtime --timestamp=none -s - "$b"
 done
+# The capture sidecar is the process that opens the microphone, so under the
+# hardened runtime IT needs the audio-input entitlement on its own executable
+# (it isn't inherited from the outer .app). Without this, mic recording fails
+# even after the user grants the Microphone permission.
+codesign --force --options runtime --timestamp=none \
+  --entitlements apps/Panops/Panops.entitlements -s - "$RES/panops-capture-mac"
 codesign --force --options runtime --timestamp=none \
   --entitlements apps/Panops/Panops.entitlements -s - "$APP"
 codesign --verify --deep --strict "$APP"
