@@ -27,6 +27,10 @@ final class AppViewModel: ObservableObject {
     @Published var state: State = .idle(audio: nil)
     @Published var selectedMeetingId: String?
     @Published var activeRecordingMeetingId: String?
+    /// Directory of the meeting that owns the active recording. The health-line
+    /// byte poll keys on this — not the sidebar selection — so switching meetings
+    /// mid-recording doesn't re-target the poll at an idle directory.
+    @Published var activeRecordingDirPath: String?
     /// The displayed meeting list — `allMeetings` narrowed by the current
     /// sidebar selection. The content list renders this.
     @Published var meetings: [MeetingSummary] = []
@@ -738,6 +742,11 @@ final class AppViewModel: ObservableObject {
         state = .idle(audio: nil)
         await refreshMeetings()
         await loadSelectedMeeting()
+        // Pin the recording's directory so the health-line poll keeps targeting
+        // it even if the sidebar selection changes mid-recording.
+        if selectedMeeting?.id == meetingId {
+            activeRecordingDirPath = selectedMeeting?.dirPath
+        }
     }
 
     /// Load meeting detail when selected.
@@ -763,6 +772,7 @@ final class AppViewModel: ObservableObject {
         let stoppedMeeting = try await client.meetingStop(id: meetingId)
         if activeRecordingMeetingId == meetingId {
             activeRecordingMeetingId = nil
+            activeRecordingDirPath = nil
         }
         await refreshMeetings()
         if selectedMeetingId == meetingId {
@@ -912,6 +922,7 @@ final class AppViewModel: ObservableObject {
         Task { await eventStream.stop() }
         selectedMeetingId = nil
         activeRecordingMeetingId = nil
+        activeRecordingDirPath = nil
         selectedMeeting = nil
         notesProgress = nil
         notesLastProgressAt = nil
@@ -995,7 +1006,7 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
                     controller: recordingController,
                     preview: preview,
                     setup: activeSetup,
-                    meetingDirPath: vm.selectedMeeting?.dirPath,
+                    meetingDirPath: vm.activeRecordingDirPath,
                     onRecordingStopped: { outcome in
                         // The controller already cleared isRecording, so this
                         // RecordingScreen unmounts the instant stop succeeds and
@@ -1023,6 +1034,8 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
                     onRecordingStarted: { id in
                         await MainActor.run {
                             vm.activeRecordingMeetingId = id
+                            // Pin this meeting's dir for the health-line poll.
+                            vm.activeRecordingDirPath = meeting.dirPath
                         }
                     },
                     onRecordingStopped: { outcome in
