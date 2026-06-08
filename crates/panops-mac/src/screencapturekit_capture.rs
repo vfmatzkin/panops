@@ -385,6 +385,7 @@ impl Capture for ScreenCaptureKitCapture {
         Ok(CaptureSession {
             meeting_id: meeting_id.to_string(),
             started_at_ms: started.started_at_ms,
+            capture_target: config.capture_target,
         })
     }
 
@@ -546,6 +547,7 @@ mod tests {
         let session = CaptureSession {
             meeting_id: "never_started".into(),
             started_at_ms: 0,
+            capture_target: CaptureTarget::Display,
         };
         let err = cap.stop_capture(&session).expect_err("should fail");
         assert!(matches!(err, CaptureError::SessionNotFound(id) if id == "never_started"));
