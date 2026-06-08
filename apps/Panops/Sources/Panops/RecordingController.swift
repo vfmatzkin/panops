@@ -82,6 +82,12 @@ struct RecordingSetup: Equatable {
 @MainActor
 protocol RecordingController: AnyObject {
     var isRecording: Bool { get }
+    /// True only once `recording.start` has been accepted (a recording id
+    /// exists) and the recording hasn't been stopped yet. `isRecording` flips
+    /// optimistically before acceptance to block a double-start, so the UI must
+    /// gate Stop on this signal — not on `isRecording` — to avoid a Stop that
+    /// no-ops while the start is still in flight.
+    var canStop: Bool { get }
     func start(meetingId: String, options: RecordingOptions) async throws
     func stop() async throws -> URL?  // Returns audio file path
 }
@@ -99,10 +105,12 @@ extension RecordingController {
 @MainActor
 final class MockRecordingController: RecordingController, ObservableObject {
     @Published private(set) var isRecording = false
+    @Published private(set) var canStop = false
     @Published var showPlaceholderAlert = false
 
     func start(meetingId: String, options: RecordingOptions) async throws {
         isRecording = true
+        canStop = true
         // Placeholder: show alert after brief delay
         try await Task.sleep(nanoseconds: 500_000_000)
         showPlaceholderAlert = true
@@ -110,6 +118,7 @@ final class MockRecordingController: RecordingController, ObservableObject {
 
     func stop() async throws -> URL? {
         isRecording = false
+        canStop = false
         return nil
     }
 }
