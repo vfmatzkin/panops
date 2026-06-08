@@ -360,4 +360,41 @@ struct IpcClientCodecTests {
         #expect(result.deleted == false)
         #expect(result.freedBytes == 0)
     }
+
+    @Test("WindowInfo decodes from engine response")
+    func windowInfo_decodes() throws {
+        let json = #"""
+        {
+          "window_id": 123,
+          "app_name": "Safari",
+          "title": "Example Window"
+        }
+        """#
+        let window = try decoder.decode(WindowInfo.self, from: json.data(using: .utf8)!)
+        #expect(window.windowId == 123)
+        #expect(window.appName == "Safari")
+        #expect(window.title == "Example Window")
+    }
+
+    @Test("CaptureTarget.display encodes correctly")
+    func captureTarget_display_encodes() throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let wire = CaptureTargetWire(.display)
+        let data = try encoder.encode(wire)
+        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"kind\":\"display\""))
+        #expect(!json.contains("\"window_id\""), "window_id should be omitted for display: \(json)")
+    }
+
+    @Test("CaptureTarget.window encodes correctly")
+    func captureTarget_window_encodes() throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let wire = CaptureTargetWire(.window(windowId: 456))
+        let data = try encoder.encode(wire)
+        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"kind\":\"window\""))
+        #expect(json.contains("\"window_id\":456"))
+    }
 }

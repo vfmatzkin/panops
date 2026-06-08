@@ -10,6 +10,7 @@ private actor CapturingRecordingIpcClient: LiveRecordingIpcClient {
     private(set) var threshold: Float?
     private(set) var recordVideo: Bool?
     private(set) var autoGenerateNotes: Bool?
+    private(set) var captureTarget: CaptureTarget?
 
     func recordingStart(
         meetingId: String,
@@ -17,13 +18,15 @@ private actor CapturingRecordingIpcClient: LiveRecordingIpcClient {
         screenshotIntervalMs: UInt64,
         screenshotThreshold: Float,
         recordVideo: Bool,
-        autoGenerateNotes: Bool
+        autoGenerateNotes: Bool,
+        captureTarget: CaptureTarget
     ) async throws -> RecordingAccepted {
         self.audioSources = audioSources
         self.intervalMs = screenshotIntervalMs
         self.threshold = screenshotThreshold
         self.recordVideo = recordVideo
         self.autoGenerateNotes = autoGenerateNotes
+        self.captureTarget = captureTarget
         return RecordingAccepted(recordingId: "rec-1")
     }
 
@@ -33,6 +36,10 @@ private actor CapturingRecordingIpcClient: LiveRecordingIpcClient {
 
     func meetingDeleteVideo(meetingId: String) async throws -> (deleted: Bool, freedBytes: UInt64) {
         (deleted: false, freedBytes: 0)
+    }
+
+    func captureWindows() async throws -> [WindowInfo] {
+        []
     }
 }
 

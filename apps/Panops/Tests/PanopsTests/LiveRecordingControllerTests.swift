@@ -109,6 +109,18 @@ struct LiveRecordingControllerTests {
         #expect(lastAutoGenerateNotes == false)
     }
 
+    @Test("start passes captureTarget to engine")
+    func startRecordsCaptureTarget() async throws {
+        let fake = FakeLiveRecordingIpcClient()
+        let controller = LiveRecordingController(ipcClient: fake)
+
+        let options = RecordingOptions(captureTarget: .window(windowId: 123))
+        try await controller.start(meetingId: "meeting-1", options: options)
+
+        let target = await fake.lastCaptureTargetValue()
+        #expect(target == .window(windowId: 123))
+    }
+
     @Test("stop surfaces the engine-issued auto-notes job id")
     func stopSurfacesNotesJobId() async throws {
         let stopped = RecordingStopped(
@@ -180,6 +192,7 @@ private actor FakeLiveRecordingIpcClient: LiveRecordingIpcClient {
     private let stopped: RecordingStopped
     private var lastRecordVideo: Bool = false
     private var lastAutoGenerateNotes: Bool = false
+    private var lastCaptureTarget: CaptureTarget = .display
 
     init(
         startDelayNanoseconds: UInt64 = 0,
@@ -207,11 +220,13 @@ private actor FakeLiveRecordingIpcClient: LiveRecordingIpcClient {
         screenshotIntervalMs: UInt64,
         screenshotThreshold: Float,
         recordVideo: Bool,
-        autoGenerateNotes: Bool
+        autoGenerateNotes: Bool,
+        captureTarget: CaptureTarget
     ) async throws -> RecordingAccepted {
         startCalls += 1
         lastRecordVideo = recordVideo
         lastAutoGenerateNotes = autoGenerateNotes
+        lastCaptureTarget = captureTarget
         if startDelayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: startDelayNanoseconds)
         }
@@ -243,5 +258,13 @@ private actor FakeLiveRecordingIpcClient: LiveRecordingIpcClient {
 
     func startCallCountAndRecordVideo() -> (Int, Bool, Bool) {
         (startCalls, lastRecordVideo, lastAutoGenerateNotes)
+    }
+
+    func captureWindows() async throws -> [WindowInfo] {
+        []
+    }
+
+    func lastCaptureTargetValue() -> CaptureTarget {
+        lastCaptureTarget
     }
 }
