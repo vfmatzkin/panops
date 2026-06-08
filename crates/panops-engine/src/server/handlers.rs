@@ -115,6 +115,12 @@ pub(super) struct IpcImpl {
     /// `stop_capture` instead of a fabricated placeholder.
     /// Wrapped in Arc<Mutex> so it can be cloned and passed to spawn_blocking.
     pub(super) sessions: Arc<Mutex<HashMap<String, CaptureSession>>>,
+    /// Engine-owned notes orchestration mode keyed by recording_id
+    /// (meeting_id), parallel to `sessions`.
+    ///
+    /// This stays out of panops-core because capture adapters only capture;
+    /// the engine decides whether `recording.stop` should enqueue notes.
+    pub(super) auto_notes: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 #[async_trait::async_trait]
@@ -323,9 +329,11 @@ impl IpcServer for IpcImpl {
         let storage = self.services.storage.clone();
         let data_dir = self.services.data_dir.clone();
         let meeting_id = params.meeting_id.clone();
+        let auto_generate_notes = params.auto_generate_notes;
 
-        // Clone self.sessions for use in spawn_blocking.
+        // Clone engine-side stores for use in spawn_blocking.
         let sessions = self.sessions.clone();
+        let auto_notes = self.auto_notes.clone();
 
         spawn_blocking_into_ipc("recording.start", move || {
             // Verify meeting exists.
@@ -345,6 +353,12 @@ impl IpcServer for IpcImpl {
                     message: "sessions mutex poisoned".into(),
                 })?
                 .insert(meeting_id.clone(), session);
+            auto_notes
+                .lock()
+                .map_err(|_| IpcError::Internal {
+                    message: "auto_notes mutex poisoned".into(),
+                })?
+                .insert(meeting_id.clone(), auto_generate_notes);
 
             // Return recording_id as meeting_id.
             Ok(RecordingAccepted {
@@ -361,13 +375,22 @@ impl IpcServer for IpcImpl {
         let capture = crate::capture_resolver::pick_capture();
         let recording_id = params.recording_id;
 
-        // Clone self.sessions for use in spawn_blocking.
+        // Clone engine-side stores for use in spawn_blocking.
         let sessions = self.sessions.clone();
+        let auto_notes = self.auto_notes.clone();
         let services = self.services.clone();
         let events_tx = self.events_tx.clone();
 
         let (mut stopped, auto_generate_notes, recording_id) =
             spawn_blocking_into_ipc("recording.stop", move || {
+                let auto_generate_notes = auto_notes
+                    .lock()
+                    .map_err(|_| IpcError::Internal {
+                        message: "auto_notes mutex poisoned".into(),
+                    })?
+                    .remove(&recording_id)
+                    .unwrap_or(false);
+
                 // Look up the real session persisted by recording.start.
                 let session = sessions
                     .lock()
@@ -378,7 +401,6 @@ impl IpcServer for IpcImpl {
                     .ok_or_else(|| IpcError::InputNotFound {
                         path: format!("session/{recording_id}"),
                     })?;
-                let auto_generate_notes = session.auto_generate_notes;
 
                 let result = capture.stop_capture(&session).map_err(IpcError::from)?;
 
@@ -1606,6 +1628,7 @@ mod notes_generate_concurrency_tests {
             services: Arc::new(services),
             events_tx,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            auto_notes: Arc::new(Mutex::new(HashMap::new())),
         });
 
         let total_jobs = MAX_CONCURRENT_NOTES_JOBS + 2;
@@ -1691,13 +1714,14 @@ mod recording_auto_generate_tests {
                 services: Arc::new(services),
                 events_tx,
                 sessions: Arc::new(Mutex::new(HashMap::new())),
+                auto_notes: Arc::new(Mutex::new(HashMap::new())),
             },
             data_dir,
         )
     }
 
     #[tokio::test]
-    async fn recording_start_stores_auto_generate_notes_on_session() {
+    async fn recording_start_stores_auto_generate_notes_engine_side() {
         ensure_test_capture();
         let (ipc, _data_dir) = pending_ipc();
         let meeting_id = ipc
@@ -1719,24 +1743,46 @@ mod recording_auto_generate_tests {
         .await
         .expect("recording.start");
 
-        let session = ipc
-            .sessions
-            .lock()
-            .expect("sessions lock")
-            .get(&meeting_id)
-            .cloned()
-            .expect("session stored");
         assert!(
-            session.auto_generate_notes,
-            "recording.start must preserve auto_generate_notes on CaptureSession"
+            ipc.sessions
+                .lock()
+                .expect("sessions lock")
+                .contains_key(&meeting_id),
+            "recording.start must still store the capture session"
+        );
+        let auto_generate_notes = ipc
+            .auto_notes
+            .lock()
+            .expect("auto_notes lock")
+            .get(&meeting_id)
+            .copied()
+            .expect("auto-generate flag stored engine-side");
+        assert!(
+            auto_generate_notes,
+            "recording.start must store auto_generate_notes in engine-side session state"
         );
 
         let _ = ipc
             .recording_stop(RecordingStopParams {
-                recording_id: meeting_id,
+                recording_id: meeting_id.clone(),
             })
             .await
             .expect("recording.stop cleanup");
+
+        assert!(
+            !ipc.auto_notes
+                .lock()
+                .expect("auto_notes lock")
+                .contains_key(&meeting_id),
+            "recording.stop must remove engine-side auto-generate state"
+        );
+        assert!(
+            !ipc.sessions
+                .lock()
+                .expect("sessions lock")
+                .contains_key(&meeting_id),
+            "recording.stop must remove capture session state"
+        );
     }
 
     #[tokio::test]
@@ -1803,6 +1849,7 @@ mod recording_auto_generate_tests {
                 services: Arc::new(services),
                 events_tx,
                 sessions: Arc::new(Mutex::new(HashMap::new())),
+                auto_notes: Arc::new(Mutex::new(HashMap::new())),
             },
             data_dir,
         )

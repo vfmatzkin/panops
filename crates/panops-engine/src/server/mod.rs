@@ -380,6 +380,7 @@ pub async fn run_serve_in_process(
         services: services_arc,
         events_tx,
         sessions: Arc::new(Mutex::new(HashMap::new())),
+        auto_notes: Arc::new(Mutex::new(HashMap::new())),
     };
     let methods: Methods = ipc_impl.into_rpc().into();
 

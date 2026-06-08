@@ -298,8 +298,9 @@ pub struct RecordingStartParams {
     #[serde(default)]
     pub record_video: bool,
     /// Whether to enqueue the notes pipeline automatically after a successful
-    /// `recording.stop`. Defaults false so old clients keep record-only
-    /// behavior unless they opt in.
+    /// `recording.stop`. The serde default is `false` only for backwards
+    /// compatibility with older clients that omit the field; the app's UX
+    /// default is enabled and sends `true` explicitly.
     #[serde(default)]
     pub auto_generate_notes: bool,
     #[serde(default = "default_screenshot_interval")]
@@ -336,7 +337,6 @@ impl From<&RecordingStartParams> for panops_core::capture::CaptureConfig {
         Self {
             audio_sources: value.audio_sources.into(),
             record_video: value.record_video,
-            auto_generate_notes: value.auto_generate_notes,
             screenshot_interval_ms: value.screenshot_interval_ms,
             screenshot_threshold: value.screenshot_threshold,
         }
@@ -691,7 +691,6 @@ mod tests {
             panops_core::capture::AudioSources::MicOnly
         );
         assert!(cfg.record_video);
-        assert!(cfg.auto_generate_notes);
         assert_eq!(cfg.screenshot_interval_ms, 250);
         assert_eq!(cfg.screenshot_threshold, 0.2);
 
