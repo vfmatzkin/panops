@@ -626,6 +626,136 @@ actor IpcClient {
         )
     }
 
+    /// `ipc.meeting.list` with organization filters (Phase B). The engine's
+    /// `meeting.list` takes an optional `MeetingListParams`; the no-filter
+    /// `meetingList()` above sends no params (None). This overload sends the
+    /// filter as the single positional param to narrow by space/project/tag.
+    func meetingList(filter: MeetingListParams) async throws -> [MeetingSummary] {
+        return try await sendRequest(
+            method: "ipc.meeting.list",
+            params: filter
+        )
+    }
+
+    // MARK: - Organization (Phase B): spaces / projects / tags / assign
+
+    /// `ipc.meeting.assign` — set a meeting's space/project. A project sets the
+    /// space engine-side; both `nil` moves the meeting back to the Inbox.
+    func meetingAssign(meetingId: String, spaceId: String?, projectId: String?) async throws {
+        try await sendRequestVoid(
+            method: "ipc.meeting.assign",
+            params: MeetingAssignParams(meetingId: meetingId, spaceId: spaceId, projectId: projectId)
+        )
+    }
+
+    /// `ipc.space.create` — create a space, returns the new `Space`.
+    func spaceCreate(name: String) async throws -> Space {
+        return try await sendRequest(
+            method: "ipc.space.create",
+            params: SpaceCreateParams(name: name)
+        )
+    }
+
+    /// `ipc.space.list` — all spaces (engine wraps them in `{"spaces":[...]}`).
+    func spaceList() async throws -> [Space] {
+        let result: SpaceListResult = try await sendRequestNoParams(
+            method: "ipc.space.list"
+        )
+        return result.spaces
+    }
+
+    /// `ipc.space.rename` — rename a space.
+    func spaceRename(id: String, name: String) async throws {
+        try await sendRequestVoid(
+            method: "ipc.space.rename",
+            params: SpaceRenameParams(id: id, name: name)
+        )
+    }
+
+    /// `ipc.space.delete` — delete a space. Affected meetings' refs are nulled
+    /// engine-side (meetings are never deleted by org changes).
+    func spaceDelete(id: String) async throws {
+        try await sendRequestVoid(
+            method: "ipc.space.delete",
+            params: SpaceDeleteParams(id: id)
+        )
+    }
+
+    /// `ipc.project.create` — create a project inside a space.
+    func projectCreate(spaceId: String, name: String) async throws -> Project {
+        return try await sendRequest(
+            method: "ipc.project.create",
+            params: ProjectCreateParams(spaceId: spaceId, name: name)
+        )
+    }
+
+    /// `ipc.project.list` — projects, optionally scoped to one space.
+    /// `spaceId == nil` returns every project across all spaces.
+    func projectList(spaceId: String? = nil) async throws -> [Project] {
+        let result: ProjectListResult = try await sendRequest(
+            method: "ipc.project.list",
+            params: ProjectListParams(spaceId: spaceId)
+        )
+        return result.projects
+    }
+
+    /// `ipc.project.rename` — rename a project.
+    func projectRename(id: String, name: String) async throws {
+        try await sendRequestVoid(
+            method: "ipc.project.rename",
+            params: ProjectRenameParams(id: id, name: name)
+        )
+    }
+
+    /// `ipc.project.delete` — delete a project. Affected meetings' project ref
+    /// is nulled engine-side.
+    func projectDelete(id: String) async throws {
+        try await sendRequestVoid(
+            method: "ipc.project.delete",
+            params: ProjectDeleteParams(id: id)
+        )
+    }
+
+    /// `ipc.tag.create` — create (idempotent on name) a tag, returns the `Tag`.
+    func tagCreate(name: String) async throws -> Tag {
+        return try await sendRequest(
+            method: "ipc.tag.create",
+            params: TagCreateParams(name: name)
+        )
+    }
+
+    /// `ipc.tag.list` — all tags (engine wraps them in `{"tags":[...]}`).
+    func tagList() async throws -> [Tag] {
+        let result: TagListResult = try await sendRequestNoParams(
+            method: "ipc.tag.list"
+        )
+        return result.tags
+    }
+
+    /// `ipc.tag.delete` — delete a tag and its meeting associations.
+    func tagDelete(id: String) async throws {
+        try await sendRequestVoid(
+            method: "ipc.tag.delete",
+            params: TagDeleteParams(id: id)
+        )
+    }
+
+    /// `ipc.tag.assign` — attach a tag to a meeting.
+    func tagAssign(meetingId: String, tagId: String) async throws {
+        try await sendRequestVoid(
+            method: "ipc.tag.assign",
+            params: TagAssignParams(meetingId: meetingId, tagId: tagId)
+        )
+    }
+
+    /// `ipc.tag.unassign` — detach a tag from a meeting.
+    func tagUnassign(meetingId: String, tagId: String) async throws {
+        try await sendRequestVoid(
+            method: "ipc.tag.unassign",
+            params: TagAssignParams(meetingId: meetingId, tagId: tagId)
+        )
+    }
+
     /// `ipc.capture.windows` — fetches available windows for capture.
     /// Sends an empty params object (`{}`, positional like every other method);
     /// the engine replies with a `{"windows":[...]}` wrapper. Sending no params
