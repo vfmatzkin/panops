@@ -736,6 +736,15 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
         .onChange(of: vm.selectedMeetingId) { _, _ in
             Task { await vm.loadSelectedMeeting() }
         }
+        .onChange(of: recordingController.isRecording) { _, recording in
+            // Keep the invariant "idle ⟹ activeSetup == .default". The sheet
+            // overrides it just before a sheet-driven start; every other start
+            // (the RecordBar resume) uses engine defaults, so once a recording
+            // ends we reset here. That way the next non-sheet start already has
+            // accurate capture chips before its RecordingScreen can appear,
+            // instead of showing a stale setup from a prior sheet run.
+            if !recording { activeSetup = .default }
+        }
     }
 
     private var isEngineNotConnected: Bool {
@@ -770,6 +779,10 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
         } catch {
             AppViewModel.logFullError("recording.new", error)
             toolbarRecordingError = "Couldn't start recording."
+            // A failed sheet start may never flip isRecording (e.g. meeting.start
+            // threw), so the isRecording reset can't fire — clear the chosen
+            // setup here too so a later non-sheet start doesn't inherit it.
+            activeSetup = .default
         }
     }
 
