@@ -75,6 +75,8 @@ impl Default for CaptureConfig {
 pub struct CaptureSession {
     pub meeting_id: String,
     pub started_at_ms: u64,
+    /// Screen target selected when the session was started.
+    pub capture_target: CaptureTarget,
 }
 
 /// Result returned by `stop_capture`. Contains paths to captured artifacts.
@@ -175,9 +177,11 @@ mod tests {
         let s = CaptureSession {
             meeting_id: "abc123".into(),
             started_at_ms: 1_700_000_000_000,
+            capture_target: CaptureTarget::Display,
         };
         assert_eq!(s.meeting_id, "abc123");
         assert_eq!(s.started_at_ms, 1_700_000_000_000);
+        assert_eq!(s.capture_target, CaptureTarget::Display);
     }
 
     #[test]
