@@ -26,20 +26,12 @@ use panops_core::notes::ir::StructuredNotes;
 use panops_core::notes::pipeline::NotesGenerator;
 use panops_core::notes::raw_transcript::write_raw_transcript;
 use panops_protocol::{
-    AudioSourcesWire, Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, JobProgressEvent,
-    Meeting, MeetingConfig, MeetingSummary, NotesDialect, NotesGenerateParams, NotesGenerateResult,
-    RecordingAccepted, RecordingStartParams, RecordingStopParams, RecordingStopped, ServerInfo,
+    Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, JobProgressEvent, Meeting,
+    MeetingConfig, MeetingDeleteVideoParams, MeetingDeleteVideoResult, MeetingSummary,
+    NotesDialect, NotesGenerateParams, NotesGenerateResult, RecordingAccepted,
+    RecordingStartParams, RecordingStopParams, RecordingStopped, ServerInfo,
 };
 use tokio::sync::broadcast;
-
-/// Convert wire AudioSources to domain AudioSources.
-fn audio_sources_wire_to_domain(wire: AudioSourcesWire) -> panops_core::capture::AudioSources {
-    match wire {
-        AudioSourcesWire::SystemOnly => panops_core::capture::AudioSources::SystemOnly,
-        AudioSourcesWire::MicOnly => panops_core::capture::AudioSources::MicOnly,
-        AudioSourcesWire::SystemAndMic => panops_core::capture::AudioSources::SystemAndMic,
-    }
-}
 
 /// Wrapper for `meeting.{stop,get,delete,set_language}` request params.
 /// jsonrpsee's `#[rpc]` macro accepts strongly-typed params via a single
@@ -87,6 +79,12 @@ pub(super) trait Ipc {
 
     #[method(name = "meeting.delete")]
     async fn meeting_delete(&self, params: MeetingIdParam) -> Result<(), ErrorObjectOwned>;
+
+    #[method(name = "meeting.deleteVideo")]
+    async fn meeting_delete_video(
+        &self,
+        params: MeetingDeleteVideoParams,
+    ) -> Result<MeetingDeleteVideoResult, ErrorObjectOwned>;
 
     #[method(name = "recording.start")]
     async fn recording_start(
@@ -334,6 +332,65 @@ impl IpcServer for IpcImpl {
         .await
     }
 
+    async fn meeting_delete_video(
+        &self,
+        params: MeetingDeleteVideoParams,
+    ) -> Result<MeetingDeleteVideoResult, ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        let data_dir = self.services.data_dir.clone();
+        let meeting_id = params.meeting_id;
+        spawn_blocking_into_ipc("meeting.deleteVideo", move || {
+            reject_path_like_meeting_id(&meeting_id)?;
+            let m = storage.get_meeting(&meeting_id).map_err(IpcError::from)?;
+            let meeting_dir = validate_meeting_dir(&data_dir, &m.dir_path)?;
+            let video_path = meeting_dir.join("recording.mov");
+
+            let freed_bytes = match std::fs::metadata(&video_path) {
+                Ok(meta) => meta.len(),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(MeetingDeleteVideoResult {
+                        deleted: false,
+                        freed_bytes: 0,
+                    });
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        path = ?video_path,
+                        "meeting.deleteVideo: stat recording.mov failed"
+                    );
+                    return Err(IpcError::Internal {
+                        message: "delete video failed".into(),
+                    });
+                }
+            };
+
+            match std::fs::remove_file(&video_path) {
+                Ok(()) => Ok(MeetingDeleteVideoResult {
+                    deleted: true,
+                    freed_bytes,
+                }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(MeetingDeleteVideoResult {
+                        deleted: false,
+                        freed_bytes: 0,
+                    })
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        path = ?video_path,
+                        "meeting.deleteVideo: remove recording.mov failed"
+                    );
+                    Err(IpcError::Internal {
+                        message: "delete video failed".into(),
+                    })
+                }
+            }
+        })
+        .await
+    }
+
     async fn recording_start(
         &self,
         params: RecordingStartParams,
@@ -341,8 +398,7 @@ impl IpcServer for IpcImpl {
         let capture = crate::capture_resolver::pick_capture();
         let storage = self.services.storage.clone();
         let data_dir = self.services.data_dir.clone();
-        let meeting_id = params.meeting_id;
-        let audio_sources = params.audio_sources;
+        let meeting_id = params.meeting_id.clone();
 
         // Clone self.sessions for use in spawn_blocking.
         let sessions = self.sessions.clone();
@@ -353,11 +409,7 @@ impl IpcServer for IpcImpl {
             let meeting_dir = validate_meeting_dir(&data_dir, &m.dir_path)?;
 
             // Start capture with config from wire params.
-            let config = panops_core::capture::CaptureConfig {
-                audio_sources: audio_sources_wire_to_domain(audio_sources),
-                screenshot_interval_ms: params.screenshot_interval_ms,
-                screenshot_threshold: params.screenshot_threshold,
-            };
+            let config = panops_core::capture::CaptureConfig::from(&params);
             let session = capture
                 .start_capture(&meeting_id, &meeting_dir, &config)
                 .map_err(IpcError::from)?;
@@ -1035,6 +1087,28 @@ fn create_meeting_dir_and_row(
         return Err(IpcError::from(e));
     }
     Ok((id, dir))
+}
+
+/// Reject meeting ids that could be interpreted as filesystem paths before
+/// any method derives a meeting-local artifact path from the id. Generated
+/// meeting ids are UUID-simple strings, so accepting only one normal path
+/// component keeps the video-artifact endpoint path-traversal-proof without
+/// constraining the storage layer globally.
+fn reject_path_like_meeting_id(id: &str) -> Result<(), IpcError> {
+    let mut components = Path::new(id).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(_)), None)
+            if !id.contains('/') && !id.contains('\\') =>
+        {
+            Ok(())
+        }
+        _ => {
+            tracing::warn!(meeting_id = %id, "rejected path-like meeting id");
+            Err(IpcError::InvalidInput {
+                message: "meeting_id must be a single path-safe component".into(),
+            })
+        }
+    }
 }
 
 /// Validate that a `dir_path` read from the registry actually lives

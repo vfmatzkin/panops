@@ -29,6 +29,8 @@ pub enum AudioSources {
 pub struct CaptureConfig {
     /// Audio sources to capture.
     pub audio_sources: AudioSources,
+    /// Whether to write a screen-video file at `<meeting_dir>/recording.mov`.
+    pub record_video: bool,
     /// Screenshot sampling interval in milliseconds.
     pub screenshot_interval_ms: u64,
     /// Vision FeaturePrint cosine distance threshold for change detection.
@@ -39,6 +41,7 @@ impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
             audio_sources: AudioSources::SystemAndMic,
+            record_video: false,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
         }
@@ -125,6 +128,7 @@ mod tests {
     fn capture_config_default_values() {
         let cfg = CaptureConfig::default();
         assert_eq!(cfg.audio_sources, AudioSources::SystemAndMic);
+        assert!(!cfg.record_video);
         assert_eq!(cfg.screenshot_interval_ms, 500);
         assert!(cfg.screenshot_threshold > 0.0 && cfg.screenshot_threshold < 1.0);
     }

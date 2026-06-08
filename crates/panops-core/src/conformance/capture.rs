@@ -34,6 +34,7 @@ pub fn run_suite_with<C: Capture>(adapter: &C, fixtures_dir: &Path, expected_is_
     stop_returns_valid_audio(adapter, fixtures_dir);
     stop_returns_screenshot_paths(adapter, fixtures_dir);
     stop_track_presence_matches_sources(adapter);
+    record_video_writes_recording_mov(adapter);
     stop_session_not_found(adapter);
     is_fake_marker(adapter, expected_is_fake);
 }
@@ -183,6 +184,33 @@ fn stop_returns_screenshot_paths<C: Capture>(adapter: &C, _fixtures_dir: &Path) 
     }
 
     // Clean up temp dir.
+    let _ = std::fs::remove_dir_all(&meeting_dir);
+}
+
+fn record_video_writes_recording_mov<C: Capture>(adapter: &C) {
+    let meeting_id = "test_meeting_video";
+    let meeting_dir = temp_meeting_dir();
+    std::fs::create_dir_all(&meeting_dir).expect("create temp meeting dir");
+
+    let config = CaptureConfig {
+        record_video: true,
+        ..CaptureConfig::default()
+    };
+    let session = adapter
+        .start_capture(meeting_id, &meeting_dir, &config)
+        .expect("start_capture should succeed");
+
+    adapter
+        .stop_capture(&session)
+        .expect("stop_capture should succeed");
+
+    let video_path = meeting_dir.join("recording.mov");
+    assert!(
+        video_path.exists(),
+        "record_video=true must write {}",
+        video_path.display()
+    );
+
     let _ = std::fs::remove_dir_all(&meeting_dir);
 }
 

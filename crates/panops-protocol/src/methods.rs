@@ -252,6 +252,19 @@ pub struct MeetingConfig {
     pub language: Option<String>,
 }
 
+/// Params for `ipc.meeting.deleteVideo`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MeetingDeleteVideoParams {
+    pub meeting_id: String,
+}
+
+/// Result of `ipc.meeting.deleteVideo`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MeetingDeleteVideoResult {
+    pub deleted: bool,
+    pub freed_bytes: u64,
+}
+
 // === Recording IPC types (slice 11) ===
 
 /// Audio source selection for `recording.start`.
@@ -279,10 +292,49 @@ pub struct RecordingStartParams {
     /// Audio sources to capture. Defaults to SystemAndMic.
     #[serde(default)]
     pub audio_sources: AudioSourcesWire,
+    /// Whether to record the screen video to `<meeting_dir>/recording.mov`.
+    /// Defaults false for backwards compatibility with clients built before
+    /// the video-recording toggle landed.
+    #[serde(default)]
+    pub record_video: bool,
     #[serde(default = "default_screenshot_interval")]
     pub screenshot_interval_ms: u64,
     #[serde(default = "default_screenshot_threshold")]
     pub screenshot_threshold: f32,
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<AudioSourcesWire> for panops_core::capture::AudioSources {
+    fn from(value: AudioSourcesWire) -> Self {
+        match value {
+            AudioSourcesWire::SystemOnly => Self::SystemOnly,
+            AudioSourcesWire::MicOnly => Self::MicOnly,
+            AudioSourcesWire::SystemAndMic => Self::SystemAndMic,
+        }
+    }
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<panops_core::capture::AudioSources> for AudioSourcesWire {
+    fn from(value: panops_core::capture::AudioSources) -> Self {
+        match value {
+            panops_core::capture::AudioSources::SystemOnly => Self::SystemOnly,
+            panops_core::capture::AudioSources::MicOnly => Self::MicOnly,
+            panops_core::capture::AudioSources::SystemAndMic => Self::SystemAndMic,
+        }
+    }
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<&RecordingStartParams> for panops_core::capture::CaptureConfig {
+    fn from(value: &RecordingStartParams) -> Self {
+        Self {
+            audio_sources: value.audio_sources.into(),
+            record_video: value.record_video,
+            screenshot_interval_ms: value.screenshot_interval_ms,
+            screenshot_threshold: value.screenshot_threshold,
+        }
+    }
 }
 
 /// Result of `ipc.recording.start`. Confirms the recording session.
@@ -581,10 +633,12 @@ mod tests {
         let p = RecordingStartParams {
             meeting_id: "m1".into(),
             audio_sources: AudioSourcesWire::SystemAndMic,
+            record_video: true,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
         };
         let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains(r#""record_video":true"#), "got: {json}");
         let back: RecordingStartParams = serde_json::from_str(&json).unwrap();
         assert_eq!(back, p);
     }
@@ -595,8 +649,52 @@ mod tests {
         let p: RecordingStartParams = serde_json::from_str(json).unwrap();
         assert_eq!(p.meeting_id, "m1");
         assert_eq!(p.audio_sources, AudioSourcesWire::SystemAndMic); // default
+        assert!(!p.record_video); // default/back-compat
         assert_eq!(p.screenshot_interval_ms, 500); // default
         assert_eq!(p.screenshot_threshold, 0.15); // default
+    }
+
+    #[cfg(feature = "domain-conversions")]
+    #[test]
+    fn recording_start_params_convert_to_domain_capture_config() {
+        let p = RecordingStartParams {
+            meeting_id: "m1".into(),
+            audio_sources: AudioSourcesWire::MicOnly,
+            record_video: true,
+            screenshot_interval_ms: 250,
+            screenshot_threshold: 0.2,
+        };
+        let cfg = panops_core::capture::CaptureConfig::from(&p);
+        assert_eq!(
+            cfg.audio_sources,
+            panops_core::capture::AudioSources::MicOnly
+        );
+        assert!(cfg.record_video);
+        assert_eq!(cfg.screenshot_interval_ms, 250);
+        assert_eq!(cfg.screenshot_threshold, 0.2);
+
+        let wire = AudioSourcesWire::from(panops_core::capture::AudioSources::SystemOnly);
+        assert_eq!(wire, AudioSourcesWire::SystemOnly);
+    }
+
+    #[test]
+    fn meeting_delete_video_shapes_round_trip() {
+        let params = MeetingDeleteVideoParams {
+            meeting_id: "m1".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&params).unwrap(),
+            r#"{"meeting_id":"m1"}"#
+        );
+
+        let result = MeetingDeleteVideoResult {
+            deleted: true,
+            freed_bytes: 42,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert_eq!(json, r#"{"deleted":true,"freed_bytes":42}"#);
+        let back: MeetingDeleteVideoResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, result);
     }
 
     #[test]

@@ -44,6 +44,7 @@ async fn recording_start_stop_round_trip() {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let (_storage_tmp, storage, data_dir) = tempdir_storage();
+    let data_dir_for_assert = data_dir.clone();
     let services = EngineServices::ready(
         Arc::new(MockLlm::default()),
         storage.clone(),
@@ -85,6 +86,7 @@ async fn recording_start_stop_round_trip() {
         rpc_params![serde_json::json!({
             "meeting_id": meeting_id,
             "audio_sources": "system_and_mic",
+            "record_video": true,
             "screenshot_interval_ms": 500,
             "screenshot_threshold": 0.15
         })],
@@ -116,6 +118,14 @@ async fn recording_start_stop_round_trip() {
     assert!(
         !stopped.screenshot_paths.is_empty(),
         "should have screenshots"
+    );
+    assert!(
+        data_dir_for_assert
+            .join("meetings")
+            .join(&meeting_id)
+            .join("recording.mov")
+            .exists(),
+        "record_video=true should produce recording.mov"
     );
 
     let _ = shutdown_tx.send(true);

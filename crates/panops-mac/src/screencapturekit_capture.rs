@@ -321,6 +321,8 @@ impl Capture for ScreenCaptureKitCapture {
             "mic_audio_path": mic_audio_path,
             "screenshots_dir": meeting_dir.join("screenshots").display().to_string(),
             "audio_sources": audio_sources_str(config.audio_sources),
+            "record_video": config.record_video,
+            "video_path": meeting_dir.join("recording.mov").display().to_string(),
             "screenshot_interval_ms": config.screenshot_interval_ms,
             "screenshot_threshold": config.screenshot_threshold,
         });
