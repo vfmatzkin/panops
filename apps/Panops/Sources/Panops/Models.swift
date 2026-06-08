@@ -540,6 +540,14 @@ struct MeetingSummary: Decodable {
     let language: String
     let endedAt: String?
     let hasNotes: Bool
+    /// Organization space assignment (Phase B). `nil` ⇒ the implicit Inbox
+    /// (unsorted) bucket; no Inbox row exists, it's the null space.
+    let spaceId: String?
+    /// Organization project assignment (Phase B). `nil` when the meeting is
+    /// not in any project.
+    let projectId: String?
+    /// Tag ids assigned to this meeting (Phase B). Names resolve via `tag.list`.
+    let tags: [String]
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -549,6 +557,9 @@ struct MeetingSummary: Decodable {
         case language
         case endedAt = "ended_at"
         case hasNotes = "has_notes"
+        case spaceId = "space_id"
+        case projectId = "project_id"
+        case tags
     }
 
     init(from decoder: Decoder) throws {
@@ -560,6 +571,11 @@ struct MeetingSummary: Decodable {
         language = try c.decodeIfPresent(String.self, forKey: .language) ?? ""
         endedAt = try c.decodeIfPresent(String.self, forKey: .endedAt)
         hasNotes = try c.decodeIfPresent(Bool.self, forKey: .hasNotes) ?? false
+        // Phase B fields are decode-if-present: older engine payloads (and
+        // the existing codec tests) omit them, so they default to unsorted.
+        spaceId = try c.decodeIfPresent(String.self, forKey: .spaceId)
+        projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
+        tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
     }
 
     // Memberwise init retained for tests/previews constructing summaries directly.
@@ -570,7 +586,10 @@ struct MeetingSummary: Decodable {
         durationMs: UInt64,
         language: String = "",
         endedAt: String? = nil,
-        hasNotes: Bool = false
+        hasNotes: Bool = false,
+        spaceId: String? = nil,
+        projectId: String? = nil,
+        tags: [String] = []
     ) {
         self.id = id
         self.title = title
@@ -579,5 +598,165 @@ struct MeetingSummary: Decodable {
         self.language = language
         self.endedAt = endedAt
         self.hasNotes = hasNotes
+        self.spaceId = spaceId
+        self.projectId = projectId
+        self.tags = tags
+    }
+}
+
+// MARK: - Organization (Phase B): Spaces / Projects / Tags
+
+/// A top-level user-created grouping of meetings. Mirrors
+/// `panops-protocol::Space` (`{id, name, position}`). No hardcoded names —
+/// the implicit Inbox is the null-space bucket, not a `Space` row.
+struct Space: Decodable, Identifiable, Equatable, Hashable {
+    let id: String
+    let name: String
+    let position: Int
+}
+
+/// A collection inside exactly one Space. Mirrors
+/// `panops-protocol::Project` (`{id, space_id, name, position}`).
+struct Project: Decodable, Identifiable, Equatable, Hashable {
+    let id: String
+    let spaceId: String
+    let name: String
+    let position: Int
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case spaceId = "space_id"
+        case name
+        case position
+    }
+}
+
+/// A free label, many-to-many with meetings. Mirrors
+/// `panops-protocol::Tag` (`{id, name}`).
+struct Tag: Decodable, Identifiable, Equatable, Hashable {
+    let id: String
+    let name: String
+}
+
+/// Result wrapper for `ipc.space.list` — the engine returns `{"spaces":[...]}`.
+struct SpaceListResult: Decodable {
+    let spaces: [Space]
+}
+
+/// Result wrapper for `ipc.project.list` — the engine returns `{"projects":[...]}`.
+struct ProjectListResult: Decodable {
+    let projects: [Project]
+}
+
+/// Result wrapper for `ipc.tag.list` — the engine returns `{"tags":[...]}`.
+struct TagListResult: Decodable {
+    let tags: [Tag]
+}
+
+/// Outgoing params for `ipc.space.create`.
+struct SpaceCreateParams: Encodable {
+    let name: String
+}
+
+/// Outgoing params for `ipc.space.rename`.
+struct SpaceRenameParams: Encodable {
+    let id: String
+    let name: String
+}
+
+/// Outgoing params for `ipc.space.delete`.
+struct SpaceDeleteParams: Encodable {
+    let id: String
+}
+
+/// Outgoing params for `ipc.project.create`.
+struct ProjectCreateParams: Encodable {
+    let spaceId: String
+    let name: String
+
+    enum CodingKeys: String, CodingKey {
+        case spaceId = "space_id"
+        case name
+    }
+}
+
+/// Outgoing params for `ipc.project.list`. `spaceId == nil` lists every
+/// project across all spaces (omitted on the wire → engine default).
+struct ProjectListParams: Encodable {
+    let spaceId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case spaceId = "space_id"
+    }
+}
+
+/// Outgoing params for `ipc.project.rename`.
+struct ProjectRenameParams: Encodable {
+    let id: String
+    let name: String
+}
+
+/// Outgoing params for `ipc.project.delete`.
+struct ProjectDeleteParams: Encodable {
+    let id: String
+}
+
+/// Outgoing params for `ipc.tag.create`.
+struct TagCreateParams: Encodable {
+    let name: String
+}
+
+/// Outgoing params for `ipc.tag.delete`.
+struct TagDeleteParams: Encodable {
+    let id: String
+}
+
+/// Outgoing params for `ipc.tag.assign` / `ipc.tag.unassign`.
+struct TagAssignParams: Encodable {
+    let meetingId: String
+    let tagId: String
+
+    enum CodingKeys: String, CodingKey {
+        case meetingId = "meeting_id"
+        case tagId = "tag_id"
+    }
+}
+
+/// Outgoing params for `ipc.meeting.assign`. Assigning a project sets the
+/// meeting's space to that project's space (engine-side). Both `nil` ⇒ move
+/// the meeting back to the Inbox (clears both refs).
+struct MeetingAssignParams: Encodable {
+    let meetingId: String
+    let spaceId: String?
+    let projectId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case meetingId = "meeting_id"
+        case spaceId = "space_id"
+        case projectId = "project_id"
+    }
+}
+
+/// Optional filters for `ipc.meeting.list`. Mirrors
+/// `panops-protocol::MeetingListParams`. `nil` filter fields are omitted on
+/// the wire; `unsorted` is always sent (engine default is `false`).
+struct MeetingListParams: Encodable {
+    let spaceId: String?
+    let projectId: String?
+    let tagId: String?
+    let unsorted: Bool
+
+    init(spaceId: String? = nil, projectId: String? = nil, tagId: String? = nil, unsorted: Bool = false) {
+        self.spaceId = spaceId
+        self.projectId = projectId
+        self.tagId = tagId
+        self.unsorted = unsorted
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case spaceId = "space_id"
+        case projectId = "project_id"
+        case tagId = "tag_id"
+        case unsorted
     }
 }
