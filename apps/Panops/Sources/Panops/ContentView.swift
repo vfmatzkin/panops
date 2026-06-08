@@ -965,6 +965,8 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
 
     var body: some View {
         NavigationSplitView {
+            OrgSidebarView(vm: vm)
+        } content: {
             MeetingListView(vm: vm)
         } detail: {
             // Active recording takes over the detail pane with the dedicated
@@ -1022,7 +1024,7 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
                 }
             }
         }
-        .frame(minWidth: 720, minHeight: 480)
+        .frame(minWidth: 900, minHeight: 480)
         .toolbar {
             ToolbarItemGroup {
                 if let llmInfo = vm.llmInfo {
@@ -1064,6 +1066,9 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
         }
         .onChange(of: vm.selectedMeetingId) { _, _ in
             Task { await vm.loadSelectedMeeting() }
+        }
+        .onChange(of: vm.sidebarSelection) { _, _ in
+            Task { await vm.applySidebarSelection() }
         }
         .onChange(of: recordingController.isRecording) { _, recording in
             // Keep the invariant "idle ⟹ activeSetup == .default". The sheet

@@ -431,4 +431,153 @@ struct IpcClientCodecTests {
         #expect(json.contains("\"kind\":\"window\""))
         #expect(json.contains("\"window_id\":456"))
     }
+
+    // MARK: - Organization (Phase B) decode
+
+    @Test("Space decodes from engine response")
+    func space_decodes() throws {
+        let json = #"{ "id": "space_1", "name": "Work", "position": 0 }"#
+        let space = try decoder.decode(Space.self, from: json.data(using: .utf8)!)
+        #expect(space == Space(id: "space_1", name: "Work", position: 0))
+    }
+
+    @Test("Project decodes with space_id")
+    func project_decodes() throws {
+        let json = #"{ "id": "p1", "space_id": "s1", "name": "Launch", "position": 2 }"#
+        let project = try decoder.decode(Project.self, from: json.data(using: .utf8)!)
+        #expect(project == Project(id: "p1", spaceId: "s1", name: "Launch", position: 2))
+    }
+
+    @Test("Tag decodes")
+    func tag_decodes() throws {
+        // Qualify `Panops.Tag` — swift-testing exports its own `Tag` type.
+        let json = #"{ "id": "t1", "name": "urgent" }"#
+        let tag = try decoder.decode(Panops.Tag.self, from: json.data(using: .utf8)!)
+        #expect(tag == Panops.Tag(id: "t1", name: "urgent"))
+    }
+
+    @Test("SpaceListResult decodes the {spaces:[...]} wrapper")
+    func spaceListResult_decodes() throws {
+        let json = #"""
+        { "spaces": [
+            { "id": "s1", "name": "Work", "position": 0 },
+            { "id": "s2", "name": "Personal", "position": 1 }
+        ] }
+        """#
+        let result = try decoder.decode(SpaceListResult.self, from: json.data(using: .utf8)!)
+        #expect(result.spaces.count == 2)
+        #expect(result.spaces[0] == Space(id: "s1", name: "Work", position: 0))
+        #expect(result.spaces[1].name == "Personal")
+    }
+
+    @Test("ProjectListResult decodes the {projects:[...]} wrapper")
+    func projectListResult_decodes() throws {
+        let json = #"{ "projects": [ { "id": "p1", "space_id": "s1", "name": "Launch", "position": 0 } ] }"#
+        let result = try decoder.decode(ProjectListResult.self, from: json.data(using: .utf8)!)
+        #expect(result.projects == [Project(id: "p1", spaceId: "s1", name: "Launch", position: 0)])
+    }
+
+    @Test("TagListResult decodes the {tags:[...]} wrapper")
+    func tagListResult_decodes() throws {
+        let json = #"{ "tags": [ { "id": "t1", "name": "urgent" }, { "id": "t2", "name": "bug" } ] }"#
+        let result = try decoder.decode(TagListResult.self, from: json.data(using: .utf8)!)
+        #expect(result.tags.count == 2)
+        #expect(result.tags.map(\.name) == ["urgent", "bug"])
+    }
+
+    @Test("MeetingSummary decodes the Phase B org fields")
+    func meetingSummary_decodesOrgFields() throws {
+        let json = #"""
+        {
+          "id": "m1",
+          "title": "Sync",
+          "started_at": "2026-06-05T10:00:00Z",
+          "duration_ms": 60000,
+          "space_id": "s1",
+          "project_id": "p1",
+          "tags": ["t1", "t2"]
+        }
+        """#
+        let summary = try decoder.decode(MeetingSummary.self, from: json.data(using: .utf8)!)
+        #expect(summary.spaceId == "s1")
+        #expect(summary.projectId == "p1")
+        #expect(summary.tags == ["t1", "t2"])
+    }
+
+    @Test("MeetingSummary defaults org fields when omitted (Inbox)")
+    func meetingSummary_defaultsOrgFields() throws {
+        let json = #"""
+        { "id": "m1", "title": "Sync", "started_at": "2026-06-05T10:00:00Z", "duration_ms": 60000 }
+        """#
+        let summary = try decoder.decode(MeetingSummary.self, from: json.data(using: .utf8)!)
+        #expect(summary.spaceId == nil)
+        #expect(summary.projectId == nil)
+        #expect(summary.tags.isEmpty)
+    }
+
+    // MARK: - Organization (Phase B) encode
+
+    @Test("MeetingListParams encodes only the set filter plus unsorted")
+    func meetingListParams_encodesFilter() throws {
+        let data = try encoder.encode(MeetingListParams(spaceId: "s1"))
+        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"space_id\":\"s1\""), "space_id missing: \(json)")
+        #expect(json.contains("\"unsorted\":false"), "unsorted missing: \(json)")
+        // Unset optional filters must be omitted, not sent as null.
+        #expect(!json.contains("project_id"), "project_id should be omitted: \(json)")
+        #expect(!json.contains("tag_id"), "tag_id should be omitted: \(json)")
+    }
+
+    @Test("filtered meeting.list request encodes params as positional array")
+    func meetingListFilteredRequest_encodes() throws {
+        let req = JsonRpcRequest(
+            id: 1,
+            method: "ipc.meeting.list",
+            param: MeetingListParams(tagId: "t1")
+        )
+        let data = try encoder.encode(req)
+        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"method\":\"ipc.meeting.list\""), "method missing: \(json)")
+        #expect(json.contains("\"params\":[{"), "expected positional-array params: \(json)")
+        #expect(json.contains("\"tag_id\":\"t1\""), "tag_id missing: \(json)")
+    }
+
+    @Test("MeetingAssignParams omits nil refs; move-to-inbox sends only meeting_id")
+    func meetingAssignParams_encodes() throws {
+        let toSpace = try encoder.encode(MeetingAssignParams(meetingId: "m1", spaceId: "s1", projectId: nil))
+        let toSpaceJson = String(data: toSpace, encoding: .utf8)!
+        #expect(toSpaceJson.contains("\"meeting_id\":\"m1\""))
+        #expect(toSpaceJson.contains("\"space_id\":\"s1\""))
+        #expect(!toSpaceJson.contains("project_id"), "nil project_id should be omitted: \(toSpaceJson)")
+
+        let toInbox = try encoder.encode(MeetingAssignParams(meetingId: "m1", spaceId: nil, projectId: nil))
+        let toInboxJson = String(data: toInbox, encoding: .utf8)!
+        #expect(toInboxJson.contains("\"meeting_id\":\"m1\""))
+        #expect(!toInboxJson.contains("space_id"), "nil space_id should be omitted: \(toInboxJson)")
+        #expect(!toInboxJson.contains("project_id"), "nil project_id should be omitted: \(toInboxJson)")
+    }
+
+    @Test("TagAssignParams encodes meeting_id and tag_id")
+    func tagAssignParams_encodes() throws {
+        let data = try encoder.encode(TagAssignParams(meetingId: "m1", tagId: "t1"))
+        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"meeting_id\":\"m1\""))
+        #expect(json.contains("\"tag_id\":\"t1\""))
+    }
+
+    @Test("ProjectCreateParams encodes space_id")
+    func projectCreateParams_encodes() throws {
+        let data = try encoder.encode(ProjectCreateParams(spaceId: "s1", name: "Launch"))
+        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"space_id\":\"s1\""))
+        #expect(json.contains("\"name\":\"Launch\""))
+    }
+
+    @Test("ProjectListParams omits space_id when listing all projects")
+    func projectListParams_encodesAll() throws {
+        let all = String(data: try encoder.encode(ProjectListParams(spaceId: nil)), encoding: .utf8)!
+        #expect(all == "{}", "all-projects list should encode to {}: \(all)")
+        let scoped = String(data: try encoder.encode(ProjectListParams(spaceId: "s1")), encoding: .utf8)!
+        #expect(scoped.contains("\"space_id\":\"s1\""))
+    }
 }
