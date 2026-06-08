@@ -44,10 +44,13 @@ enum Markdown {
     /// so nothing renders as raw `<tag>` text.
     static func parseBlocks(_ source: String) -> [MarkdownBlock] {
         let normalized = source.replacingOccurrences(of: "\r\n", with: "\n")
+        // Fenced code is parsed downstream by `parseTextBlocks`; compute its
+        // ranges up front so container scanning skips tags written inside code.
+        let fenced = fencedCodeRanges(in: normalized)
         var blocks: [MarkdownBlock] = []
         var cursor = normalized.startIndex
         while cursor < normalized.endIndex {
-            guard let match = nextContainerTag(in: normalized, from: cursor) else {
+            guard let match = nextContainerTag(in: normalized, from: cursor, fenced: fenced) else {
                 blocks.append(contentsOf: parseTextBlocks(String(normalized[cursor...])))
                 break
             }
@@ -70,7 +73,7 @@ enum Markdown {
         var blocks: [MarkdownBlock] = []
         var paragraph: [String] = []
         var codeLines: [String] = []
-        var inCode = false
+        var openFence: String?
 
         func flushParagraph() {
             if !paragraph.isEmpty {
@@ -87,18 +90,20 @@ enum Markdown {
             let line = rawLine
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
-            if trimmed.hasPrefix("```") {
-                if inCode {
+            if let marker = fenceMarker(of: trimmed) {
+                if openFence == nil {
+                    flushParagraph()
+                    openFence = marker
+                    continue
+                } else if marker == openFence {
                     blocks.append(.code(text: codeLines.joined(separator: "\n")))
                     codeLines.removeAll()
-                    inCode = false
-                } else {
-                    flushParagraph()
-                    inCode = true
+                    openFence = nil
+                    continue
                 }
-                continue
+                // A non-matching fence marker inside a block is code content.
             }
-            if inCode {
+            if openFence != nil {
                 codeLines.append(line)
                 continue
             }
@@ -132,7 +137,7 @@ enum Markdown {
 
             paragraph.append(trimmed)
         }
-        if inCode, !codeLines.isEmpty {
+        if openFence != nil, !codeLines.isEmpty {
             blocks.append(.code(text: codeLines.joined(separator: "\n")))
         }
         flushParagraph()
@@ -188,10 +193,55 @@ enum Markdown {
 
     private static let containerNames = ["callout", "details", "table"]
 
+    /// Fence markers that open/close a code block (CommonMark + NotionEnhanced).
+    private static let fenceMarkers = ["```", "~~~"]
+
+    /// The fence marker a trimmed line opens/closes with, or nil if it is not a
+    /// fence line.
+    private static func fenceMarker(of trimmed: String) -> String? {
+        for marker in fenceMarkers where trimmed.hasPrefix(marker) { return marker }
+        return nil
+    }
+
+    /// Source ranges covered by fenced code blocks (` ``` ` or `~~~`), fence
+    /// lines included, so container scanning ignores tags written inside code.
+    /// An unterminated fence runs to the end of the source.
+    private static func fencedCodeRanges(in source: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var openStart: String.Index?
+        var openMarker: String?
+        var lineStart = source.startIndex
+        while true {
+            let lineEnd = source.range(of: "\n", range: lineStart..<source.endIndex)?.lowerBound
+                ?? source.endIndex
+            let trimmed = source[lineStart..<lineEnd].trimmingCharacters(in: .whitespaces)
+            if let marker = openMarker, let start = openStart {
+                if trimmed.hasPrefix(marker) {
+                    let next = lineEnd < source.endIndex ? source.index(after: lineEnd) : source.endIndex
+                    ranges.append(start..<next)
+                    openStart = nil
+                    openMarker = nil
+                }
+            } else if let marker = fenceMarker(of: trimmed) {
+                openStart = lineStart
+                openMarker = marker
+            }
+            if lineEnd == source.endIndex { break }
+            lineStart = source.index(after: lineEnd)
+        }
+        if let start = openStart {
+            ranges.append(start..<source.endIndex)
+        }
+        return ranges
+    }
+
     /// Find the earliest `<callout>` / `<details>` / `<table>` opening at or
-    /// after `from`, consume through its matching close tag (which may be many
-    /// lines later), and parse it into a block.
-    private static func nextContainerTag(in text: String, from: String.Index) -> ContainerMatch? {
+    /// after `from` (skipping any inside a fenced code range), consume through
+    /// its matching close tag (which may be many lines later), and parse it into
+    /// a block.
+    private static func nextContainerTag(
+        in text: String, from: String.Index, fenced: [Range<String.Index>]
+    ) -> ContainerMatch? {
         var best: (open: Range<String.Index>, name: String)?
         for name in containerNames {
             var searchStart = from
@@ -200,7 +250,8 @@ enum Markdown {
             ) {
                 let after = openMark.upperBound
                 let boundaryOk = after != text.endIndex && " \t\r\n>/".contains(text[after])
-                if boundaryOk {
+                let inFence = fenced.contains { $0.contains(openMark.lowerBound) }
+                if boundaryOk && !inFence {
                     if best == nil || openMark.lowerBound < best!.open.lowerBound {
                         best = (openMark, name)
                     }

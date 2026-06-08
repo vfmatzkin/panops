@@ -151,6 +151,29 @@ struct MarkdownTests {
         #expect(blocks == [.paragraph(text: "The value a < b holds.")])
     }
 
+    @Test("parseBlocks keeps a NotionEnhanced tag inside fenced code as code")
+    func fencedTagStaysCode() {
+        let src = """
+        Before the block
+
+        ```
+        <table><tr><td>x</td></tr></table>
+        ```
+
+        After the block
+        """
+        let blocks = Markdown.parseBlocks(src)
+        // The fenced tag must NOT be lifted into a table block.
+        #expect(!blocks.contains { if case .table = $0 { return true }; return false })
+        // It stays verbatim inside the code block.
+        #expect(blocks.contains { block in
+            guard case let .code(text) = block else { return false }
+            return text.contains("<table>") && text.contains("</table>")
+        })
+        #expect(blocks.contains(.paragraph(text: "Before the block")))
+        #expect(blocks.contains(.paragraph(text: "After the block")))
+    }
+
     /// Render any block to a string for raw-tag-leak assertions.
     private func describe(_ block: MarkdownBlock) -> String {
         switch block {
