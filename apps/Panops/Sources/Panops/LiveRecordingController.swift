@@ -34,6 +34,10 @@ final class LiveRecordingController: RecordingController, ObservableObject {
 
     private let ipcClient: any LiveRecordingIpcClient
     private var recordingId: String?
+    /// Whether the active recording opted into auto-generate-notes. Captured at
+    /// `start` so `stop` can tell the app to show a deferred hint when the
+    /// engine couldn't enqueue the job (no `notesJobId` in the stop result).
+    private var autoGenerateNotesRequested = false
 
     init(ipcClient: any LiveRecordingIpcClient) {
         self.ipcClient = ipcClient
@@ -55,17 +59,19 @@ final class LiveRecordingController: RecordingController, ObservableObject {
                 autoGenerateNotes: options.autoGenerateNotes
             )
             recordingId = accepted.recordingId
+            autoGenerateNotesRequested = options.autoGenerateNotes
             canStop = true
         } catch {
             isRecording = false
             recordingId = nil
+            autoGenerateNotesRequested = false
             canStop = false
             throw error
         }
     }
 
-    func stop() async throws -> URL? {
-        guard let activeRecordingId = recordingId else { return nil }
+    func stop() async throws -> RecordingStopOutcome {
+        guard let activeRecordingId = recordingId else { return .none }
 
         // Clear state only AFTER the engine confirms the stop. If
         // `recordingStop` throws (transient/engine error), keep recordingId +
@@ -80,7 +86,13 @@ final class LiveRecordingController: RecordingController, ObservableObject {
         try validateArtifactPaths(stopped)
 
         let audioPath = stopped.systemAudioPath ?? stopped.micAudioPath
-        return audioPath.map { URL(fileURLWithPath: $0) }
+        // notesJobId is an opaque engine id (not a path), so it needs no
+        // validateArtifactPaths check — it only keys the app's job tracking.
+        return RecordingStopOutcome(
+            audioURL: audioPath.map { URL(fileURLWithPath: $0) },
+            notesJobId: stopped.notesJobId,
+            autoGenerateNotesRequested: autoGenerateNotesRequested
+        )
     }
 
     private func validateArtifactPaths(_ stopped: RecordingStopped) throws {

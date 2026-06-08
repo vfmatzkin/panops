@@ -108,6 +108,61 @@ struct LiveRecordingControllerTests {
         #expect(lastRecordVideo == true)
         #expect(lastAutoGenerateNotes == false)
     }
+
+    @Test("stop surfaces the engine-issued auto-notes job id")
+    func stopSurfacesNotesJobId() async throws {
+        let stopped = RecordingStopped(
+            systemAudioPath: (PathValidator.panopsDataRoot as NSString)
+                .appendingPathComponent("meetings/meeting-1/system.wav"),
+            micAudioPath: nil,
+            screenshotPaths: [],
+            durationMs: 1_000,
+            notesJobId: "auto-job-1"
+        )
+        let fake = FakeLiveRecordingIpcClient(stopped: stopped)
+        let controller = LiveRecordingController(ipcClient: fake)
+
+        try await controller.start(
+            meetingId: "meeting-1",
+            options: RecordingOptions(autoGenerateNotes: true)
+        )
+        let outcome = try await controller.stop()
+
+        #expect(outcome.notesJobId == "auto-job-1")
+        #expect(outcome.autoGenerateNotesRequested == true)
+        #expect(outcome.audioURL != nil)
+    }
+
+    @Test("stop flags auto-was-requested when the engine returns no job id")
+    func stopFlagsDeferredWhenNoJobId() async throws {
+        // The default fake `stopped` carries no notesJobId — the deferred case.
+        let fake = FakeLiveRecordingIpcClient()
+        let controller = LiveRecordingController(ipcClient: fake)
+
+        try await controller.start(
+            meetingId: "meeting-1",
+            options: RecordingOptions(autoGenerateNotes: true)
+        )
+        let outcome = try await controller.stop()
+
+        #expect(outcome.notesJobId == nil)
+        #expect(outcome.autoGenerateNotesRequested == true)
+    }
+
+    @Test("stop reports auto-was-not-requested when the recording opted out")
+    func stopReportsAutoNotRequested() async throws {
+        let fake = FakeLiveRecordingIpcClient()
+        let controller = LiveRecordingController(ipcClient: fake)
+
+        try await controller.start(
+            meetingId: "meeting-1",
+            options: RecordingOptions(autoGenerateNotes: false)
+        )
+        let outcome = try await controller.stop()
+
+        #expect(outcome.autoGenerateNotesRequested == false)
+        #expect(outcome.notesJobId == nil)
+    }
 }
 
 private enum TestRecordingError: Error {

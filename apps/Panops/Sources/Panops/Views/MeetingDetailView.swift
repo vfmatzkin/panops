@@ -13,7 +13,7 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
     @ObservedObject var vm: AppViewModel
     let recordingController: Controller?
     let onRecordingStarted: (String) async throws -> Void
-    let onRecordingStopped: (URL?) async throws -> Void
+    let onRecordingStopped: (RecordingStopOutcome) async throws -> Void
 
     @State private var transcript: Transcript?
     @State private var notesContent: String?
@@ -44,7 +44,7 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
         vm: AppViewModel,
         recordingController: Controller? = nil,
         onRecordingStarted: @escaping (String) async throws -> Void = { _ in },
-        onRecordingStopped: @escaping (URL?) async throws -> Void = { _ in }
+        onRecordingStopped: @escaping (RecordingStopOutcome) async throws -> Void = { _ in }
     ) {
         self.meeting = meeting
         self.vm = vm
@@ -247,9 +247,19 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
                 .font(.system(size: 36))
                 .foregroundStyle(.secondary)
             Text("No notes yet").font(.headline)
-            Text("Generate structured notes from this meeting's audio.")
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            if let hint = vm.deferredNotesHint, hint.meetingId == meeting.id {
+                // Auto-generate was requested at stop, but the engine couldn't
+                // start the job (compute warming up). Gentle, non-error nudge;
+                // the Generate Notes button below still works.
+                Text(hint.message)
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+            } else {
+                Text("Generate structured notes from this meeting's audio.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
             Button {
                 Task { await vm.generateNotes(for: meeting) }
             } label: {

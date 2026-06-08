@@ -11,6 +11,19 @@ final class AppViewModel: ObservableObject {
         case error(kind: String, message: String)
     }
 
+    /// Non-error nudge shown when a stopped recording requested auto-generate
+    /// notes but the engine couldn't enqueue the job (compute wasn't ready).
+    /// Meeting-scoped so it only renders for the meeting it belongs to.
+    struct DeferredNotesHint: Equatable {
+        let meetingId: String
+        let message: String
+    }
+
+    /// Copy for the deferred-notes hint. Single source so the message stays
+    /// consistent wherever the hint is shown.
+    static let deferredNotesMessage =
+        "Notes deferred — compute wasn't ready. Generate when ready."
+
     @Published var state: State = .idle(audio: nil)
     @Published var selectedMeetingId: String?
     @Published var activeRecordingMeetingId: String?
@@ -26,6 +39,10 @@ final class AppViewModel: ObservableObject {
     /// Bumped when notes generation completes so the open meeting workspace
     /// re-reads `notes.json` from disk.
     @Published private(set) var notesReloadTick: Int = 0
+    /// Set when a stopped recording requested auto-generate but the engine
+    /// deferred it (compute warming up). The meeting workspace shows it as a
+    /// gentle hint; the meeting stays manually generable.
+    @Published var deferredNotesHint: DeferredNotesHint?
 
     private let client: IpcClient
     private var pollingTask: Task<Void, Never>?
@@ -128,6 +145,7 @@ final class AppViewModel: ObservableObject {
             notesProgress = nil
             notesLastProgressAt = Date()
             notesGenMeetingId = meetingId
+            deferredNotesHint = nil
 
             // Ensure WebSocket subscription is active (lazy).
             // If WebSocket fails, fall back to filesystem polling (fix #5).
@@ -135,45 +153,93 @@ final class AppViewModel: ObservableObject {
 
             let jobId = try await client.notesGenerate(audio: audio, meetingId: meetingId)
             state = .working(meetingId: meetingId, audioName: audio.lastPathComponent)
-
-            if wsOk {
-                // Register callback for job completion (event-driven). Keep the
-                // polling guard active too: if the WebSocket stream ends before
-                // a terminal event arrives, the UI must not stay working forever.
-                await eventStream.registerCallback(jobId: jobId, handler: { [weak self] event in
-                    Task { @MainActor in
-                        switch event {
-                        case .jobDone(_, let result):
-                            self?.finishGenerationDone(
-                                meetingId: result.meetingId,
-                                jobId: jobId,
-                                notesPath: result.primaryFile
-                            )
-                        case .jobError(_, let payload):
-                            self?.recordNotesProgressHeartbeat()
-                            self?.finishGenerationError(
-                                meetingId: meetingId,
-                                jobId: jobId,
-                                kind: payload.kind,
-                                message: payload.message
-                            )
-                        case .jobProgress(let progress):
-                            self?.updateNotesProgress(progress)
-                        case .unknown:
-                            break
-                        }
-                    }
-                })
-            }
-            // Filesystem polling is also the WebSocket safety net. It is
-            // cancelled by the terminal WebSocket callback when one arrives.
-            startPolling(meetingId: meetingId, jobId: wsOk ? jobId : nil)
+            await watchNotesJob(meetingId: meetingId, jobId: jobId, wsOk: wsOk)
         } catch let IpcClientError.rpcError(_, message) {
             failNotesStart(kind: "rpc_error", message: message)
         } catch {
             Self.logFullError("notes.generate", error)
             failNotesStart(kind: "internal", message: "Could not reach the engine.")
         }
+    }
+
+    /// Wire a notes job (manual or auto-generated) into the same completion
+    /// tracking: a WebSocket callback for `job.done` / `job.error` / progress,
+    /// plus filesystem polling as both the no-WebSocket fallback and the
+    /// safety net if the stream ends before a terminal event. Callers set
+    /// `state = .working` first; this only attaches the watchers.
+    private func watchNotesJob(meetingId: String, jobId: String, wsOk: Bool) async {
+        if wsOk {
+            // Register callback for job completion (event-driven). Keep the
+            // polling guard active too: if the WebSocket stream ends before
+            // a terminal event arrives, the UI must not stay working forever.
+            await eventStream.registerCallback(jobId: jobId, handler: { [weak self] event in
+                Task { @MainActor in
+                    switch event {
+                    case .jobDone(_, let result):
+                        self?.finishGenerationDone(
+                            meetingId: result.meetingId,
+                            jobId: jobId,
+                            notesPath: result.primaryFile
+                        )
+                    case .jobError(_, let payload):
+                        self?.recordNotesProgressHeartbeat()
+                        self?.finishGenerationError(
+                            meetingId: meetingId,
+                            jobId: jobId,
+                            kind: payload.kind,
+                            message: payload.message
+                        )
+                    case .jobProgress(let progress):
+                        self?.updateNotesProgress(progress)
+                    case .unknown:
+                        break
+                    }
+                }
+            })
+        }
+        // Filesystem polling is also the WebSocket safety net. It is
+        // cancelled by the terminal WebSocket callback when one arrives.
+        startPolling(meetingId: meetingId, jobId: wsOk ? jobId : nil)
+    }
+
+    /// After a live recording stops, route any engine-enqueued auto-notes job
+    /// into the same tracked flow as the manual button — or, when auto was
+    /// requested but the engine deferred it (no job id), surface a gentle hint
+    /// and leave the meeting manually generable.
+    func handleAutoNotesAfterStop(meetingId: String, outcome: RecordingStopOutcome) async {
+        deferredNotesHint = nil
+        if let jobId = outcome.notesJobId {
+            await trackAutoGeneratedNotes(
+                meetingId: meetingId,
+                jobId: jobId,
+                audioName: outcome.audioURL?.lastPathComponent ?? "Recording"
+            )
+        } else if outcome.autoGenerateNotesRequested {
+            deferredNotesHint = DeferredNotesHint(
+                meetingId: meetingId,
+                message: Self.deferredNotesMessage
+            )
+        }
+    }
+
+    /// Attach the tracked notes-generation flow to a job the engine already
+    /// enqueued at `recording.stop`. Reuses `watchNotesJob` (no duplicated
+    /// job-watching logic); the only difference from the manual path is that
+    /// the job id is known up front instead of returned by `notes.generate`.
+    private func trackAutoGeneratedNotes(meetingId: String, jobId: String, audioName: String) async {
+        // Only one notes job is tracked at a time. If one is already in flight,
+        // skip — the engine job still runs and the sidebar reflects has_notes
+        // once it lands.
+        guard !isNotesJobActive else { return }
+        notesProgress = nil
+        notesLastProgressAt = Date()
+        notesGenMeetingId = meetingId
+        deferredNotesHint = nil
+        // Set .working before awaiting the (lazy) WebSocket setup so the UI
+        // shows processing immediately for an auto-generated job.
+        state = .working(meetingId: meetingId, audioName: audioName)
+        let wsOk = await ensureWsSubscription()
+        await watchNotesJob(meetingId: meetingId, jobId: jobId, wsOk: wsOk)
     }
 
     private func failNotesStart(kind: String, message: String) {
@@ -439,10 +505,12 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Close whichever meeting owns the active recording, regardless of the
-    /// sidebar selection when the user presses Stop.
-    func finishActiveLiveRecording() async throws {
+    /// sidebar selection when the user presses Stop, then route any
+    /// auto-generated notes job into the tracked flow (or show a deferred hint).
+    func finishActiveLiveRecording(outcome: RecordingStopOutcome) async throws {
         guard let meetingId = activeRecordingMeetingId else { return }
         try await finishLiveRecording(meetingId: meetingId)
+        await handleAutoNotesAfterStop(meetingId: meetingId, outcome: outcome)
     }
 
     private func showSelectedMeetingAfterTerminalState() {
@@ -581,6 +649,7 @@ final class AppViewModel: ObservableObject {
         notesProgress = nil
         notesLastProgressAt = nil
         notesGenMeetingId = nil
+        deferredNotesHint = nil
         state = .idle(audio: nil)
     }
 
@@ -652,7 +721,7 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
                 RecordingScreen(
                     controller: recordingController,
                     setup: activeSetup,
-                    onRecordingStopped: { _ in
+                    onRecordingStopped: { outcome in
                         // The controller already cleared isRecording, so this
                         // RecordingScreen unmounts the instant stop succeeds and
                         // its local alert can never be seen. Route a finalize
@@ -660,7 +729,7 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
                         // mounted, so the user actually learns stop/finalize
                         // failed instead of silently dropping back to the list.
                         do {
-                            try await vm.finishActiveLiveRecording()
+                            try await vm.finishActiveLiveRecording(outcome: outcome)
                         } catch {
                             AppViewModel.logFullError("recording.finish", error)
                             toolbarRecordingError = "Recording stopped, but finishing the meeting failed."
@@ -681,8 +750,8 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
                             vm.activeRecordingMeetingId = id
                         }
                     },
-                    onRecordingStopped: { _ in
-                        try await vm.finishActiveLiveRecording()
+                    onRecordingStopped: { outcome in
+                        try await vm.finishActiveLiveRecording(outcome: outcome)
                     }
                 )
             } else {
