@@ -54,6 +54,9 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
     private let plan: TrackPlan
     private let videoPath: String?
     private let target: CaptureTargetKind
+    private let outputWidth: Int?
+    private let outputHeight: Int?
+    private let region: CapturePlan.CaptureRect?
     private let lock = NSLock()
     private var stream: SCStream?
     private var systemWriter: WavWriter?
@@ -69,11 +72,17 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         systemPath: String?,
         micPath: String?,
         videoPath: String?,
-        target: CaptureTargetKind = .display
+        target: CaptureTargetKind = .display,
+        outputWidth: UInt32? = nil,
+        outputHeight: UInt32? = nil,
+        region: CapturePlan.CaptureRect? = nil
     ) throws {
         self.plan = plan
         self.videoPath = videoPath
         self.target = target
+        self.outputWidth = outputWidth.map(Int.init)
+        self.outputHeight = outputHeight.map(Int.init)
+        self.region = region
         super.init()
 
         guard !plan.wantsSystem || systemPath != nil else {
@@ -108,29 +117,76 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         } catch {
             throw Self.mapSCStreamError(error)
         }
-        // Resolve the content filter + capture dimensions from the target.
-        // window: a desktop-independent filter over the matching SCWindow;
-        // display (or an unknown window_id): the full first display.
+
+        // Compute the source capture dimensions and sourceRect from target + region
         let filter: SCContentFilter
-        let width: Int
-        let height: Int
+        let nativeWidth: Int
+        let nativeHeight: Int
+        let sourceRect: CGRect?
+
         switch target {
         case .window(let windowID):
             if let window = content.windows.first(where: { UInt32($0.windowID) == windowID }) {
                 filter = SCContentFilter(desktopIndependentWindow: window)
-                width = Int(window.frame.width)
-                height = Int(window.frame.height)
+                nativeWidth = Int(window.frame.width)
+                nativeHeight = Int(window.frame.height)
+                sourceRect = region.map { r in
+                    // Region is specified in native window coordinates
+                    CGRect(x: r.x, y: r.y, width: r.w, height: r.h)
+                }
             } else {
                 FileHandle.standardError.write(
                     Data("capture_target window \(windowID) not found; using full display\n".utf8))
                 guard let display = content.displays.first else { throw CaptureFailure.noDisplay }
                 filter = SCContentFilter(display: display, excludingWindows: [])
-                (width, height) = (display.width, display.height)
+                (nativeWidth, nativeHeight) = (display.width, display.height)
+                // Display fallback: no region applies
+                sourceRect = nil
             }
         case .display:
             guard let display = content.displays.first else { throw CaptureFailure.noDisplay }
             filter = SCContentFilter(display: display, excludingWindows: [])
-            (width, height) = (display.width, display.height)
+            (nativeWidth, nativeHeight) = (display.width, display.height)
+            sourceRect = region.map { r in
+                CGRect(x: r.x, y: r.y, width: r.w, height: r.h)
+            }
+        case .app(let bundleId):
+            // App capture: find the first window of this app, or fall back to display
+            if let window = content.windows.first(where: { $0.owningApplication?.bundleIdentifier == bundleId }) {
+                filter = SCContentFilter(desktopIndependentWindow: window)
+                nativeWidth = Int(window.frame.width)
+                nativeHeight = Int(window.frame.height)
+                sourceRect = region.map { r in
+                    CGRect(x: r.x, y: r.y, width: r.w, height: r.h)
+                }
+            } else {
+                FileHandle.standardError.write(
+                    Data("capture_target app \(bundleId) has no windows; using full display\n".utf8))
+                guard let display = content.displays.first else { throw CaptureFailure.noDisplay }
+                filter = SCContentFilter(display: display, excludingWindows: [])
+                (nativeWidth, nativeHeight) = (display.width, display.height)
+                // Display fallback: no region applies
+                sourceRect = nil
+            }
+        case .region(let displayId, _, _, let w, let h):
+            // Region capture: display filter with the specified rectangle
+            let display: SCDisplay
+            if let d = content.displays.first(where: { $0.displayID == displayId }) {
+                display = d
+            } else {
+                FileHandle.standardError.write(
+                    Data("capture_target display \(displayId) not found; using primary display\n".utf8))
+                guard let primary = content.displays.first else { throw CaptureFailure.noDisplay }
+                display = primary
+            }
+            filter = SCContentFilter(display: display, excludingWindows: [])
+            // When region is specified via wire protocol, use those dimensions
+            nativeWidth = Int(w)
+            nativeHeight = Int(h)
+            // Also apply any region given at runtime (e.g., from crop)
+            sourceRect = region.map { r in
+                CGRect(x: r.x, y: r.y, width: r.w, height: r.h)
+            }
         }
 
         let config = SCStreamConfiguration()
@@ -146,8 +202,8 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         config.channelCount = 1
         // Screen frames feed the screenshotter. Cadence is bounded by the
         // minimum frame interval; the screenshotter dedups beyond that.
-        config.width = width
-        config.height = height
+        config.width = nativeWidth
+        config.height = nativeHeight
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.queueDepth = 5
         // Frame cadence: a video recording needs a smooth rate, but the
@@ -160,14 +216,20 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
             config.minimumFrameInterval = CMTime(value: Int64(s.intervalMs), timescale: 1000)
         }
 
+        // Apply CapturePlan for optional output scaling and source rectangle
+        let capturePlan = CapturePlan(outputWidth: outputWidth, outputHeight: outputHeight, region: sourceRect)
+        capturePlan.apply(to: config)
+
         // Build the video writer up front (when requested) so a setup failure is
         // visible before the stream starts. Once running, writer errors are
         // best-effort: audio + screenshots continue regardless (see VideoWriter).
         var writer: VideoWriter?
         if let path = videoPath {
+            let writerWidth = outputWidth ?? nativeWidth
+            let writerHeight = outputHeight ?? nativeHeight
             do {
                 writer = try VideoWriter(
-                    url: URL(fileURLWithPath: path), width: width, height: height
+                    url: URL(fileURLWithPath: path), width: writerWidth, height: writerHeight
                 )
             } catch {
                 FileHandle.standardError.write(
