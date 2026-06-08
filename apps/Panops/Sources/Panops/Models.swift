@@ -217,12 +217,44 @@ struct RecordingStopped: Decodable {
     let micAudioPath: String?
     let screenshotPaths: [String]
     let durationMs: UInt64
+    /// Engine-issued notes job id when the recording opted into
+    /// auto-generate-notes AND the engine enqueued the job at stop. `nil` when
+    /// auto-notes wasn't requested, or was requested but compute wasn't ready
+    /// (the app then surfaces a deferred hint). Decode-if-present so older
+    /// engine payloads (no field) still decode.
+    let notesJobId: String?
 
     enum CodingKeys: String, CodingKey {
         case systemAudioPath = "system_audio_path"
         case micAudioPath = "mic_audio_path"
         case screenshotPaths = "screenshot_paths"
         case durationMs = "duration_ms"
+        case notesJobId = "notes_job_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        systemAudioPath = try c.decodeIfPresent(String.self, forKey: .systemAudioPath)
+        micAudioPath = try c.decodeIfPresent(String.self, forKey: .micAudioPath)
+        screenshotPaths = try c.decode([String].self, forKey: .screenshotPaths)
+        durationMs = try c.decode(UInt64.self, forKey: .durationMs)
+        notesJobId = try c.decodeIfPresent(String.self, forKey: .notesJobId)
+    }
+
+    // Memberwise init retained for tests/previews constructing results directly.
+    // `notesJobId` defaults to nil so existing call sites need no change.
+    init(
+        systemAudioPath: String?,
+        micAudioPath: String?,
+        screenshotPaths: [String],
+        durationMs: UInt64,
+        notesJobId: String? = nil
+    ) {
+        self.systemAudioPath = systemAudioPath
+        self.micAudioPath = micAudioPath
+        self.screenshotPaths = screenshotPaths
+        self.durationMs = durationMs
+        self.notesJobId = notesJobId
     }
 }
 

@@ -94,6 +94,24 @@ struct RecordingSetup: Equatable {
     }
 }
 
+/// Result of stopping a live recording. Carries the primary audio URL (as
+/// before) plus the engine-issued auto-notes job id when the engine enqueued
+/// notes generation at stop, and whether auto-notes was requested for this
+/// recording. The app uses `notesJobId` to drive the same tracked
+/// notes-generation flow as the manual button; when auto was requested but
+/// `notesJobId` is `nil` (compute wasn't ready), it surfaces a deferred hint.
+struct RecordingStopOutcome: Equatable {
+    var audioURL: URL?
+    var notesJobId: String?
+    var autoGenerateNotesRequested: Bool
+
+    static let none = RecordingStopOutcome(
+        audioURL: nil,
+        notesJobId: nil,
+        autoGenerateNotesRequested: false
+    )
+}
+
 /// Protocol for recording control.
 @MainActor
 protocol RecordingController: AnyObject {
@@ -105,7 +123,7 @@ protocol RecordingController: AnyObject {
     /// no-ops while the start is still in flight.
     var canStop: Bool { get }
     func start(meetingId: String, options: RecordingOptions) async throws
-    func stop() async throws -> URL?  // Returns audio file path
+    func stop() async throws -> RecordingStopOutcome
 }
 
 extension RecordingController {
@@ -132,9 +150,9 @@ final class MockRecordingController: RecordingController, ObservableObject {
         showPlaceholderAlert = true
     }
 
-    func stop() async throws -> URL? {
+    func stop() async throws -> RecordingStopOutcome {
         isRecording = false
         canStop = false
-        return nil
+        return .none
     }
 }

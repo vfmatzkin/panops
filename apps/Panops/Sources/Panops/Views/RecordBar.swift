@@ -25,7 +25,7 @@ enum RecordingClock {
 struct RecordingScreen<Controller: RecordingController & ObservableObject>: View {
     @ObservedObject var controller: Controller
     let setup: RecordingSetup
-    let onRecordingStopped: (URL?) async throws -> Void
+    let onRecordingStopped: (RecordingStopOutcome) async throws -> Void
 
     @State private var isStopping = false
     @State private var errorMessage: String?
@@ -34,7 +34,7 @@ struct RecordingScreen<Controller: RecordingController & ObservableObject>: View
     init(
         controller: Controller,
         setup: RecordingSetup,
-        onRecordingStopped: @escaping (URL?) async throws -> Void = { _ in }
+        onRecordingStopped: @escaping (RecordingStopOutcome) async throws -> Void = { _ in }
     ) {
         self._controller = ObservedObject(wrappedValue: controller)
         self.setup = setup
@@ -145,8 +145,8 @@ struct RecordingScreen<Controller: RecordingController & ObservableObject>: View
         isStopping = true
         defer { isStopping = false }
         do {
-            let audioURL = try await controller.stop()
-            try await onRecordingStopped(audioURL)
+            let outcome = try await controller.stop()
+            try await onRecordingStopped(outcome)
         } catch {
             AppViewModel.logFullError("recording.stop", error)
             errorMessage = "Couldn't stop recording."
@@ -159,7 +159,7 @@ struct RecordBar<Controller: RecordingController & ObservableObject>: View {
     @ObservedObject var controller: Controller
     let meetingId: String
     let onRecordingStarted: (String) async throws -> Void
-    let onRecordingStopped: (URL?) async throws -> Void
+    let onRecordingStopped: (RecordingStopOutcome) async throws -> Void
     @State private var isBusy = false
     @State private var errorMessage: String?
     @State private var lastAudioURL: URL?
@@ -168,7 +168,7 @@ struct RecordBar<Controller: RecordingController & ObservableObject>: View {
         controller: Controller,
         meetingId: String,
         onRecordingStarted: @escaping (String) async throws -> Void = { _ in },
-        onRecordingStopped: @escaping (URL?) async throws -> Void = { _ in }
+        onRecordingStopped: @escaping (RecordingStopOutcome) async throws -> Void = { _ in }
     ) {
         self._controller = ObservedObject(wrappedValue: controller)
         self.meetingId = meetingId
@@ -238,9 +238,9 @@ struct RecordBar<Controller: RecordingController & ObservableObject>: View {
                 // The controller already validates returned artifact paths
                 // (LiveRecordingController.validateArtifactPaths), so no
                 // duplicate PathValidator check here.
-                let audioURL = try await controller.stop()
-                lastAudioURL = audioURL
-                try await onRecordingStopped(audioURL)
+                let outcome = try await controller.stop()
+                lastAudioURL = outcome.audioURL
+                try await onRecordingStopped(outcome)
             } else {
                 lastAudioURL = nil
                 try await controller.start(meetingId: meetingId)
