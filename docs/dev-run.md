@@ -3,6 +3,26 @@
 How to build and launch the Mac app from source during development. (For the
 distributable, brew-installable `.app`, see `docs/release-v0.1.md`.)
 
+## TL;DR — two commands
+
+```bash
+# A) Quick look (UI iteration). Builds engine + capture sidecar + runs the app
+#    from source. Command Line Tools is enough. Live Screen Recording will NOT
+#    work here (a bare swift-run binary can't get the macOS Screen Recording
+#    permission) — use this to browse the UI / generate notes from an audio file.
+scripts/dev.sh
+
+# B) Full flow WITH permissions (record → transcribe → notes). Builds + ad-hoc
+#    signs Panops.app (all three sidecars bundled), so macOS will grant Screen
+#    Recording + Microphone. Requires FULL Xcode (ASR/LLM sidecars) + macOS 26.
+scripts/package.sh
+open dist/Panops.app
+#    Then System Settings → Privacy & Security → grant Screen Recording + Mic,
+#    relaunch the app, and record a meeting.
+```
+
+Details + the manual smoke checklist below.
+
 ## Concept: there is no `.app` icon during dev
 
 The Mac app lives at `apps/Panops/` as a **SwiftPM executable** (source), not a
