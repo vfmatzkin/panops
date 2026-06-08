@@ -14,9 +14,10 @@ pub mod methods;
 
 pub use error::IpcError;
 pub use methods::{
-    AudioSourcesWire, Event, JobAccepted, JobDoneEvent, JobErrorEvent, JobProgressEvent, LlmInfo,
-    Meeting, MeetingConfig, MeetingDeleteVideoParams, MeetingDeleteVideoResult, MeetingSummary,
-    NotesDialect, NotesGenerateParams, NotesGenerateResult, RecordingAccepted,
-    RecordingProgressEvent, RecordingStartParams, RecordingStopParams, RecordingStopped,
-    ScreenshotEvent, ServerInfo,
+    AudioSourcesWire, CaptureTarget, CaptureWindowsParams, CaptureWindowsResult, Event,
+    JobAccepted, JobDoneEvent, JobErrorEvent, JobProgressEvent, LlmInfo, Meeting, MeetingConfig,
+    MeetingDeleteVideoParams, MeetingDeleteVideoResult, MeetingSummary, NotesDialect,
+    NotesGenerateParams, NotesGenerateResult, RecordingAccepted, RecordingProgressEvent,
+    RecordingStartParams, RecordingStopParams, RecordingStopped, ScreenshotEvent, ServerInfo,
+    WindowInfo,
 };

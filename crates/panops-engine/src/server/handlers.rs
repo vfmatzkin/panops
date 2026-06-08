@@ -26,10 +26,11 @@ use panops_core::notes::ir::StructuredNotes;
 use panops_core::notes::pipeline::NotesGenerator;
 use panops_core::notes::raw_transcript::write_raw_transcript;
 use panops_protocol::{
-    Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, JobProgressEvent, Meeting,
-    MeetingConfig, MeetingDeleteVideoParams, MeetingDeleteVideoResult, MeetingSummary,
-    NotesDialect, NotesGenerateParams, NotesGenerateResult, RecordingAccepted,
-    RecordingStartParams, RecordingStopParams, RecordingStopped, ServerInfo,
+    CaptureWindowsParams, CaptureWindowsResult, Event, IpcError, JobAccepted, JobDoneEvent,
+    JobErrorEvent, JobProgressEvent, Meeting, MeetingConfig, MeetingDeleteVideoParams,
+    MeetingDeleteVideoResult, MeetingSummary, NotesDialect, NotesGenerateParams,
+    NotesGenerateResult, RecordingAccepted, RecordingStartParams, RecordingStopParams,
+    RecordingStopped, ServerInfo, WindowInfo,
 };
 use tokio::sync::broadcast;
 
@@ -97,6 +98,12 @@ pub(super) trait Ipc {
         &self,
         params: RecordingStopParams,
     ) -> Result<RecordingStopped, ErrorObjectOwned>;
+
+    #[method(name = "capture.windows")]
+    async fn capture_windows(
+        &self,
+        params: CaptureWindowsParams,
+    ) -> Result<CaptureWindowsResult, ErrorObjectOwned>;
 
     #[subscription(
         name = "events.subscribe" => "events",
@@ -439,6 +446,20 @@ impl IpcServer for IpcImpl {
         }
 
         Ok(stopped)
+    }
+
+    async fn capture_windows(
+        &self,
+        _params: CaptureWindowsParams,
+    ) -> Result<CaptureWindowsResult, ErrorObjectOwned> {
+        let capture = crate::capture_resolver::pick_capture();
+        spawn_blocking_into_ipc("capture.windows", move || {
+            let windows = capture.list_windows().map_err(IpcError::from)?;
+            Ok(CaptureWindowsResult {
+                windows: windows.into_iter().map(WindowInfo::from).collect(),
+            })
+        })
+        .await
     }
 
     async fn subscribe_events(&self, pending: PendingSubscriptionSink) -> SubscriptionResult {
@@ -1739,6 +1760,7 @@ mod recording_auto_generate_tests {
             auto_generate_notes: true,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
+            capture_target: panops_protocol::CaptureTarget::Display,
         })
         .await
         .expect("recording.start");
@@ -1805,6 +1827,7 @@ mod recording_auto_generate_tests {
             auto_generate_notes: true,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
+            capture_target: panops_protocol::CaptureTarget::Display,
         })
         .await
         .expect("recording.start");
@@ -1874,6 +1897,7 @@ mod recording_auto_generate_tests {
             auto_generate_notes: true,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
+            capture_target: panops_protocol::CaptureTarget::Display,
         })
         .await
         .expect("recording.start");

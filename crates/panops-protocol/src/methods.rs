@@ -277,6 +277,35 @@ pub enum AudioSourcesWire {
     SystemAndMic,
 }
 
+/// Screen target selection for `recording.start`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CaptureTarget {
+    #[default]
+    Display,
+    Window {
+        window_id: u32,
+    },
+}
+
+/// Capturable window metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowInfo {
+    pub window_id: u32,
+    pub app_name: String,
+    pub title: String,
+}
+
+/// Params for `ipc.capture.windows`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CaptureWindowsParams {}
+
+/// Result for `ipc.capture.windows`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CaptureWindowsResult {
+    pub windows: Vec<WindowInfo>,
+}
+
 fn default_screenshot_interval() -> u64 {
     500
 }
@@ -307,6 +336,9 @@ pub struct RecordingStartParams {
     pub screenshot_interval_ms: u64,
     #[serde(default = "default_screenshot_threshold")]
     pub screenshot_threshold: f32,
+    /// Screen target to capture. Defaults to full-display capture.
+    #[serde(default)]
+    pub capture_target: CaptureTarget,
 }
 
 #[cfg(feature = "domain-conversions")]
@@ -332,6 +364,37 @@ impl From<panops_core::capture::AudioSources> for AudioSourcesWire {
 }
 
 #[cfg(feature = "domain-conversions")]
+impl From<CaptureTarget> for panops_core::capture::CaptureTarget {
+    fn from(value: CaptureTarget) -> Self {
+        match value {
+            CaptureTarget::Display => Self::Display,
+            CaptureTarget::Window { window_id } => Self::Window { window_id },
+        }
+    }
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<panops_core::capture::CaptureTarget> for CaptureTarget {
+    fn from(value: panops_core::capture::CaptureTarget) -> Self {
+        match value {
+            panops_core::capture::CaptureTarget::Display => Self::Display,
+            panops_core::capture::CaptureTarget::Window { window_id } => Self::Window { window_id },
+        }
+    }
+}
+
+#[cfg(feature = "domain-conversions")]
+impl From<panops_core::capture::WindowInfo> for WindowInfo {
+    fn from(value: panops_core::capture::WindowInfo) -> Self {
+        Self {
+            window_id: value.window_id,
+            app_name: value.app_name,
+            title: value.title,
+        }
+    }
+}
+
+#[cfg(feature = "domain-conversions")]
 impl From<&RecordingStartParams> for panops_core::capture::CaptureConfig {
     fn from(value: &RecordingStartParams) -> Self {
         Self {
@@ -339,6 +402,7 @@ impl From<&RecordingStartParams> for panops_core::capture::CaptureConfig {
             record_video: value.record_video,
             screenshot_interval_ms: value.screenshot_interval_ms,
             screenshot_threshold: value.screenshot_threshold,
+            capture_target: value.capture_target.into(),
         }
     }
 }
@@ -651,11 +715,16 @@ mod tests {
             auto_generate_notes: true,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
+            capture_target: CaptureTarget::Window { window_id: 42 },
         };
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains(r#""record_video":true"#), "got: {json}");
         assert!(
             json.contains(r#""auto_generate_notes":true"#),
+            "got: {json}"
+        );
+        assert!(
+            json.contains(r#""capture_target":{"kind":"window","window_id":42}"#),
             "got: {json}"
         );
         let back: RecordingStartParams = serde_json::from_str(&json).unwrap();
@@ -672,6 +741,7 @@ mod tests {
         assert!(!p.auto_generate_notes); // default/back-compat
         assert_eq!(p.screenshot_interval_ms, 500); // default
         assert_eq!(p.screenshot_threshold, 0.15); // default
+        assert_eq!(p.capture_target, CaptureTarget::Display); // default
     }
 
     #[cfg(feature = "domain-conversions")]
@@ -684,6 +754,7 @@ mod tests {
             auto_generate_notes: true,
             screenshot_interval_ms: 250,
             screenshot_threshold: 0.2,
+            capture_target: CaptureTarget::Window { window_id: 99 },
         };
         let cfg = panops_core::capture::CaptureConfig::from(&p);
         assert_eq!(
@@ -693,9 +764,52 @@ mod tests {
         assert!(cfg.record_video);
         assert_eq!(cfg.screenshot_interval_ms, 250);
         assert_eq!(cfg.screenshot_threshold, 0.2);
+        assert_eq!(
+            cfg.capture_target,
+            panops_core::capture::CaptureTarget::Window { window_id: 99 }
+        );
 
         let wire = AudioSourcesWire::from(panops_core::capture::AudioSources::SystemOnly);
         assert_eq!(wire, AudioSourcesWire::SystemOnly);
+        let wire_target =
+            CaptureTarget::from(panops_core::capture::CaptureTarget::Window { window_id: 7 });
+        assert_eq!(wire_target, CaptureTarget::Window { window_id: 7 });
+    }
+
+    #[test]
+    fn capture_target_wire_contracts_are_snake_case_tagged() {
+        assert_eq!(
+            serde_json::to_string(&CaptureTarget::Display).unwrap(),
+            r#"{"kind":"display"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&CaptureTarget::Window { window_id: 42 }).unwrap(),
+            r#"{"kind":"window","window_id":42}"#
+        );
+        let defaulted: RecordingStartParams =
+            serde_json::from_str(r#"{"meeting_id":"m1"}"#).unwrap();
+        assert_eq!(defaulted.capture_target, CaptureTarget::Display);
+    }
+
+    #[test]
+    fn capture_windows_shapes_round_trip() {
+        let params = CaptureWindowsParams {};
+        assert_eq!(serde_json::to_string(&params).unwrap(), r#"{}"#);
+
+        let result = CaptureWindowsResult {
+            windows: vec![WindowInfo {
+                window_id: 42,
+                app_name: "Safari".into(),
+                title: "Panops".into(),
+            }],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert_eq!(
+            json,
+            r#"{"windows":[{"window_id":42,"app_name":"Safari","title":"Panops"}]}"#
+        );
+        let back: CaptureWindowsResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, result);
     }
 
     #[test]

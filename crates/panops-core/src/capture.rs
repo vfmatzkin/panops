@@ -24,6 +24,24 @@ pub enum AudioSources {
     SystemAndMic,
 }
 
+/// Screen target to capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaptureTarget {
+    /// Capture the full display.
+    #[default]
+    Display,
+    /// Capture a specific window by ScreenCaptureKit window id.
+    Window { window_id: u32 },
+}
+
+/// Window metadata returned by [`Capture::list_windows`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowInfo {
+    pub window_id: u32,
+    pub app_name: String,
+    pub title: String,
+}
+
 /// Configuration for a capture session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaptureConfig {
@@ -35,6 +53,8 @@ pub struct CaptureConfig {
     pub screenshot_interval_ms: u64,
     /// Vision FeaturePrint cosine distance threshold for change detection.
     pub screenshot_threshold: f32,
+    /// Screen target to capture. Defaults to full-display capture.
+    pub capture_target: CaptureTarget,
 }
 
 impl Default for CaptureConfig {
@@ -44,6 +64,7 @@ impl Default for CaptureConfig {
             record_video: false,
             screenshot_interval_ms: 500,
             screenshot_threshold: 0.15,
+            capture_target: CaptureTarget::Display,
         }
     }
 }
@@ -101,6 +122,9 @@ pub enum CaptureError {
 /// runs ScreenCaptureKit + AVFoundation. Fake adapters (FakeCapture)
 /// yield synthetic PCM frames and pre-generated screenshot fixtures.
 pub trait Capture: Send + Sync {
+    /// List capturable windows.
+    fn list_windows(&self) -> Result<Vec<WindowInfo>, CaptureError>;
+
     /// Start capturing audio + screenshots for a meeting.
     /// Returns a session handle. Audio + screenshots stream as IPC events
     /// (implemented at the engine layer, not here).
@@ -131,6 +155,12 @@ mod tests {
         assert!(!cfg.record_video);
         assert_eq!(cfg.screenshot_interval_ms, 500);
         assert!(cfg.screenshot_threshold > 0.0 && cfg.screenshot_threshold < 1.0);
+        assert_eq!(cfg.capture_target, CaptureTarget::Display);
+    }
+
+    #[test]
+    fn capture_target_default_is_display() {
+        assert_eq!(CaptureTarget::default(), CaptureTarget::Display);
     }
 
     #[test]
