@@ -18,6 +18,14 @@ final class AppViewModel: ObservableObject {
     @Published var selectedMeeting: Meeting?
     @Published var notesProgress: JobProgressEvent?
     @Published var llmInfo: LlmInfo?
+    /// Which meeting the current/last notes generation targets. Lets the meeting
+    /// workspace show processing/error inline for the right meeting (the audio-
+    /// file flow targets a freshly-created meeting that isn't selected, so its
+    /// states render in the no-selection area instead).
+    @Published var notesGenMeetingId: String?
+    /// Bumped when notes generation completes so the open meeting workspace
+    /// re-reads `notes.json` from disk.
+    @Published private(set) var notesReloadTick: Int = 0
 
     private let client: IpcClient
     private var pollingTask: Task<Void, Never>?
@@ -77,17 +85,54 @@ final class AppViewModel: ObservableObject {
         state = .idle(audio: url)
     }
 
+    /// Audio-file flow: create a fresh meeting from a picked file and generate.
     func generate() async {
         guard case .idle(let audio?) = state else { return }
         do {
+            let meetingId = try await client.meetingStart()
+            await beginNotesGeneration(meetingId: meetingId, audio: audio)
+        } catch let IpcClientError.rpcError(_, message) {
+            failNotesStart(kind: "rpc_error", message: message)
+        } catch {
+            Self.logFullError("meeting.start", error)
+            failNotesStart(kind: "internal", message: "Could not reach the engine.")
+        }
+    }
+
+    /// Selected-meeting flow: generate (or retry) notes for an existing meeting
+    /// using audio already captured in its directory. Targets the meeting's own
+    /// id rather than creating a new one.
+    func generateNotes(for meeting: Meeting) async {
+        // Only one notes job is tracked at a time (notesGenMeetingId + state).
+        // Starting a second while one runs would clobber the first's progress
+        // and completion tracking, so refuse while any job is in flight.
+        guard !isNotesJobActive else { return }
+        guard let audio = locateAudio(in: meeting.dirPath) else {
+            notesGenMeetingId = meeting.id
+            notesProgress = nil
+            notesLastProgressAt = nil
+            state = .error(
+                kind: "no_audio",
+                message: "No recorded audio was found for this meeting."
+            )
+            return
+        }
+        await beginNotesGeneration(meetingId: meeting.id, audio: audio)
+    }
+
+    /// Shared notes-generation machinery used by both entry points: subscribe
+    /// (or fall back to polling), kick off `notes.generate`, register the
+    /// completion callback, and arm the polling safety net.
+    private func beginNotesGeneration(meetingId: String, audio: URL) async {
+        do {
             notesProgress = nil
             notesLastProgressAt = Date()
+            notesGenMeetingId = meetingId
 
-            // Ensure WebSocket subscription is active (lazy)
-            // If WebSocket fails, fall back to filesystem polling (fix #5)
+            // Ensure WebSocket subscription is active (lazy).
+            // If WebSocket fails, fall back to filesystem polling (fix #5).
             let wsOk = await ensureWsSubscription()
 
-            let meetingId = try await client.meetingStart()
             let jobId = try await client.notesGenerate(audio: audio, meetingId: meetingId)
             state = .working(meetingId: meetingId, audioName: audio.lastPathComponent)
 
@@ -124,15 +169,92 @@ final class AppViewModel: ObservableObject {
             // cancelled by the terminal WebSocket callback when one arrives.
             startPolling(meetingId: meetingId, jobId: wsOk ? jobId : nil)
         } catch let IpcClientError.rpcError(_, message) {
-            notesProgress = nil
-            notesLastProgressAt = nil
-            state = .error(kind: "rpc_error", message: message)
+            failNotesStart(kind: "rpc_error", message: message)
         } catch {
             Self.logFullError("notes.generate", error)
-            notesProgress = nil
-            notesLastProgressAt = nil
-            state = .error(kind: "internal", message: "Could not reach the engine.")
+            failNotesStart(kind: "internal", message: "Could not reach the engine.")
         }
+    }
+
+    private func failNotesStart(kind: String, message: String) {
+        notesProgress = nil
+        notesLastProgressAt = nil
+        // Keep notesGenMeetingId so the workspace can show the error inline.
+        state = .error(kind: kind, message: message)
+    }
+
+    /// Find captured audio in a meeting directory. Live capture writes
+    /// `system.wav` / `mic.wav`; prefer those, then any audio-like file.
+    private func locateAudio(in dirPath: String) -> URL? {
+        let fm = FileManager.default
+        let preferred = ["system.wav", "mic.wav", "audio.wav"]
+        for name in preferred {
+            let path = (dirPath as NSString).appendingPathComponent(name)
+            if PathValidator.isPath(path, under: dirPath), fm.fileExists(atPath: path) {
+                return URL(fileURLWithPath: path)
+            }
+        }
+        let audioExtensions: Set<String> = ["wav", "m4a", "mp3", "mov"]
+        if let contents = try? fm.contentsOfDirectory(atPath: dirPath) {
+            for name in contents.sorted()
+            where audioExtensions.contains((name as NSString).pathExtension.lowercased()) {
+                let path = (dirPath as NSString).appendingPathComponent(name)
+                if PathValidator.isPath(path, under: dirPath) {
+                    return URL(fileURLWithPath: path)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// True while any notes-generation job is in flight. Only one job is tracked
+    /// at a time, so callers must not start a second while this is true.
+    var isNotesJobActive: Bool {
+        if case .working = state { return true }
+        return false
+    }
+
+    /// Lifecycle status for a meeting summary, used by the sidebar status pill.
+    func status(for summary: MeetingSummary) -> MeetingStatus {
+        if activeRecordingMeetingId == summary.id { return .recording }
+        if notesGenMeetingId == summary.id, case .working = state { return .processing }
+        if summary.hasNotes { return .ready }
+        if summary.endedAt != nil { return .needsNotes }
+        // Older payloads (pre ended_at) decode endedAt as nil; a positive
+        // recorded duration still means the meeting ended and needs notes.
+        if summary.durationMs > 0 { return .needsNotes }
+        return .draft
+    }
+
+    /// Delete a meeting via the existing `meeting.delete` path; clear selection
+    /// if it was the open one, then refresh the list.
+    func deleteMeeting(id: String) async {
+        do {
+            try await client.meetingDelete(id: id)
+            // Only clear the selection / empty the workspace once the delete
+            // actually succeeded; a failed delete must leave the meeting open.
+            if selectedMeetingId == id {
+                selectedMeetingId = nil
+                selectedMeeting = nil
+                state = .idle(audio: nil)
+            }
+        } catch {
+            Self.logFullError("meeting.delete", error)
+        }
+        await refreshMeetings()
+    }
+
+    /// Open a path (typically a meeting directory) in Finder, guarded to the
+    /// panops data dir.
+    func openInFinder(path: String) {
+        guard PathValidator.isUnderPanopsDataDir(path) else {
+            Self.logFullError(
+                "openInFinder",
+                NSError(domain: "PanopsShell", code: 1, userInfo: [NSLocalizedDescriptionKey: "refusing to open path outside panops data dir: \(path)"])
+            )
+            return
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path).standardizedFileURL)
     }
 
     /// Ensure WebSocket subscription is active. Lazy per spec decision.
@@ -336,6 +458,9 @@ final class AppViewModel: ObservableObject {
         }
         notesProgress = nil
         notesLastProgressAt = nil
+        notesGenMeetingId = nil
+        // Signal the open meeting workspace to re-read notes.json from disk.
+        notesReloadTick += 1
         state = .done(notesPath: notesPath)
         Task { await refreshMeetings() }
     }
@@ -443,6 +568,7 @@ final class AppViewModel: ObservableObject {
         selectedMeeting = nil
         notesProgress = nil
         notesLastProgressAt = nil
+        notesGenMeetingId = nil
         state = .idle(audio: nil)
     }
 
@@ -503,17 +629,36 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
         NavigationSplitView {
             MeetingListView(vm: vm)
         } detail: {
-            switch vm.state {
-            case .engineNotConnected:
-                engineNotConnectedView()
-            case .idle(let audio):
-                detailPlaceholder(audio: audio)
-            case .working(_, let audioName):
-                workingView(audioName: audioName)
-            case .done(let path):
-                doneView(path: path)
-            case .error(let kind, let message):
-                errorView(kind: kind, message: message)
+            // A selected meeting owns its own Notes/Transcript/Info workspace,
+            // including per-meeting processing/error states. The audio-file
+            // flow (no selection) renders its working/done/error here instead.
+            if let meeting = vm.selectedMeeting {
+                MeetingDetailView(
+                    meeting: meeting,
+                    vm: vm,
+                    recordingController: recordingController,
+                    onRecordingStarted: { id in
+                        await MainActor.run {
+                            vm.activeRecordingMeetingId = id
+                        }
+                    },
+                    onRecordingStopped: { _ in
+                        try await vm.finishActiveLiveRecording()
+                    }
+                )
+            } else {
+                switch vm.state {
+                case .engineNotConnected:
+                    engineNotConnectedView()
+                case .idle(let audio):
+                    emptyState(audio: audio)
+                case .working(_, let audioName):
+                    workingView(audioName: audioName)
+                case .done(let path):
+                    doneView(path: path)
+                case .error(let kind, let message):
+                    errorView(kind: kind, message: message)
+                }
             }
         }
         .frame(minWidth: 720, minHeight: 480)
@@ -602,53 +747,56 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
         .padding()
     }
 
+    /// No meeting selected: product blurb, the primary New Recording CTA, the
+    /// honest trust strip, and a secondary audio-file generation path.
     @ViewBuilder
-    private func detailPlaceholder(audio: URL?) -> some View {
-        VStack(spacing: 24) {
-            // Show selected meeting detail if available
-            if let meeting = vm.selectedMeeting {
-                MeetingDetailView(
-                    meeting: meeting,
-                    recordingController: recordingController,
-                    onRecordingStarted: { id in
-                        await MainActor.run {
-                            vm.activeRecordingMeetingId = id
-                        }
-                    },
-                    onRecordingStopped: { _ in
-                        try await vm.finishActiveLiveRecording()
-                    }
-                )
-            } else {
-                VStack(spacing: 16) {
-                    Text("Panops").font(.largeTitle)
-                    Text("Select a meeting from the sidebar or generate notes from an audio file.")
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+    private func emptyState(audio: URL?) -> some View {
+        VStack(spacing: 20) {
+            Spacer()
+            Image(systemName: "waveform.and.mic")
+                .font(.system(size: 44))
+                .foregroundStyle(Color.accentColor)
+            Text("Panops").font(.largeTitle.weight(.semibold))
+            Text("Record a meeting and get private, screenshot-anchored notes —\nall processed on this Mac.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
 
-                    Divider()
-
-                    // Notes generation flow preserved here
-                    HStack {
-                        Button("Open audio…") { vm.pickAudio() }
-                        if let audio {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(audio.lastPathComponent).font(.body)
-                                Button("Generate notes") {
-                                    Task { await vm.generate() }
-                                }
-                                .keyboardShortcut(.return, modifiers: [])
-                            }
-                        } else {
-                            Text("No file selected").foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Spacer()
-                }
-                .padding()
+            Button {
+                Task { @MainActor in await startNewRecording() }
+            } label: {
+                Label("New Recording", systemImage: "record.circle")
+                    .padding(.horizontal, 8)
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(isStartingNewRecording || recordingController.isRecording || isEngineNotConnected)
+
+            // Secondary path: generate notes from an existing audio file.
+            VStack(spacing: 8) {
+                Divider().frame(maxWidth: 280)
+                HStack(spacing: 12) {
+                    Button("Open audio file…") { vm.pickAudio() }
+                    if let audio {
+                        Text(audio.lastPathComponent)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Button("Generate notes") {
+                            Task { await vm.generate() }
+                        }
+                        .keyboardShortcut(.return, modifiers: [])
+                    }
+                }
+            }
+            .padding(.top, 4)
+
+            Spacer()
+            TrustStrip()
+                .padding(.bottom, 12)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
     }
 
     @ViewBuilder
@@ -680,25 +828,7 @@ struct ContentView<Controller: RecordingController & ObservableObject>: View {
     }
 
     private func notesProgressLabel(_ progress: JobProgressEvent?) -> String {
-        guard let progress else { return "Generating notes…" }
-
-        switch progress.stage {
-        case "loading":
-            return "Loading audio…"
-        case "transcribing":
-            if let current = progress.current, let total = progress.total {
-                return "Transcribing \(current)/\(total)…"
-            }
-            return "Transcribing…"
-        case "diarizing":
-            return "Identifying speakers…"
-        case "generating_notes":
-            return "Writing notes…"
-        case "exporting":
-            return "Saving…"
-        default:
-            return "Generating notes…"
-        }
+        progress?.stageLabel ?? "Generating notes…"
     }
 
     @ViewBuilder

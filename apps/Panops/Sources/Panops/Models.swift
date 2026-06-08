@@ -326,17 +326,58 @@ struct Meeting: Decodable {
 }
 
 /// Summary item from `ipc.meeting.list`. Mirrors `panops-protocol::MeetingSummary`.
-/// Wire contract: ONLY 4 fields (id, title, started_at, duration_ms) — all required.
+///
+/// Base wire contract: id, title, started_at, duration_ms (all required).
+/// `language`, `ended_at`, and `has_notes` are decode-if-present: the engine
+/// change that adds them lands separately, so older payloads (and the existing
+/// codec test) still decode — `language` defaults to "", `endedAt` to nil,
+/// `hasNotes` to false.
 struct MeetingSummary: Decodable {
     let id: String
     let title: String
     let startedAt: String
     let durationMs: UInt64
+    let language: String
+    let endedAt: String?
+    let hasNotes: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
         case title
         case startedAt = "started_at"
         case durationMs = "duration_ms"
+        case language
+        case endedAt = "ended_at"
+        case hasNotes = "has_notes"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        startedAt = try c.decode(String.self, forKey: .startedAt)
+        durationMs = try c.decode(UInt64.self, forKey: .durationMs)
+        language = try c.decodeIfPresent(String.self, forKey: .language) ?? ""
+        endedAt = try c.decodeIfPresent(String.self, forKey: .endedAt)
+        hasNotes = try c.decodeIfPresent(Bool.self, forKey: .hasNotes) ?? false
+    }
+
+    // Memberwise init retained for tests/previews constructing summaries directly.
+    init(
+        id: String,
+        title: String,
+        startedAt: String,
+        durationMs: UInt64,
+        language: String = "",
+        endedAt: String? = nil,
+        hasNotes: Bool = false
+    ) {
+        self.id = id
+        self.title = title
+        self.startedAt = startedAt
+        self.durationMs = durationMs
+        self.language = language
+        self.endedAt = endedAt
+        self.hasNotes = hasNotes
     }
 }
