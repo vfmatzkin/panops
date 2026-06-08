@@ -396,9 +396,19 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
         let tint: Color
     }
 
+    /// The Processing chip reflects the engine's resolved LLM provider so the
+    /// trust strip never claims "Local" when the engine actually resolved to a
+    /// cloud model. Mirrors the toolbar's LlmProviderChip (both read llmInfo).
+    private var processingChip: ChipData {
+        if let info = vm.llmInfo, !info.local {
+            return ChipData(icon: "cloud", label: "Cloud", tint: .orange)
+        }
+        return ChipData(icon: "cpu", label: "Local", tint: .green)
+    }
+
     private var trustChips: [ChipData] {
         var chips: [ChipData] = [
-            ChipData(icon: "cpu", label: "Local", tint: .green),
+            processingChip,
             ChipData(icon: "lock", label: "Private", tint: .green),
         ]
         if transcript != nil || audioFileName != nil {
