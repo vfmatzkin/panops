@@ -354,7 +354,9 @@ enum Markdown {
 
     /// Strip HTML-tag-like sequences (`<tag …>`, `</tag>`) from inline text so
     /// no stray markup renders raw. A `<` not followed by a letter (or `/`+letter)
-    /// is left alone, so prose like `a < b` survives.
+    /// is left alone, so prose like `a < b` survives. CommonMark autolinks
+    /// (`<scheme://…>`) and emails (`<…@…>`) are spared so `inlineAttributed`
+    /// can render them as links.
     static func sanitizeInline(_ text: String) -> String {
         guard text.contains("<") else { return text }
         var result = ""
@@ -366,7 +368,8 @@ enum Markdown {
                     probe = text.index(after: probe)
                 }
                 if probe < text.endIndex, text[probe].isLetter,
-                   let gt = text.range(of: ">", range: i..<text.endIndex) {
+                   let gt = text.range(of: ">", range: i..<text.endIndex),
+                   !isAutolinkOrEmail(text[text.index(after: i)..<gt.lowerBound]) {
                     i = gt.upperBound
                     continue
                 }
@@ -375,6 +378,14 @@ enum Markdown {
             i = text.index(after: i)
         }
         return result
+    }
+
+    /// A CommonMark autolink (`scheme://…`) or email (`local@domain`) inside
+    /// angle brackets — never a real tag (those carry attributes or whitespace),
+    /// so it must not be stripped.
+    private static func isAutolinkOrEmail(_ inner: Substring) -> Bool {
+        guard !inner.contains(" ") else { return false }
+        return inner.contains("://") || inner.contains("@")
     }
 
     /// Render a single line of inline markdown, falling back to plain text.
