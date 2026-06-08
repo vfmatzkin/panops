@@ -22,6 +22,11 @@ enum RecordingPathValidationError: Error {
 @MainActor
 final class LiveRecordingController: RecordingController, ObservableObject {
     @Published private(set) var isRecording = false
+    /// Mirrors `recordingId != nil`: true only after `recording.start` is
+    /// accepted, false again once stopped. The Stop affordance gates on this so
+    /// it can't fire while the optimistic `isRecording` is up but no recording
+    /// id exists yet (a Stop then would no-op and leave the engine recording).
+    @Published private(set) var canStop = false
 
     private let ipcClient: any LiveRecordingIpcClient
     private var recordingId: String?
@@ -34,6 +39,7 @@ final class LiveRecordingController: RecordingController, ObservableObject {
         guard !isRecording else { return }
         isRecording = true
         recordingId = nil
+        canStop = false
 
         do {
             let accepted = try await ipcClient.recordingStart(
@@ -43,9 +49,11 @@ final class LiveRecordingController: RecordingController, ObservableObject {
                 screenshotThreshold: options.screenshotThreshold
             )
             recordingId = accepted.recordingId
+            canStop = true
         } catch {
             isRecording = false
             recordingId = nil
+            canStop = false
             throw error
         }
     }
@@ -62,6 +70,7 @@ final class LiveRecordingController: RecordingController, ObservableObject {
         let stopped = try await ipcClient.recordingStop(recordingId: activeRecordingId)
         recordingId = nil
         isRecording = false
+        canStop = false
         try validateArtifactPaths(stopped)
 
         let audioPath = stopped.systemAudioPath ?? stopped.micAudioPath

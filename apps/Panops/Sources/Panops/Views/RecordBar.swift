@@ -76,7 +76,10 @@ struct RecordingScreen<Controller: RecordingController & ObservableObject>: View
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .tint(.red)
-            .disabled(isStopping)
+            // Disabled until the engine accepts the start (canStop). `isRecording`
+            // flips optimistically before acceptance, so gating on it alone would
+            // show an enabled Stop that no-ops during a slow start.
+            .disabled(isStopping || !controller.canStop)
             .help("Stop recording and generate notes")
 
             Spacer()

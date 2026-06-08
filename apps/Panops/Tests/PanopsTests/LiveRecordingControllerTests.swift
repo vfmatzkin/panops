@@ -24,6 +24,32 @@ struct LiveRecordingControllerTests {
         #expect(controller.isRecording)
     }
 
+    @Test("Stop is gated until recording.start is accepted")
+    func canStopGatesUntilStartAccepted() async throws {
+        let fake = FakeLiveRecordingIpcClient(startDelayNanoseconds: 50_000_000)
+        let controller = LiveRecordingController(ipcClient: fake)
+
+        #expect(controller.canStop == false)
+
+        let firstStart = Task { @MainActor in
+            try await controller.start(meetingId: "meeting-1")
+        }
+        try await Task.sleep(nanoseconds: 1_000_000)
+
+        // Optimistic isRecording is up (blocks a double-start), but the engine
+        // hasn't accepted yet — Stop must stay disabled while the start is in
+        // flight, otherwise it no-ops and recording continues after acceptance.
+        #expect(controller.isRecording)
+        #expect(controller.canStop == false)
+
+        try await firstStart.value
+        // recording.start accepted (recordingId set) — Stop is now live.
+        #expect(controller.canStop)
+
+        _ = try await controller.stop()
+        #expect(controller.canStop == false)
+    }
+
     @Test("start failure resets recording state")
     func startFailureResetsRecordingState() async throws {
         let fake = FakeLiveRecordingIpcClient(startError: TestRecordingError.startFailed)
