@@ -155,6 +155,61 @@ enum AudioSourcesWire: String, Codable {
     }
 }
 
+/// Capture target for `ipc.recording.start` — display or a specific window.
+enum CaptureTarget: Codable, Equatable {
+    case display
+    case window(windowId: UInt32)
+}
+
+extension CaptureTarget {
+    /// Wire encoding: `{"kind":"display"}` or `{"kind":"window","window_id":<u32>}`
+    enum WireKind: String, Codable {
+        case display
+        case window
+    }
+}
+
+/// Wire encoding for `CaptureTarget`.
+struct CaptureTargetWire: Encodable {
+    let kind: CaptureTargetWire.Kind
+    let windowId: UInt32?
+
+    enum Kind: String, Codable {
+        case display
+        case window
+    }
+
+    init(_ target: CaptureTarget) {
+        switch target {
+        case .display:
+            self.kind = .display
+            self.windowId = nil
+        case .window(windowId: let id):
+            self.kind = .window
+            self.windowId = id
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case windowId = "window_id"
+    }
+}
+
+/// A window available for capture, returned by `ipc.capture.windows`.
+struct WindowInfo: Decodable, Equatable, Identifiable {
+    var id: UInt32 { windowId }
+    let windowId: UInt32
+    let appName: String
+    let title: String
+
+    enum CodingKeys: String, CodingKey {
+        case windowId = "window_id"
+        case appName = "app_name"
+        case title
+    }
+}
+
 /// Outgoing params for `ipc.meeting.start`. Mirrors `panops-protocol::MeetingConfig`.
 /// Both fields optional; the engine applies defaults (title="", language="auto").
 /// `nil` fields are omitted by `JSONEncoder`, so an all-`nil` config encodes to
@@ -182,6 +237,7 @@ struct RecordingStartParams: Encodable {
     let screenshotThreshold: Float
     let recordVideo: Bool
     let autoGenerateNotes: Bool
+    let captureTarget: CaptureTargetWire
 
     enum CodingKeys: String, CodingKey {
         case meetingId = "meeting_id"
@@ -190,6 +246,44 @@ struct RecordingStartParams: Encodable {
         case screenshotThreshold = "screenshot_threshold"
         case recordVideo = "record_video"
         case autoGenerateNotes = "auto_generate_notes"
+        case captureTarget = "capture_target"
+    }
+
+    /// Create params with display capture target (default).
+    init(
+        meetingId: String,
+        audioSources: AudioSourcesWire,
+        screenshotIntervalMs: UInt64,
+        screenshotThreshold: Float,
+        recordVideo: Bool,
+        autoGenerateNotes: Bool
+    ) {
+        self.meetingId = meetingId
+        self.audioSources = audioSources
+        self.screenshotIntervalMs = screenshotIntervalMs
+        self.screenshotThreshold = screenshotThreshold
+        self.recordVideo = recordVideo
+        self.autoGenerateNotes = autoGenerateNotes
+        self.captureTarget = CaptureTargetWire(.display)
+    }
+
+    /// Create params with a specific window capture target.
+    init(
+        meetingId: String,
+        audioSources: AudioSourcesWire,
+        screenshotIntervalMs: UInt64,
+        screenshotThreshold: Float,
+        recordVideo: Bool,
+        autoGenerateNotes: Bool,
+        captureTarget: CaptureTarget
+    ) {
+        self.meetingId = meetingId
+        self.audioSources = audioSources
+        self.screenshotIntervalMs = screenshotIntervalMs
+        self.screenshotThreshold = screenshotThreshold
+        self.recordVideo = recordVideo
+        self.autoGenerateNotes = autoGenerateNotes
+        self.captureTarget = CaptureTargetWire(captureTarget)
     }
 }
 
