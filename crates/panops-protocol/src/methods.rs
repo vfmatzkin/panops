@@ -424,6 +424,26 @@ pub struct MeetingAssignParams {
     pub project_id: Option<String>,
 }
 
+/// Params for `ipc.meeting.rename`. User-edited title, persisted on
+/// the `meeting` row. Mirrors `meeting.set_language` semantics but
+/// with the more explicit `meeting_id` field name (matches
+/// `MeetingAssignParams` / `TagAssignParams` rather than the older
+/// `MeetingSetLanguageParams.id`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MeetingRenameParams {
+    pub meeting_id: String,
+    pub title: String,
+}
+
+/// Params for `ipc.notes.save`. Writes the supplied markdown to
+/// `<meeting_dir>/notes.md` and replaces the meeting's `note` row
+/// with a single row carrying the new content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotesSaveParams {
+    pub meeting_id: String,
+    pub markdown: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MeetingListParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1143,6 +1163,54 @@ mod tests {
         );
         let empty_list_params: MeetingListParams = serde_json::from_str("{}").unwrap();
         assert_eq!(empty_list_params, MeetingListParams::default());
+    }
+
+    #[test]
+    fn meeting_rename_params_round_trip() {
+        let p = MeetingRenameParams {
+            meeting_id: "m1".into(),
+            title: "New Title".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&p).unwrap(),
+            r#"{"meeting_id":"m1","title":"New Title"}"#
+        );
+        let back: MeetingRenameParams =
+            serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn meeting_rename_params_empty_title_is_allowed() {
+        // Empty title is a valid user edit (clearing the title); the
+        // schema accepts it without special-casing.
+        let p: MeetingRenameParams =
+            serde_json::from_str(r#"{"meeting_id":"m1","title":""}"#).unwrap();
+        assert_eq!(p.title, "");
+    }
+
+    #[test]
+    fn notes_save_params_round_trip() {
+        let p = NotesSaveParams {
+            meeting_id: "m1".into(),
+            markdown: "# edited\n\nuser wrote this".into(),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains(r#""meeting_id":"m1""#), "got: {json}");
+        // Markdown content survives JSON round-trip (the wire escapes
+        // newlines; the deserialized struct gets them back verbatim).
+        let back: NotesSaveParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+        assert!(back.markdown.contains("# edited"));
+        assert!(back.markdown.contains("user wrote this"));
+    }
+
+    #[test]
+    fn notes_save_params_empty_markdown_is_allowed() {
+        // Clearing notes is a valid edit; schema accepts empty content.
+        let p: NotesSaveParams =
+            serde_json::from_str(r#"{"meeting_id":"m1","markdown":""}"#).unwrap();
+        assert_eq!(p.markdown, "");
     }
 
     #[cfg(feature = "domain-conversions")]
