@@ -10,34 +10,165 @@ import SwiftUI
 /// the body is rendered with block structure (headings become styled titles).
 ///
 /// Neither present → placeholder.
+///
+/// ## Editing
+///
+/// When `onSave` is supplied, a small Edit toggle appears in the top-right.
+/// Turning it on swaps the rendered view for a markdown `TextEditor` bound to
+/// the raw `notes.md` source. Turning it off (or otherwise exiting edit mode)
+/// autosaves the buffer via `onSave`; on success the view re-renders from the
+/// saved markdown (structured IR is bypassed until the next regeneration,
+/// which writes fresh `notes.json` + `notes.md`). On failure the edited text
+/// stays in the editor and the SaveStatus chip surfaces Retry — edits are
+/// never silently lost.
 struct NotesView: View {
     let notes: StructuredNotes?
     let markdownFallback: String?
     let meetingDir: String
+    /// Autosave hook. `nil` disables editing (e.g. previews, no-meeting
+    /// states). Called on toggle-out of edit mode; returns success/failure.
+    /// Marked `@Sendable` so the closure can be captured by the MainActor
+    /// Task that performs the IPC under Swift 6 concurrency.
+    var onSave: (@Sendable (String) async -> Bool)? = nil
 
-    init(notes: StructuredNotes?, markdownFallback: String?, meetingDir: String = "") {
+    @State private var editing = false
+    /// Working buffer for the markdown editor. Loaded lazily on first entry
+    /// into edit mode from the current rendered markdown; edited in place.
+    @State private var editorBuffer: String = ""
+    /// After a successful save, the saved markdown is authoritative. The
+    /// rendered view uses this instead of `notes` / `markdownFallback` so a
+    /// manual edit is reflected immediately, even when `notes.json` still
+    /// exists on disk (the structured IR becomes stale until regeneration).
+    @State private var overriddenMarkdown: String? = nil
+
+    init(
+        notes: StructuredNotes?,
+        markdownFallback: String?,
+        meetingDir: String = "",
+        onSave: (@Sendable (String) async -> Bool)? = nil
+    ) {
         self.notes = notes
         self.markdownFallback = markdownFallback
         self.meetingDir = meetingDir
+        self.onSave = onSave
     }
 
     /// Convenience for markdown-only callers (legacy `NotesView(content:)`).
     init(content: String?) {
-        self.init(notes: nil, markdownFallback: content, meetingDir: "")
+        self.notes = nil
+        self.markdownFallback = content
+        self.meetingDir = ""
+        self.onSave = nil
+    }
+
+    /// Markdown that should be rendered right now. Post-save, the edited
+    /// buffer wins; otherwise the parent's loaded markdown.
+    private var renderedMarkdown: String? {
+        overriddenMarkdown ?? markdownFallback
+    }
+
+    /// Structured notes to render. Suppressed once the user has manually
+    /// edited the markdown (the edit is authoritative until regeneration).
+    private var renderedStructured: StructuredNotes? {
+        overriddenMarkdown != nil ? nil : notes
+    }
+
+    private var hasNotesToDisplay: Bool {
+        if renderedStructured != nil { return true }
+        if let md = renderedMarkdown, !md.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        return false
     }
 
     var body: some View {
-        if let notes {
-            structuredDocument(notes)
-        } else if let md = markdownFallback, !md.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            ScrollView {
-                MarkdownBlocksView(markdown: Markdown.stripFrontmatter(md))
-                    .padding(20)
+        VStack(spacing: 0) {
+            if hasNotesToDisplay, onSave != nil {
+                editToggleBar
             }
-        } else {
-            placeholder
+
+            if editing {
+                notesEditor
+            } else if let renderedStructured {
+                structuredDocument(renderedStructured)
+            } else if let md = renderedMarkdown, !md.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                ScrollView {
+                    MarkdownBlocksView(markdown: Markdown.stripFrontmatter(md))
+                        .padding(20)
+                }
+            } else {
+                placeholder
+            }
+        }
+        .onChange(of: editing) { wasEditing, isEditing in
+            if isEditing {
+                // Lazy load: the buffer is populated from the current
+                // rendered markdown on first entry into edit mode. Stays
+                // intact across subsequent toggle flaps within the same
+                // meeting so the user's in-progress text isn't lost if
+                // they flip Edit off and back on before saving.
+                if editorBuffer.isEmpty {
+                    editorBuffer = renderedMarkdown ?? ""
+                }
+            } else if wasEditing {
+                commitIfDirty()
+            }
         }
     }
+
+    // MARK: - Edit toggle bar
+
+    private var editToggleBar: some View {
+        HStack {
+            Spacer()
+            Toggle(isOn: $editing) {
+                Label(
+                    editing ? "Done" : "Edit",
+                    systemImage: editing ? "checkmark.circle" : "pencil"
+                )
+            }
+            .toggleStyle(.button)
+            .controlSize(.small)
+            .help(editing ? "Finish editing and autosave" : "Edit notes as Markdown")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+    }
+
+    // MARK: - Editor
+
+    private var notesEditor: some View {
+        TextEditor(text: $editorBuffer)
+            .font(.system(.body, design: .monospaced))
+            .scrollContentBackground(.hidden)
+            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Save
+
+    /// Persist the buffer via the parent's `onSave`. No-op when the buffer
+    /// equals the current rendered markdown (nothing to save) or when a save
+    /// is already in flight. On failure, re-enters edit mode so the user can
+    /// Retry; on success, swaps the rendered view to the saved markdown.
+    private func commitIfDirty() {
+        let current = renderedMarkdown ?? ""
+        guard editorBuffer != current else { return }
+        guard let onSave else { return }
+        let buffer = editorBuffer
+        Task {
+            let ok = await onSave(buffer)
+            if ok {
+                overriddenMarkdown = buffer
+            } else {
+                // Restore edit mode with the buffer intact so the user can
+                // Retry via the SaveStatus chip in the header.
+                editing = true
+            }
+        }
+    }
+
+    // MARK: - Rendering
 
     @ViewBuilder
     private func structuredDocument(_ notes: StructuredNotes) -> some View {
