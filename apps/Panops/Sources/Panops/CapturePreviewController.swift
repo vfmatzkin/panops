@@ -44,10 +44,10 @@ final class CapturePreviewController: NSObject, ObservableObject {
     @Published private(set) var sourceContentSize: CGSize = .zero
     /// Whether a crop region is currently applied to a display target.
     @Published private(set) var isCropped = false
-    /// Live system-audio level (dBFS) from the preview stream. -120 = silence.
-    @Published private(set) var systemDb: Float = -120
+    /// Live system-audio level (dBFS) from the preview stream. `silenceFloorDb` = silence.
+    @Published private(set) var systemDb: Float = silenceFloorDb
     /// Live microphone level (dBFS) from the preview stream (macOS 15+).
-    @Published private(set) var micDb: Float = -120
+    @Published private(set) var micDb: Float = silenceFloorDb
     /// Set when the picker returns a selection we can't map to a serializable
     /// target — an unknown style, or macOS < 15.2 where the chosen
     /// window/display/app can't be read back off the filter. The New Recording
@@ -132,8 +132,8 @@ final class CapturePreviewController: NSObject, ObservableObject {
         sourceRect = nil
         nativePixelHeight = 0
         sourceContentSize = .zero
-        systemDb = -120
-        micDb = -120
+        systemDb = silenceFloorDb
+        micDb = silenceFloorDb
         selectionError = nil
     }
 

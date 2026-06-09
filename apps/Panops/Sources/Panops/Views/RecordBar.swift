@@ -18,6 +18,12 @@ enum RecordingClock {
     }
 }
 
+/// Health-line poll cadence (~1 Hz): how often the recording screen re-reads the
+/// meeting directory's on-disk size, the override for the dropped sidecar
+/// health-event channel. File-scope because `RecordingScreen` is generic and
+/// can't hold a static stored property.
+private let healthPollIntervalNanoseconds: UInt64 = 1_000_000_000
+
 /// The full recording screen: the app's own live preview (the same source the
 /// sidecar records), live mic/system meters, a recording-health line proving
 /// bytes are landing on disk, and a prominent Stop. Shown while
@@ -152,7 +158,7 @@ struct RecordingScreen<Controller: RecordingController & ObservableObject>: View
     private func pollHealth() async {
         while !Task.isCancelled {
             bytesWritten = Self.recordingBytes(in: meetingDirPath)
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            try? await Task.sleep(nanoseconds: healthPollIntervalNanoseconds)
         }
     }
 
