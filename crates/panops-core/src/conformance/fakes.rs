@@ -696,15 +696,19 @@ impl Storage for InMemoryStorage {
                 kind: "meeting",
             });
         }
-        // Remove any existing notes for this meeting, mirroring the
-        // rusqlite adapter's DELETE-before-INSERT transaction.
-        inner.notes.retain(|_, n| n.meeting_id != meeting_id);
-        if inner.notes.contains_key(&draft.id) {
+        // A colliding `draft.id` can only belong to ANOTHER meeting's note
+        // (this meeting's notes are deleted next), so check before mutating —
+        // matching the rusqlite DELETE-then-INSERT transaction, whose rollback
+        // leaves the meeting's original notes intact on a collision.
+        if inner.notes.get(&draft.id).is_some_and(|n| n.meeting_id != meeting_id) {
             return Err(StorageError::AlreadyExists {
                 id: draft.id,
                 kind: "note",
             });
         }
+        // Remove any existing notes for this meeting, mirroring the
+        // rusqlite adapter's DELETE-before-INSERT transaction.
+        inner.notes.retain(|_, n| n.meeting_id != meeting_id);
         let n = Note {
             id: draft.id.clone(),
             meeting_id: draft.meeting_id,
