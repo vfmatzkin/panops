@@ -155,31 +155,6 @@ enum AudioSourcesWire: String, Codable {
     }
 }
 
-/// A window available for capture, returned by `ipc.capture.windows`.
-struct WindowInfo: Decodable, Equatable, Identifiable {
-    var id: UInt32 { windowId }
-    let windowId: UInt32
-    let appName: String
-    let title: String
-
-    enum CodingKeys: String, CodingKey {
-        case windowId = "window_id"
-        case appName = "app_name"
-        case title
-    }
-}
-
-/// Result wrapper for `ipc.capture.windows`. Mirrors
-/// `panops-protocol::CaptureWindowsResult` — the engine returns
-/// `{"windows":[...]}`, not a bare array.
-struct CaptureWindowsResult: Decodable, Equatable {
-    let windows: [WindowInfo]
-
-    enum CodingKeys: String, CodingKey {
-        case windows
-    }
-}
-
 /// Outgoing params for `ipc.meeting.start`. Mirrors `panops-protocol::MeetingConfig`.
 /// Both fields optional; the engine applies defaults (title="", language="auto").
 /// `nil` fields are omitted by `JSONEncoder`, so an all-`nil` config encodes to

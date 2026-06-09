@@ -10,7 +10,6 @@
 //! - `list_meetings` returns rows in `started_at DESC` order.
 //! - `update_meeting_ended` populates `ended_at` + `duration_ms` and
 //!   the round-tripped row reflects the change.
-//! - `update_meeting_language` mutates language; round-trip confirms.
 //! - `delete_meeting` removes the row AND cascades note deletion.
 //! - `create_note` round-trips via `list_notes_for_meeting`.
 
@@ -24,7 +23,6 @@ pub fn run_suite<S: Storage>(adapter: &S) {
     get_unknown_id_is_not_found(adapter);
     list_returns_started_at_desc(adapter);
     update_meeting_ended_writes_duration(adapter);
-    update_meeting_language_persists(adapter);
     rename_meeting_persists_title(adapter);
     delete_meeting_cascades_to_notes(adapter);
     create_and_list_notes_for_meeting(adapter);
@@ -138,11 +136,14 @@ fn get_unknown_id_is_not_found<S: Storage>(adapter: &S) {
 
 fn list_returns_started_at_desc<S: Storage>(adapter: &S) {
     let _ = adapter.create_meeting(draft("a", "A", "2026-05-01T10:00:00+00:00"));
-    let _ = adapter.create_meeting(draft("b", "B", "2026-05-03T10:00:00+00:00"));
+    let _ = adapter.create_meeting(MeetingDraft {
+        id: "b".into(),
+        title: "B".into(),
+        started_at: "2026-05-03T10:00:00+00:00".into(),
+        language: "es".into(),
+        dir_path: "/tmp/b".into(),
+    });
     let _ = adapter.create_meeting(draft("c", "C", "2026-05-02T10:00:00+00:00"));
-    adapter
-        .update_meeting_language("b", "es")
-        .expect("language update should succeed");
     adapter
         .update_meeting_ended("b", "2026-05-03T10:30:00+00:00", 1_800_000)
         .expect("ended update should succeed");
@@ -200,20 +201,6 @@ fn update_meeting_ended_writes_duration<S: Storage>(adapter: &S) {
     let round = adapter.get_meeting(id).unwrap();
     assert_eq!(round.ended_at.as_deref(), Some("2026-05-05T11:00:00+00:00"));
     assert_eq!(round.duration_ms, Some(3_600_000));
-}
-
-fn update_meeting_language_persists<S: Storage>(adapter: &S) {
-    let id = "m_lang";
-    let _ = adapter
-        .create_meeting(draft(id, "Lang", "2026-05-05T10:00:00+00:00"))
-        .unwrap();
-    let updated = adapter
-        .update_meeting_language(id, "es")
-        .expect("update_meeting_language should succeed");
-    assert_eq!(updated.language, "es");
-
-    let round = adapter.get_meeting(id).unwrap();
-    assert_eq!(round.language, "es");
 }
 
 fn rename_meeting_persists_title<S: Storage>(adapter: &S) {

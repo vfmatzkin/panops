@@ -43,10 +43,6 @@ private actor CapturingRecordingIpcClient: LiveRecordingIpcClient {
     func meetingDeleteVideo(meetingId: String) async throws -> (deleted: Bool, freedBytes: UInt64) {
         (deleted: false, freedBytes: 0)
     }
-
-    func captureWindows() async throws -> [WindowInfo] {
-        []
-    }
 }
 
 @Suite("RecordingController option passthrough")

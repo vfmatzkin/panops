@@ -17,8 +17,6 @@ protocol LiveRecordingIpcClient: Sendable {
     func recordingStop(recordingId: String) async throws -> RecordingStopped
 
     func meetingDeleteVideo(meetingId: String) async throws -> (deleted: Bool, freedBytes: UInt64)
-
-    func captureWindows() async throws -> [WindowInfo]
 }
 
 extension IpcClient: LiveRecordingIpcClient {}

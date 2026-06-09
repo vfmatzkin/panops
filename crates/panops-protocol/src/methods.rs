@@ -25,12 +25,6 @@ pub enum Event {
     JobError(JobErrorEvent),
     #[serde(rename = "job.progress")]
     JobProgress(JobProgressEvent),
-    /// Screenshot captured during recording (slice 11).
-    #[serde(rename = "screenshot")]
-    Screenshot(ScreenshotEvent),
-    /// Recording progress update (slice 11).
-    #[serde(rename = "recording.progress")]
-    RecordingProgress(RecordingProgressEvent),
     /// Forward-compat fallback: a future engine emits an event type this
     /// build doesn't know about. The original JSON object is kept so the
     /// caller can still inspect it (e.g. log + skip) without tearing down
@@ -55,12 +49,6 @@ impl<'de> Deserialize<'de> for Event {
                 .map_err(serde::de::Error::custom),
             "job.progress" => serde_json::from_value::<JobProgressEvent>(value)
                 .map(Event::JobProgress)
-                .map_err(serde::de::Error::custom),
-            "screenshot" => serde_json::from_value::<ScreenshotEvent>(value)
-                .map(Event::Screenshot)
-                .map_err(serde::de::Error::custom),
-            "recording.progress" => serde_json::from_value::<RecordingProgressEvent>(value)
-                .map(Event::RecordingProgress)
                 .map_err(serde::de::Error::custom),
             _ => Ok(Event::Unknown(value)),
         }
@@ -89,24 +77,6 @@ pub struct JobProgressEvent {
     pub total: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-}
-
-/// Screenshot captured during a recording session. Emitted via WebSocket
-/// each time the capture sidecar detects a screen change and writes a JPEG.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ScreenshotEvent {
-    pub meeting_id: String,
-    pub timestamp_ms: u64,
-    pub path: String,
-}
-
-/// Recording progress update. Emitted periodically during active capture
-/// to inform clients of audio bytes captured and elapsed duration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RecordingProgressEvent {
-    pub meeting_id: String,
-    pub bytes_captured: u64,
-    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -425,10 +395,8 @@ pub struct MeetingAssignParams {
 }
 
 /// Params for `ipc.meeting.rename`. User-edited title, persisted on
-/// the `meeting` row. Mirrors `meeting.set_language` semantics but
-/// with the more explicit `meeting_id` field name (matches
-/// `MeetingAssignParams` / `TagAssignParams` rather than the older
-/// `MeetingSetLanguageParams.id`).
+/// the `meeting` row. Uses the explicit `meeting_id` field name to
+/// match `MeetingAssignParams` / `TagAssignParams`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MeetingRenameParams {
     pub meeting_id: String,
@@ -545,24 +513,6 @@ impl Default for CaptureTarget {
     }
 }
 
-/// Capturable window metadata.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WindowInfo {
-    pub window_id: u32,
-    pub app_name: String,
-    pub title: String,
-}
-
-/// Params for `ipc.capture.windows`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CaptureWindowsParams {}
-
-/// Result for `ipc.capture.windows`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CaptureWindowsResult {
-    pub windows: Vec<WindowInfo>,
-}
-
 fn default_screenshot_interval() -> u64 {
     500
 }
@@ -672,17 +622,6 @@ impl From<panops_core::capture::CaptureTarget> for CaptureTarget {
                 w,
                 h,
             },
-        }
-    }
-}
-
-#[cfg(feature = "domain-conversions")]
-impl From<panops_core::capture::WindowInfo> for WindowInfo {
-    fn from(value: panops_core::capture::WindowInfo) -> Self {
-        Self {
-            window_id: value.window_id,
-            app_name: value.app_name,
-            title: value.title,
         }
     }
 }
@@ -920,13 +859,13 @@ mod tests {
 
     #[test]
     fn event_unknown_kind_deserializes_as_unknown() {
-        // A future engine ships a new event type (`asr.partial`). An old
+        // A future engine ships a new event type (`future.event`). An old
         // client built against this snapshot of `panops-protocol` must
         // deserialise it as `Event::Unknown(<original value>)` rather
         // than failing — otherwise one new tag tears down every old
         // client's subscription.
         let raw = serde_json::json!({
-            "type": "asr.partial",
+            "type": "future.event",
             "job_id": "abc",
             "text": "hello",
         });
@@ -1403,27 +1342,6 @@ mod tests {
     }
 
     #[test]
-    fn capture_windows_shapes_round_trip() {
-        let params = CaptureWindowsParams {};
-        assert_eq!(serde_json::to_string(&params).unwrap(), r#"{}"#);
-
-        let result = CaptureWindowsResult {
-            windows: vec![WindowInfo {
-                window_id: 42,
-                app_name: "Safari".into(),
-                title: "Panops".into(),
-            }],
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        assert_eq!(
-            json,
-            r#"{"windows":[{"window_id":42,"app_name":"Safari","title":"Panops"}]}"#
-        );
-        let back: CaptureWindowsResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, result);
-    }
-
-    #[test]
     fn meeting_delete_video_shapes_round_trip() {
         let params = MeetingDeleteVideoParams {
             meeting_id: "m1".into(),
@@ -1488,32 +1406,6 @@ mod tests {
         // And when absent, it must not be emitted on the wire.
         let back = serde_json::to_string(&r).unwrap();
         assert!(!back.contains("notes_job_id"), "got: {back}");
-    }
-
-    #[test]
-    fn screenshot_event_round_trips_with_type_tag() {
-        let e = Event::Screenshot(ScreenshotEvent {
-            meeting_id: "m1".into(),
-            timestamp_ms: 12345,
-            path: "/tmp/screenshots/001.jpg".into(),
-        });
-        let json = serde_json::to_string(&e).unwrap();
-        assert!(json.contains(r#""type":"screenshot""#));
-        let back: Event = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, e);
-    }
-
-    #[test]
-    fn recording_progress_event_round_trips_with_type_tag() {
-        let e = Event::RecordingProgress(RecordingProgressEvent {
-            meeting_id: "m1".into(),
-            bytes_captured: 1024,
-            duration_ms: 5000,
-        });
-        let json = serde_json::to_string(&e).unwrap();
-        assert!(json.contains(r#""type":"recording.progress""#));
-        let back: Event = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, e);
     }
 
     #[test]

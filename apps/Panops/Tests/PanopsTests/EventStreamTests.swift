@@ -113,7 +113,7 @@ struct EventStreamTests {
             invoked.value = true
         })
 
-        let event = IpcEvent.unknown(type: "asr.partial")
+        let event = IpcEvent.unknown(type: "future.event")
         await actor.testRoute(event: event)
 
         #expect(invoked.value == false, "unknown events should not trigger callbacks")

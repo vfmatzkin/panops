@@ -85,7 +85,7 @@ async fn notes_generate_emits_job_error_with_input_not_found_kind() {
                 Event::Unknown(v) => panic!("expected JobError, got Unknown: {v}"),
                 // Slice 11 adds Screenshot and RecordingProgress events; ignore them
                 // in this notes pipeline test (they may arrive from concurrent tests).
-                Event::Screenshot(_) | Event::RecordingProgress(_) | Event::JobProgress(_) => {
+                Event::JobProgress(_) => {
                     continue;
                 }
             }

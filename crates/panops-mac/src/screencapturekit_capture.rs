@@ -20,7 +20,7 @@ use std::sync::Mutex;
 
 use panops_core::capture::{
     AudioSources, Capture, CaptureConfig, CaptureError, CaptureResult, CaptureSession,
-    CaptureTarget, WindowInfo,
+    CaptureTarget,
 };
 use serde::{Deserialize, Deserializer};
 
@@ -124,13 +124,6 @@ struct StopResult {
     screenshot_paths: Vec<String>,
     #[serde(default)]
     duration_ms: u64,
-}
-
-#[derive(Deserialize)]
-struct WindowInfoWire {
-    window_id: u32,
-    app_name: String,
-    title: String,
 }
 
 impl ScreenCaptureKitCapture {
@@ -316,32 +309,6 @@ impl ScreenCaptureKitCapture {
 }
 
 impl Capture for ScreenCaptureKitCapture {
-    fn list_windows(&self) -> Result<Vec<WindowInfo>, CaptureError> {
-        let output = Command::new(&self.binary)
-            .arg("--list-windows")
-            .envs(self.extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .output()
-            .map_err(|e| CaptureError::Sidecar(format!("list-windows spawn: {e}")))?;
-        if !output.status.success() {
-            return Err(CaptureError::Sidecar(format!(
-                "list-windows exited with status {}",
-                output.status
-            )));
-        }
-        let windows: Vec<WindowInfoWire> = serde_json::from_slice(&output.stdout)
-            .map_err(|e| CaptureError::Sidecar(format!("list-windows decode: {e}")))?;
-        Ok(windows
-            .into_iter()
-            .map(|w| WindowInfo {
-                window_id: w.window_id,
-                app_name: w.app_name,
-                title: w.title,
-            })
-            .collect())
-    }
-
     fn start_capture(
         &self,
         meeting_id: &str,

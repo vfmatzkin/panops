@@ -17,7 +17,7 @@ pub mod wer;
 pub use asr::{AsrError, AsrProvider};
 pub use capture::{
     AudioSources, Capture, CaptureConfig, CaptureError, CaptureResult, CaptureSession,
-    CaptureTarget, WindowInfo,
+    CaptureTarget,
 };
 pub use diar::{DiarError, Diarizer, SpeakerTurn};
 pub use exporter::{ExportArtifact, ExportError, NotesExporter};

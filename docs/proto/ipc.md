@@ -16,7 +16,6 @@
 | `ipc.meeting.start` | `MeetingConfig` | `meeting_id` (string) | Slice 06. Data-plane scaffolding (no live capture). Creates row + `meetings/<uuid>/screenshots/`. |
 | `ipc.meeting.stop` | `{ id }` | `Meeting` | Sets `ended_at = now()` and computes `duration_ms`. |
 | `ipc.meeting.get` | `{ id }` | `Meeting` | Full row including `dir_path`, `language`, `ended_at`. |
-| `ipc.meeting.set_language` | `{ id, language }` | `Meeting` | Updates BCP-47 language hint. |
 | `ipc.meeting.delete` | `{ id }` | `()` | Removes registry row (FK-cascades notes), then `rm -rf meetings/<id>/`. Orphan dir on FS-error is logged, not an error. |
 | `ipc.recording.start` | `RecordingStartParams` | `RecordingAccepted` | **Slice 11.** Starts live capture for a meeting. |
 | `ipc.recording.stop` | `{ recording_id }` | `RecordingStopped` | **Slice 11.** Stops capture, returns audio + screenshot paths. |
@@ -121,11 +120,9 @@ The subscription is server-push backed by a `tokio::sync::broadcast` channel. A 
 ```json
 { "type": "job.done",  "job_id": "...", "result": { "primary_file": "...", "assets": [...], "meeting_id": "..." } }
 { "type": "job.error", "job_id": "...", "error": { "kind": "input_not_found" | "invalid_input" | "provider_unavailable" | "internal" | "cancelled", "message": "..." } }
-{ "type": "screenshot", "meeting_id": "...", "timestamp_ms": 12345, "path": "..." }  // Slice 11
-{ "type": "recording.progress", "meeting_id": "...", "bytes_captured": 1024, "duration_ms": 5000 }  // Slice 11
 ```
 
-The `Event` enum is internally tagged on `type`. Future event kinds (`asr.partial`, `asr.final`, `screenshot`, `job.progress`) extend this enum. Old clients deserialise unrecognised tags as `Event::Unknown(<original JSON>)`, preserving the subscription so one new tag does not tear down older clients. Implementations that do not use the Rust types directly should mirror this: any envelope whose `type` is not in the known set should be logged and skipped, never treated as a fatal protocol error.
+The `Event` enum is internally tagged on `type`. Future event kinds extend this enum. Old clients deserialise unrecognised tags as `Event::Unknown(<original JSON>)`, preserving the subscription so one new tag does not tear down older clients. Implementations that do not use the Rust types directly should mirror this: any envelope whose `type` is not in the known set should be logged and skipped, never treated as a fatal protocol error.
 
 ## Error taxonomy
 

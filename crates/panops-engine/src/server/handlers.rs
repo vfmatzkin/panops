@@ -26,31 +26,24 @@ use panops_core::notes::ir::StructuredNotes;
 use panops_core::notes::pipeline::NotesGenerator;
 use panops_core::notes::raw_transcript::write_raw_transcript;
 use panops_protocol::{
-    CaptureWindowsParams, CaptureWindowsResult, Event, IpcError, JobAccepted, JobDoneEvent,
-    JobErrorEvent, JobProgressEvent, Meeting, MeetingAssignParams, MeetingConfig,
-    MeetingDeleteVideoParams, MeetingDeleteVideoResult, MeetingListParams, MeetingRenameParams,
-    MeetingSummary, NotesDialect, NotesGenerateParams, NotesGenerateResult, NotesSaveParams,
-    Project, ProjectCreateParams, ProjectDeleteParams, ProjectListParams, ProjectListResult,
-    ProjectRenameParams, RecordingAccepted, RecordingStartParams, RecordingStopParams,
-    RecordingStopped, ServerInfo, Space, SpaceCreateParams, SpaceDeleteParams, SpaceListResult,
-    SpaceRenameParams, Tag, TagAssignParams, TagCreateParams, TagDeleteParams, TagListResult,
-    WindowInfo,
+    Event, IpcError, JobAccepted, JobDoneEvent, JobErrorEvent, JobProgressEvent, Meeting,
+    MeetingAssignParams, MeetingConfig, MeetingDeleteVideoParams, MeetingDeleteVideoResult,
+    MeetingListParams, MeetingRenameParams, MeetingSummary, NotesDialect, NotesGenerateParams,
+    NotesGenerateResult, NotesSaveParams, Project, ProjectCreateParams, ProjectDeleteParams,
+    ProjectListParams, ProjectListResult, ProjectRenameParams, RecordingAccepted,
+    RecordingStartParams, RecordingStopParams, RecordingStopped, ServerInfo, Space,
+    SpaceCreateParams, SpaceDeleteParams, SpaceListResult, SpaceRenameParams, Tag, TagAssignParams,
+    TagCreateParams, TagDeleteParams, TagListResult,
 };
 use tokio::sync::broadcast;
 
-/// Wrapper for `meeting.{stop,get,delete,set_language}` request params.
+/// Wrapper for `meeting.{stop,get,delete}` request params.
 /// jsonrpsee's `#[rpc]` macro accepts strongly-typed params via a single
 /// struct argument; we use distinct types per method so `serde_json` can
 /// validate the shape and so the API surface is self-documenting.
 #[derive(Debug, ::serde::Deserialize)]
 pub struct MeetingIdParam {
     pub id: String,
-}
-
-#[derive(Debug, ::serde::Deserialize)]
-pub struct MeetingSetLanguageParams {
-    pub id: String,
-    pub language: String,
 }
 
 #[rpc(server, namespace = "ipc", namespace_separator = ".")]
@@ -81,12 +74,6 @@ pub(super) trait Ipc {
 
     #[method(name = "meeting.get")]
     async fn meeting_get(&self, params: MeetingIdParam) -> Result<Meeting, ErrorObjectOwned>;
-
-    #[method(name = "meeting.set_language")]
-    async fn meeting_set_language(
-        &self,
-        params: MeetingSetLanguageParams,
-    ) -> Result<Meeting, ErrorObjectOwned>;
 
     #[method(name = "meeting.rename")]
     async fn meeting_rename(
@@ -162,18 +149,6 @@ pub(super) trait Ipc {
         &self,
         params: RecordingStopParams,
     ) -> Result<RecordingStopped, ErrorObjectOwned>;
-
-    /// Deprecated: superseded by the app-side `SCContentSharingPicker`, which now
-    /// drives capture-source selection (window/display/app/region) directly in the
-    /// Mac shell — it returns the live `SCContentFilter` the app previews from and
-    /// the serializable target the recording starts against. Kept only as a
-    /// fallback for clients without the native picker (e.g. headless callers); the
-    /// Panops app no longer calls it.
-    #[method(name = "capture.windows")]
-    async fn capture_windows(
-        &self,
-        params: CaptureWindowsParams,
-    ) -> Result<CaptureWindowsResult, ErrorObjectOwned>;
 
     #[subscription(
         name = "events.subscribe" => "events",
@@ -354,20 +329,6 @@ impl IpcServer for IpcImpl {
         spawn_blocking_into_ipc("meeting.get", move || {
             storage
                 .get_meeting(&id)
-                .map(to_protocol_meeting)
-                .map_err(IpcError::from)
-        })
-        .await
-    }
-
-    async fn meeting_set_language(
-        &self,
-        params: MeetingSetLanguageParams,
-    ) -> Result<Meeting, ErrorObjectOwned> {
-        let storage = self.services.storage.clone();
-        spawn_blocking_into_ipc("meeting.set_language", move || {
-            storage
-                .update_meeting_language(&params.id, &params.language)
                 .map(to_protocol_meeting)
                 .map_err(IpcError::from)
         })
@@ -796,20 +757,6 @@ impl IpcServer for IpcImpl {
         }
 
         Ok(stopped)
-    }
-
-    async fn capture_windows(
-        &self,
-        _params: CaptureWindowsParams,
-    ) -> Result<CaptureWindowsResult, ErrorObjectOwned> {
-        let capture = crate::capture_resolver::pick_capture();
-        spawn_blocking_into_ipc("capture.windows", move || {
-            let windows = capture.list_windows().map_err(IpcError::from)?;
-            Ok(CaptureWindowsResult {
-                windows: windows.into_iter().map(WindowInfo::from).collect(),
-            })
-        })
-        .await
     }
 
     async fn subscribe_events(&self, pending: PendingSubscriptionSink) -> SubscriptionResult {
@@ -2153,7 +2100,7 @@ mod notes_generate_concurrency_tests {
                     Event::JobDone(_) => done += 1,
                     Event::JobError(e) => panic!("notes job errored: {:?}", e.error),
                     Event::Unknown(v) => panic!("unexpected unknown event: {v}"),
-                    Event::Screenshot(_) | Event::RecordingProgress(_) | Event::JobProgress(_) => {}
+                    Event::JobProgress(_) => {}
                 }
             }
         })
