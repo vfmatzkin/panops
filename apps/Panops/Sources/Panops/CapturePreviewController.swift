@@ -2,7 +2,12 @@ import AppKit
 import AVFoundation
 import CoreMedia
 import Foundation
-import ScreenCaptureKit
+// ScreenCaptureKit's types (SCStream, SCStreamConfiguration, SCContentFilter) are
+// not Sendable-annotated by Apple, so Swift 6.1's region isolation errors on
+// passing/returning them across the @MainActor boundary (6.3 relaxed this).
+// @preconcurrency treats those framework-Sendable issues as warnings — the
+// sanctioned escape for a not-yet-concurrency-audited system framework.
+@preconcurrency import ScreenCaptureKit
 
 /// Lifecycle of the in-app capture preview, surfaced to the New Recording sheet.
 enum CapturePreviewState: Equatable {
