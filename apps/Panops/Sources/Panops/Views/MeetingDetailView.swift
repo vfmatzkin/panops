@@ -37,6 +37,13 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
     /// (two confirm alerts, racy state).
     @State private var isDeletingVideo = false
 
+    /// Tag names the user dismissed this session (not persisted). Prevents
+    /// dismissed AI suggestions from reappearing until the view remounts.
+    @State private var dismissedSuggestions: Set<String> = []
+
+    /// Buffer for the "+ add your own" tag text field.
+    @State private var newTagName: String = ""
+
     enum DetailTab: String, CaseIterable, Identifiable {
         case notes = "Notes"
         case transcript = "Transcript"
@@ -93,6 +100,8 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
         .onChange(of: meeting.id, initial: true) { _, _ in
             editedTitle = meeting.title
             lastSavedTitle = meeting.title
+            dismissedSuggestions = []
+            newTagName = ""
         }
         .alert("Export failed", isPresented: exportErrorPresented) {
             Button("OK", role: .cancel) {}
@@ -143,6 +152,34 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
                     TrustChip(systemImage: chip.icon, label: chip.label, tint: chip.tint)
                 }
             }
+
+            // Assigned tag chips (resolved from IDs) + pending AI suggestions.
+            // Shows when notes exist (LLM proposed tags) OR any tags are
+            // already assigned. The add-your-own field is always available.
+            if structuredNotes != nil || !assignedTagNames.isEmpty {
+                FlowLayout(spacing: 6, lineSpacing: 6) {
+                    ForEach(assignedTagNames, id: \.self) { name in
+                        Text(name)
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Color.accentColor.opacity(0.12))
+                            .foregroundStyle(Color.accentColor)
+                            .clipShape(Capsule())
+                    }
+                    ForEach(visiblePendingSuggestions, id: \.self) { name in
+                        PendingTagChip(
+                            name: name,
+                            onAccept: { acceptSuggestion(name) },
+                            onDismiss: { dismissedSuggestions.insert(name.lowercased()) }
+                        )
+                    }
+                    AddTagField(
+                        text: $newTagName,
+                        onCommit: { commitNewTag() }
+                    )
+                }
+            }
         }
         .padding(16)
         .onChange(of: titleFocused) { wasFocused, isFocused in
@@ -170,6 +207,56 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
             }
             // On failure the view model keeps `saveStatus == .failed`; the
             // user's edited text stays in the field so Retry can re-submit.
+        }
+    }
+
+    // MARK: - Tag chips (assigned + AI-suggested)
+
+    /// Tag names currently assigned to this meeting, resolved from IDs via
+    /// the view model's cached tag list. Looks up the MeetingSummary from
+    /// `vm.meetings` (Meeting itself doesn't carry tag IDs).
+    private var assignedTagNames: [String] {
+        let summary = vm.meetings.first { $0.id == meeting.id }
+        let ids = Set(summary?.tags ?? [])
+        return vm.tags.filter { ids.contains($0.id) }.map(\.name)
+    }
+
+    /// LLM-proposed tag names minus already-assigned names minus session-
+    /// dismissed names. Case-insensitive subtraction so accepting "Swift"
+    /// hides the "swift" suggestion.
+    private var visiblePendingSuggestions: [String] {
+        guard let notes = structuredNotes else { return [] }
+        let proposed = notes.frontmatter.tags
+        let pending = pendingTags(proposed: proposed, assigned: assignedTagNames)
+        let dismissed = dismissedSuggestions
+        return pending.filter { !dismissed.contains($0.lowercased()) }
+    }
+
+    /// Accept an AI-suggested tag: creates it (idempotent) and assigns it.
+    private func acceptSuggestion(_ name: String) {
+        let meetingId = meeting.id
+        Task {
+            let ok = await vm.acceptTagSuggestion(
+                meetingId: meetingId, name: name
+            )
+            if ok {
+                dismissedSuggestions.insert(name.lowercased())
+            }
+        }
+    }
+
+    /// Commit the "+ add your own" text field: same create+assign path.
+    private func commitNewTag() {
+        let trimmed = newTagName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let meetingId = meeting.id
+        Task {
+            let ok = await vm.acceptTagSuggestion(
+                meetingId: meetingId, name: trimmed
+            )
+            if ok {
+                newTagName = ""
+            }
         }
     }
 
@@ -742,5 +829,76 @@ extension JobProgressEvent {
         default:
             return "Generating notes…"
         }
+    }
+}
+
+// MARK: - AI tag suggestion chips
+
+/// A pending AI-suggested tag chip: dashed outline (visually distinct from
+/// the solid assigned-tag capsules), an accept button, and a dismiss button.
+/// The dashed border signals "this isn't real yet" — accepting makes it solid.
+struct PendingTagChip: View {
+    let name: String
+    let onAccept: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(name)
+                .font(.caption)
+            Button(action: onAccept) {
+                Image(systemName: "plus")
+                    .font(.caption2.weight(.bold))
+            }
+            .buttonStyle(.plain)
+            .help("Accept tag")
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.caption2.weight(.bold))
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss suggestion")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .foregroundStyle(.orange)
+        .overlay(
+            Capsule()
+                .strokeBorder(
+                    style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                )
+                .foregroundStyle(.orange.opacity(0.6))
+        )
+        .clipShape(Capsule())
+    }
+}
+
+/// Inline text field for adding a custom tag. Commits on Return, styled as
+/// a small capsule with a "+" icon to match the pending-tag visual language.
+struct AddTagField: View {
+    @Binding var text: String
+    let onCommit: () -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "plus")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+            TextField("add tag", text: $text)
+                .textFieldStyle(.plain)
+                .font(.caption)
+                .frame(width: 80)
+                .onSubmit(onCommit)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .overlay(
+            Capsule()
+                .strokeBorder(
+                    style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                )
+                .foregroundStyle(.secondary.opacity(0.5))
+        )
+        .clipShape(Capsule())
     }
 }
