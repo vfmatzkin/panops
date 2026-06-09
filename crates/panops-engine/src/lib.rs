@@ -3,5 +3,6 @@
 pub mod asr_resolver;
 pub mod capture_resolver;
 pub mod llm_resolver;
+pub mod screenshots;
 pub mod server;
 mod sidecar_binary;

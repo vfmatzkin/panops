@@ -14,7 +14,6 @@ use panops_core::merge::merge_speaker_turns;
 use panops_core::notes::dialect::MarkdownDialect;
 use panops_core::notes::error::NotesError;
 use panops_core::notes::input::{MeetingMetadata, NotesInput};
-use panops_core::notes::ir::Screenshot;
 use panops_core::notes::pipeline::NotesGenerator;
 use panops_core::notes::raw_transcript::write_raw_transcript;
 use panops_core::storage::{MeetingDraft, NoteDraft, Storage};
@@ -285,11 +284,18 @@ fn run_notes(
         }
     };
 
-    let screenshots = screenshots_dir
-        .as_ref()
-        .map(|d| collect_screenshots(d, transcript.audio_duration_ms))
-        .transpose()?
-        .unwrap_or_default();
+    // CLI-specific: the user passed an explicit `--screenshots` dir, so
+    // a missing dir is a real mistake worth surfacing. The shared
+    // helper treats missing-as-empty (the IPC path needs that for
+    // freshly-started meetings) — we do the existence check up front
+    // to preserve the CLI's loud-failure contract.
+    let screenshots = match screenshots_dir.as_ref() {
+        Some(d) if !d.exists() => {
+            return Err((1, format!("screenshots dir not found: {d:?}")));
+        }
+        Some(d) => panops_engine::screenshots::collect_screenshots(d, transcript.audio_duration_ms),
+        None => Vec::new(),
+    };
 
     let started_at = chrono::Local::now().fixed_offset();
     let language_for_meeting = language.clone();
@@ -472,35 +478,6 @@ fn register_meeting_in_registry(
         .map_err(|e| (3, format!("register meeting+note: {e}")))?;
     tracing::info!(meeting = %meeting.id, "registered meeting in registry");
     Ok(())
-}
-
-fn collect_screenshots(
-    dir: &std::path::Path,
-    duration_ms: u64,
-) -> Result<Vec<Screenshot>, (u8, String)> {
-    if !dir.exists() {
-        return Err((1, format!("screenshots dir not found: {dir:?}")));
-    }
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map_err(|e| (3, format!("read_dir {dir:?}: {e}")))?
-        .filter_map(|r| r.ok().map(|e| e.path()))
-        .filter(|p| p.is_file())
-        .collect();
-    entries.sort();
-    if entries.is_empty() {
-        return Ok(Vec::new());
-    }
-    let n = entries.len() as u64;
-    let step = duration_ms.checked_div(n).unwrap_or(0);
-    Ok(entries
-        .into_iter()
-        .enumerate()
-        .map(|(i, path)| Screenshot {
-            ms_since_start: (i as u64) * step,
-            path,
-            caption: None,
-        })
-        .collect())
 }
 
 /// VAD-aware transcription. Loads audio once, runs VAD, merges
