@@ -225,13 +225,18 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
 
     // MARK: - Tag chips (assigned + AI-suggested)
 
-    /// Tag names currently assigned to this meeting, resolved from IDs via
-    /// the view model's cached tag list. Looks up the MeetingSummary from
-    /// `vm.meetings` (Meeting itself doesn't carry tag IDs).
+    /// Tag names currently assigned to the open meeting, resolved from IDs via
+    /// the view model's cached tag list. Keyed by the actually-displayed
+    /// meeting (`vm.selectedMeeting`) and resolved from the *unfiltered*
+    /// `vm.allMeetings`: the sidebar-filtered `vm.meetings` can exclude the open
+    /// meeting, which dropped the chips and made `pendingTags` re-suggest
+    /// already-accepted tags. (Meeting itself doesn't carry tag IDs.)
     private var assignedTagNames: [String] {
-        let summary = vm.meetings.first { $0.id == meeting.id }
-        let ids = Set(summary?.tags ?? [])
-        return vm.tags.filter { ids.contains($0.id) }.map(\.name)
+        resolveAssignedTagNames(
+            forMeeting: vm.selectedMeeting?.id ?? meeting.id,
+            in: vm.allMeetings,
+            tags: vm.tags
+        )
     }
 
     /// LLM-proposed tag names minus already-assigned names minus session-
