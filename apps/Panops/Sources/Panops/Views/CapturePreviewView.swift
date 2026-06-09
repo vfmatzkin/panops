@@ -51,6 +51,13 @@ struct CaptureSourcePane: View {
                 Label(chooseLabel, systemImage: "rectangle.inset.filled.badge.record")
             }
 
+            if let selectionError = controller.selectionError {
+                Label(selectionError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             previewBox
 
             if controller.target != nil {
