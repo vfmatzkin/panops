@@ -713,6 +713,32 @@ final class AppViewModel: ObservableObject {
         await refreshMeetings()
     }
 
+    /// Accept an AI-proposed tag suggestion. Creates the tag (idempotent on
+    /// name) via `ipc.tag.create`, then attaches it to the meeting via
+    /// `ipc.tag.assign`. Drives `saveStatus` so the header chip reflects the
+    /// lifecycle. Refreshes org + meetings so the tag moves from pending to
+    /// assigned. Returns true on success.
+    @discardableResult
+    func acceptTagSuggestion(meetingId: String, name: String) async -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        saveStatus = .saving
+        do {
+            let tag = try await client.tagCreate(name: trimmed)
+            try await client.tagAssign(meetingId: meetingId, tagId: tag.id)
+            saveStatus = .saved
+        } catch {
+            Self.logFullError("tag.acceptSuggestion", error)
+            saveStatus = .failed(
+                message: Self.describeSaveError(error, operation: "accept tag")
+            )
+            return false
+        }
+        await refreshOrganization()
+        await refreshMeetings()
+        return true
+    }
+
     /// Execute a meeting-row drop on an org sidebar row. Maps the drop target
     /// to the right IPC call (meeting.assign for spaces/projects, tag.assign
     /// for tags), drives saveStatus, then refreshes org + meetings.
