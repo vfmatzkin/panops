@@ -19,6 +19,13 @@ use panops_core::capture::Capture;
 /// session map (critical for FakeCapture's internal HashMap).
 static CAPTURE: OnceLock<Arc<dyn Capture + Send + Sync>> = OnceLock::new();
 
+/// Cached sidecar binary path, resolved by the same rules as the adapter.
+/// `None` when no sidecar is available (non-macOS, or env + sibling both
+/// miss). Separated from [`pick_capture`] so the engine's post-recording
+/// extract-screenshots path can invoke the sidecar directly without
+/// holding a `Capture` adapter.
+static SIDECAR_BINARY: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+
 /// Resolve the capture adapter.
 ///
 /// When `PANOPS_TEST_CAPTURE=1` is set, returns a cached `FakeCapture` for tests.
@@ -29,11 +36,7 @@ pub fn pick_capture() -> Arc<dyn Capture + Send + Sync> {
         .get_or_init(|| {
             #[cfg(target_os = "macos")]
             {
-                let sidecar = std::env::var_os("PANOPS_CAPTURE_SIDECAR_BIN")
-                    .and_then(|v| {
-                        crate::sidecar_binary::executable_file(std::path::PathBuf::from(v))
-                    })
-                    .or_else(|| crate::sidecar_binary::sibling_of_engine("panops-capture-mac"));
+                let sidecar = resolve_sidecar_binary();
                 if let Some(sidecar) = sidecar {
                     tracing::info!(
                         sidecar = %sidecar.display(),
@@ -49,6 +52,35 @@ pub fn pick_capture() -> Arc<dyn Capture + Send + Sync> {
             }
         })
         .clone()
+}
+
+/// Resolve the `panops-capture-mac` sidecar binary path. Cached in a
+/// `OnceLock` so repeated calls (e.g. per-stop extraction) don't re-walk
+/// the env + sibling lookup. `None` on non-macOS or when neither the
+/// env override nor the packaged sibling resolves.
+pub fn sidecar_binary() -> Option<std::path::PathBuf> {
+    SIDECAR_BINARY
+        .get_or_init(|| {
+            #[cfg(target_os = "macos")]
+            {
+                resolve_sidecar_binary()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                None
+            }
+        })
+        .clone()
+}
+
+/// Pure resolution: env override first, packaged sibling second. Split
+/// out so both [`pick_capture`] and [`sidecar_binary`] share it without
+/// duplicating the `#[cfg]` branches.
+#[cfg(target_os = "macos")]
+fn resolve_sidecar_binary() -> Option<std::path::PathBuf> {
+    std::env::var_os("PANOPS_CAPTURE_SIDECAR_BIN")
+        .and_then(|v| crate::sidecar_binary::executable_file(std::path::PathBuf::from(v)))
+        .or_else(|| crate::sidecar_binary::sibling_of_engine("panops-capture-mac"))
 }
 
 /// Placeholder capture that returns a clear error for real/non-test use.
