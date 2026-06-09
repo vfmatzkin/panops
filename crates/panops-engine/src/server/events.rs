@@ -19,7 +19,7 @@ use tokio::sync::broadcast;
 /// events with the largest current payload (`JobDone` carrying a
 /// `NotesGenerateResult` with primary_file + assets paths, ~4 KB
 /// realistic), worst-case memory is ~1 MB. Increase before exposing
-/// finer-grained events (`asr.partial`, `screenshot`) — see issue #80.
+/// finer-grained events, if any ever ship — see issue #80.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 pub(super) fn channel() -> (broadcast::Sender<Event>, broadcast::Receiver<Event>) {
