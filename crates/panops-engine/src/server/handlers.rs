@@ -153,6 +153,12 @@ pub(super) trait Ipc {
         params: RecordingStopParams,
     ) -> Result<RecordingStopped, ErrorObjectOwned>;
 
+    /// Deprecated: superseded by the app-side `SCContentSharingPicker`, which now
+    /// drives capture-source selection (window/display/app/region) directly in the
+    /// Mac shell — it returns the live `SCContentFilter` the app previews from and
+    /// the serializable target the recording starts against. Kept only as a
+    /// fallback for clients without the native picker (e.g. headless callers); the
+    /// Panops app no longer calls it.
     #[method(name = "capture.windows")]
     async fn capture_windows(
         &self,
