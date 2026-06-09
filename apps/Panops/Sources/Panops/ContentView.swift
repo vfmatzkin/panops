@@ -56,6 +56,16 @@ final class AppViewModel: ObservableObject {
     /// `renameMeeting` and `saveNotes`; consumed by `SaveStatusView` in the
     /// meeting workspace header / notes toolbar.
     @Published var saveStatus: SaveStatus = .idle
+    /// Which edit produced the current `.failed` saveStatus. The single
+    /// `SaveStatusView` is shared across title / notes / tag / org saves, so its
+    /// Retry must route to the operation that actually failed — a hardcoded
+    /// title retry re-ran the title save even after a *notes* save failed (a
+    /// no-op). Set in each save's failure path; only read while `isFailed`.
+    @Published private(set) var failedSaveOperation: SaveOperation?
+    /// Inputs of the last `saveNotes` call, kept so a header-driven Retry can
+    /// re-run the notes save (the editor buffer lives inside NotesView and
+    /// isn't reachable from the shared status chip).
+    @Published private(set) var lastNotesAttempt: NotesAttempt?
     /// Which meeting the current/last notes generation targets. Lets the meeting
     /// workspace show processing/error inline for the right meeting (the audio-
     /// file flow targets a freshly-created meeting that isn't selected, so its
@@ -683,6 +693,7 @@ final class AppViewModel: ObservableObject {
         } catch {
             Self.logFullError("meeting.assign", error)
             saveStatus = .failed(message: Self.describeSaveError(error, operation: "move meeting"))
+            failedSaveOperation = .other
             return
         }
         await refreshMeetings()
@@ -698,6 +709,7 @@ final class AppViewModel: ObservableObject {
         } catch {
             Self.logFullError("tag.assign", error)
             saveStatus = .failed(message: Self.describeSaveError(error, operation: "add tag"))
+            failedSaveOperation = .other
             return
         }
         await refreshMeetings()
@@ -732,6 +744,7 @@ final class AppViewModel: ObservableObject {
             saveStatus = .failed(
                 message: Self.describeSaveError(error, operation: "accept tag")
             )
+            failedSaveOperation = .other
             return false
         }
         await refreshOrganization()
@@ -766,6 +779,7 @@ final class AppViewModel: ObservableObject {
                     error, operation: "move to \(target.operationNoun)"
                 )
             )
+            failedSaveOperation = .other
             return
         }
         await refreshOrganization()
@@ -773,6 +787,32 @@ final class AppViewModel: ObservableObject {
     }
 
     // MARK: - Editing & autosave (editing-save slice, stage 2)
+
+    /// Identifies which edit produced a `.failed` saveStatus so the shared
+    /// `SaveStatusView` routes Retry to the right operation.
+    enum SaveOperation: Equatable {
+        case title
+        case notes
+        /// Tag / org assignments — they share the status chip, but their action
+        /// originates outside the header so Retry there has nothing to re-run.
+        case other
+    }
+
+    /// Captured inputs of the last notes save, for a header-driven Retry.
+    struct NotesAttempt: Equatable {
+        let meetingId: String
+        let markdown: String
+    }
+
+    /// Re-run the most recent notes save — the Retry target when a `notes.save`
+    /// failed. On success, bumps `notesReloadTick` so the open NotesView
+    /// remounts and renders the just-saved markdown from disk.
+    func retryNotesSave() async {
+        guard let attempt = lastNotesAttempt else { return }
+        if await saveNotes(meetingId: attempt.meetingId, markdown: attempt.markdown) {
+            notesReloadTick += 1
+        }
+    }
 
     /// Rename a meeting via `ipc.meeting.rename`. Drives `saveStatus` so the
     /// header chip reflects the save lifecycle. On success, patches
@@ -793,6 +833,7 @@ final class AppViewModel: ObservableObject {
         } catch {
             Self.logFullError("meeting.rename", error)
             saveStatus = .failed(message: Self.describeSaveError(error, operation: "save title"))
+            failedSaveOperation = .title
             return nil
         }
     }
@@ -803,6 +844,7 @@ final class AppViewModel: ObservableObject {
     /// the edited text and surfaces Retry.
     func saveNotes(meetingId: String, markdown: String) async -> Bool {
         saveStatus = .saving
+        lastNotesAttempt = NotesAttempt(meetingId: meetingId, markdown: markdown)
         do {
             try await client.saveNotes(meetingId: meetingId, markdown: markdown)
             saveStatus = .saved
@@ -811,6 +853,7 @@ final class AppViewModel: ObservableObject {
         } catch {
             Self.logFullError("notes.save", error)
             saveStatus = .failed(message: Self.describeSaveError(error, operation: "save notes"))
+            failedSaveOperation = .notes
             return false
         }
     }
