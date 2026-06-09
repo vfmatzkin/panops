@@ -22,6 +22,11 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
     @State private var isLoading = true
     @State private var selectedTab: DetailTab = .notes
     @State private var editedTitle: String = ""
+    /// Last title successfully persisted via `meeting.rename`. Drives the
+    /// "is the local edit dirty?" check so we only autosave when the title
+    /// actually changed. Reset when the meeting changes.
+    @State private var lastSavedTitle: String = ""
+    @FocusState private var titleFocused: Bool
     @State private var showErrorDetails = false
     @State private var exportError: String?
 
@@ -87,6 +92,7 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
         .task(id: loadToken) { await loadMeetingData() }
         .onChange(of: meeting.id, initial: true) { _, _ in
             editedTitle = meeting.title
+            lastSavedTitle = meeting.title
         }
         .alert("Export failed", isPresented: exportErrorPresented) {
             Button("OK", role: .cancel) {}
@@ -110,15 +116,21 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) {
-                // Inline-editable title. No rename IPC exists yet, so edits are
-                // local to this session.
+            HStack(alignment: .firstTextBaseline) {
+                // Inline-editable title. Autosaves on submit (Return) and on
+                // focus-loss; the SaveStatusView across the row reflects the
+                // save lifecycle (spinner, "Saved", or Retry on failure).
                 TextField("Meeting title", text: $editedTitle)
                     .textFieldStyle(.plain)
                     .font(.title2.weight(.semibold))
-                    .onSubmit { /* local only until meeting.rename lands */ }
-
+                    .focused($titleFocused)
+                    .disabled(vm.saveStatus.isSaving)
+                    .onSubmit(commitTitleIfChanged)
                 Spacer(minLength: 12)
+                SaveStatusView(
+                    status: vm.saveStatus,
+                    retry: { commitTitleIfChanged() }
+                )
                 headerActions
             }
 
@@ -133,6 +145,32 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
             }
         }
         .padding(16)
+        .onChange(of: titleFocused) { wasFocused, isFocused in
+            // Save on blur (focus leaving the title field). `wasFocused` is
+            // checked so we don't fire on the initial false → false state.
+            if wasFocused && !isFocused {
+                commitTitleIfChanged()
+            }
+        }
+    }
+
+    /// Persist the edited title when it differs from `lastSavedTitle`. No-op
+    /// when the title is unchanged or an autosave is already in flight. The
+    /// view model drives the SaveStatus chip and patches `selectedMeeting`
+    /// on success.
+    private func commitTitleIfChanged() {
+        let trimmed = editedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != lastSavedTitle else { return }
+        guard !vm.saveStatus.isSaving else { return }
+        let meetingId = meeting.id
+        Task {
+            if let updated = await vm.renameMeeting(id: meetingId, title: trimmed) {
+                lastSavedTitle = updated.title
+                editedTitle = updated.title
+            }
+            // On failure the view model keeps `saveStatus == .failed`; the
+            // user's edited text stays in the field so Retry can re-submit.
+        }
     }
 
     private var headerActions: some View {
@@ -176,14 +214,31 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
             ProgressView("Loading…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if hasNotes {
-            NotesView(
-                notes: structuredNotes,
-                markdownFallback: notesContent,
-                meetingDir: meeting.dirPath
-            )
+            notesViewWithAutosave()
         } else {
             noNotesView
         }
+    }
+
+    /// Build the notes view with the autosave closure wired up. Isolated
+    /// into its own method so the local lets that break the generic
+    /// `MeetingDetailView<Controller>` capture don't have to live inside a
+    /// `@ViewBuilder` block (which disallows local declarations).
+    private func notesViewWithAutosave() -> some View {
+        let viewModel = vm
+        let meetingId = meeting.id
+        return NotesView(
+            notes: structuredNotes,
+            markdownFallback: notesContent,
+            meetingDir: meeting.dirPath,
+            onSave: { [viewModel, meetingId] markdown in
+                await viewModel.saveNotes(meetingId: meetingId, markdown: markdown)
+            }
+        )
+        // Identity bound to the meeting + notes-reload tick: switching
+        // meetings or regenerating notes remounts NotesView so its
+        // internal edit state / overriddenMarkdown resets.
+        .id("\(meeting.id)|\(vm.notesReloadTick)")
     }
 
     private var processingView: some View {
