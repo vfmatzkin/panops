@@ -39,7 +39,7 @@ The app renders the smooth preview from its **own** `SCStream`; the capture **si
 └───────────────────────────────────────────┘         └─────────────────┘   └───────────────────────┘
 ```
 
-**The selection contract.** `SCContentFilter` can't cross processes, so the app extracts a serializable `CaptureSelection` from the picker result and the sidecar rebuilds an equivalent filter via `SCShareableContent` lookup. Supported selections are constrained to the serializable cases below; anything the picker returns outside them is rejected with a clear message rather than silently mis-recorded.
+**The selection contract.** `SCContentFilter` can't cross processes, so the app extracts a serializable `CaptureSelection` from the picker result and the sidecar rebuilds an equivalent filter via `SCShareableContent` lookup. Supported selections are constrained to the serializable cases below; anything the picker returns outside them is rejected with a clear message rather than silently recording the wrong target.
 
 ## Data contract — `CaptureSelection`
 
