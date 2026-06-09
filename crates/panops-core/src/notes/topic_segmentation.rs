@@ -169,7 +169,6 @@ mod tests {
             text: text.into(),
             language_detected: Some("en".into()),
             confidence: 1.0,
-            is_partial: false,
             speaker_id: speaker,
         }
     }

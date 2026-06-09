@@ -23,7 +23,6 @@ fn seg(start: u64, end: u64, speaker: u32, text: &str) -> Segment {
         text: text.into(),
         language_detected: Some("en".into()),
         confidence: 1.0,
-        is_partial: false,
         speaker_id: Some(speaker),
     }
 }

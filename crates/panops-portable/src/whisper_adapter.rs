@@ -110,7 +110,6 @@ impl AsrProvider for WhisperRsAsr {
                 text,
                 language_detected: detected_lang.clone(),
                 confidence,
-                is_partial: false,
                 speaker_id: None,
             });
         }

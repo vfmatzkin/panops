@@ -7,7 +7,6 @@ struct WireSegment: Encodable {
     let text: String
     let languageDetected: String?
     let confidence: Float
-    let isPartial: Bool
     let speakerId: UInt32?
 
     enum CodingKeys: String, CodingKey {
@@ -16,7 +15,6 @@ struct WireSegment: Encodable {
         case text
         case languageDetected = "language_detected"
         case confidence
-        case isPartial = "is_partial"
         case speakerId = "speaker_id"
     }
 }

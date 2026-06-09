@@ -52,7 +52,6 @@ struct TranscriptSegment: Codable, Hashable {
     let text: String
     let languageDetected: String?
     let confidence: Float
-    let isPartial: Bool
     let speakerId: UInt32?
 
     enum CodingKeys: String, CodingKey {
@@ -61,7 +60,6 @@ struct TranscriptSegment: Codable, Hashable {
         case text
         case languageDetected = "language_detected"
         case confidence
-        case isPartial = "is_partial"
         case speakerId = "speaker_id"
     }
 
@@ -71,7 +69,6 @@ struct TranscriptSegment: Codable, Hashable {
         text: String,
         languageDetected: String?,
         confidence: Float,
-        isPartial: Bool,
         speakerId: UInt32?
     ) {
         self.startMs = startMs
@@ -79,7 +76,6 @@ struct TranscriptSegment: Codable, Hashable {
         self.text = text
         self.languageDetected = languageDetected
         self.confidence = confidence
-        self.isPartial = isPartial
         self.speakerId = speakerId
     }
 
@@ -90,7 +86,6 @@ struct TranscriptSegment: Codable, Hashable {
         text = try container.decode(String.self, forKey: .text)
         languageDetected = try container.decodeIfPresent(String.self, forKey: .languageDetected)
         confidence = try container.decode(Float.self, forKey: .confidence)
-        isPartial = try container.decode(Bool.self, forKey: .isPartial)
         speakerId = try container.decodeIfPresent(UInt32.self, forKey: .speakerId)
     }
 
