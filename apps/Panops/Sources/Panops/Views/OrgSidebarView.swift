@@ -3,7 +3,8 @@ import SwiftUI
 /// The organization sidebar (Phase B): three sections — Smart Views, Spaces
 /// (collapsible → Projects), and Tags. Selecting a row drives the meeting
 /// list's filter via `vm.sidebarSelection`. "+" creates; context menus
-/// rename/delete. No drag-and-drop (context-menu only).
+/// rename/delete. Space/Project/Tag rows accept meeting-row drops to assign
+/// the meeting via the existing `meeting.assign` / `tag.assign` IPC.
 struct OrgSidebarView: View {
     @ObservedObject var vm: AppViewModel
     /// Which spaces are expanded to show their projects.
@@ -65,44 +66,62 @@ struct OrgSidebarView: View {
     // MARK: - Rows
 
     private func spaceRow(_ space: Space) -> some View {
-        HStack(spacing: 4) {
-            Button { toggleExpanded(space.id) } label: {
-                Image(systemName: expandedSpaces.contains(space.id) ? "chevron.down" : "chevron.right")
-                    .font(.caption2)
+        MeetingDropRow(
+            label: {
+                HStack(spacing: 4) {
+                    Button { toggleExpanded(space.id) } label: {
+                        Image(systemName: expandedSpaces.contains(space.id) ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 12)
+                    }
+                    .buttonStyle(.plain)
+                    Label(space.name, systemImage: "folder")
+                    Spacer(minLength: 4)
+                    Button { beginPrompt(.newProject(spaceId: space.id)) } label: {
+                        Image(systemName: "plus").imageScale(.small)
+                    }
+                    .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
-                    .frame(width: 12)
-            }
-            .buttonStyle(.plain)
-            Label(space.name, systemImage: "folder")
-            Spacer(minLength: 4)
-            Button { beginPrompt(.newProject(spaceId: space.id)) } label: {
-                Image(systemName: "plus").imageScale(.small)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("New project in \(space.name)")
-        }
+                    .help("New project in \(space.name)")
+                }
+            },
+            target: .space(spaceId: space.id),
+            vm: vm
+        )
         .tag(SidebarSelection.space(space.id))
         .contextMenu { spaceContextMenu(space) }
     }
 
     private func projectRow(_ project: Project) -> some View {
-        Label(project.name, systemImage: "list.bullet")
-            .padding(.leading, 16)
-            .tag(SidebarSelection.project(project.id))
-            .contextMenu { projectContextMenu(project) }
+        MeetingDropRow(
+            label: {
+                Label(project.name, systemImage: "list.bullet")
+                    .padding(.leading, 16)
+            },
+            target: .project(projectId: project.id),
+            vm: vm
+        )
+        .tag(SidebarSelection.project(project.id))
+        .contextMenu { projectContextMenu(project) }
     }
 
     private func tagRow(_ tag: Tag) -> some View {
-        Label(tag.name, systemImage: "tag")
-            .tag(SidebarSelection.tag(tag.id))
-            .contextMenu {
-                Button(role: .destructive) {
-                    Task { await vm.deleteTag(id: tag.id) }
-                } label: {
-                    Label("Delete Tag", systemImage: "trash")
-                }
+        MeetingDropRow(
+            label: {
+                Label(tag.name, systemImage: "tag")
+            },
+            target: .tag(tagId: tag.id),
+            vm: vm
+        )
+        .tag(SidebarSelection.tag(tag.id))
+        .contextMenu {
+            Button(role: .destructive) {
+                Task { await vm.deleteTag(id: tag.id) }
+            } label: {
+                Label("Delete Tag", systemImage: "trash")
             }
+        }
     }
 
     private func sectionHeader(_ title: String, add help: String, action: @escaping () -> Void) -> some View {
@@ -249,5 +268,42 @@ enum OrgPrompt: Identifiable {
         case .newTag: return "Tag name"
         default: return "Name"
         }
+    }
+}
+
+/// A sidebar row that accepts meeting-row drops and highlights while a valid
+/// drag hovers over it. The label is caller-supplied so space/project/tag rows
+/// can keep their own layout (disclosure chevron, indentation, etc.); only the
+/// drop wiring and highlight live here.
+private struct MeetingDropRow<Label: View>: View {
+    @ViewBuilder var label: () -> Label
+    let target: MeetingDropTarget
+    @ObservedObject var vm: AppViewModel
+
+    @State private var isTargeted: Bool = false
+
+    var body: some View {
+        label()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isTargeted ? Color.accentColor.opacity(0.18) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(
+                        isTargeted ? Color.accentColor.opacity(0.6) : Color.clear,
+                        lineWidth: 1
+                    )
+            )
+            .dropDestination(for: MeetingDragPayload.self) { payloads, _ in
+                guard let payload = payloads.first else { return false }
+                Task { await vm.performDrop(meetingId: payload.meetingId, target: target) }
+                return true
+            } isTargeted: { targeted in
+                isTargeted = targeted
+            }
+            .animation(.easeOut(duration: 0.12), value: isTargeted)
     }
 }
