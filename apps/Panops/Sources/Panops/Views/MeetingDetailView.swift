@@ -138,7 +138,7 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
                 Spacer(minLength: 12)
                 SaveStatusView(
                     status: vm.saveStatus,
-                    retry: { commitTitleIfChanged() }
+                    retry: { handleSaveRetry() }
                 )
                 headerActions
             }
@@ -188,6 +188,19 @@ struct MeetingDetailView<Controller: RecordingController & ObservableObject>: Vi
             if wasFocused && !isFocused {
                 commitTitleIfChanged()
             }
+        }
+    }
+
+    /// Route the shared SaveStatusView's Retry to the operation that actually
+    /// failed. The chip is shared across title / notes / tag / org saves, so a
+    /// hardcoded title retry was a no-op after a notes save failed. Notes route
+    /// to a buffer-aware re-save; everything else falls back to the title path.
+    private func handleSaveRetry() {
+        switch vm.failedSaveOperation {
+        case .notes:
+            Task { await vm.retryNotesSave() }
+        case .title, .other, .none:
+            commitTitleIfChanged()
         }
     }
 
