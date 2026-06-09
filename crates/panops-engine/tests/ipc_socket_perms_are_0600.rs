@@ -3,23 +3,19 @@
 mod common;
 
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use tempfile::tempdir;
 
-use common::wait_with_timeout;
-
-const BIN: &str = env!("CARGO_BIN_EXE_panops-engine");
+use common::{engine_serve_command, wait_with_timeout};
 
 #[test]
 fn socket_has_mode_0600() {
     let dir = tempdir().unwrap();
     let socket = dir.path().join("engine.sock");
 
-    let mut child = Command::new(BIN)
-        .args(["serve", "--socket"])
-        .arg(&socket)
+    let mut child = engine_serve_command(&dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
