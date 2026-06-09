@@ -113,12 +113,18 @@ enum ResolutionPreset: String, CaseIterable, Identifiable {
     }
 
     /// Resolve the preset to concrete output dimensions, given the source's
-    /// native pixel height. Returns `nil` for `native`, and also when the preset
-    /// would *upscale* (its height ≥ the known native height) — there's no point
-    /// rendering more pixels than the source has. A `nativeHeight` of `0`
-    /// (unknown) skips the no-upscale guard so the preset still applies.
+    /// native pixel height. **Presets never upscale**: output height is capped at
+    /// the source native, so the result is `min(preset, source-native)`. When the
+    /// preset would meet or exceed the native height the cap collapses to native,
+    /// returned as `nil` (no width/height override) — that defers to the source's
+    /// real size and aspect, which this function can't reconstruct from height
+    /// alone. This holds for both display and region targets: the caller passes
+    /// the region's own pixel height as `nativeHeight` for a cropped region.
+    /// `native` always returns `nil`; a `nativeHeight` of `0` (unknown) skips the
+    /// guard so the preset still applies.
     func dimensions(nativeHeight: Int) -> Dimensions? {
         guard let height = targetHeight else { return nil }
+        // Never upscale: a preset at/above the source native collapses to native.
         if nativeHeight > 0, nativeHeight <= height { return nil }
         // 16:9 width, rounded to an even number (H.264 requires even dimensions).
         let halfWidth = (Double(height) * 16.0 / 9.0 / 2.0).rounded()
