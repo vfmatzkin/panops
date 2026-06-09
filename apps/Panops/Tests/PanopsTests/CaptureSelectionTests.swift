@@ -24,6 +24,15 @@ struct ResolutionPresetTests {
         #expect(ResolutionPreset.p720.dimensions(nativeHeight: 720) == nil)
     }
 
+    @Test("a preset taller than the source native yields native, never upscaled")
+    func presetTallerThanNativeStaysNative() {
+        // Region 960×540: a 720p preset is taller than the 540 native, so output
+        // collapses to native (nil = no override) instead of upscaling to 720.
+        #expect(ResolutionPreset.p720.dimensions(nativeHeight: 540) == nil)
+        // A 480p preset is shorter than 540, so it still downscales.
+        #expect(ResolutionPreset.p480.dimensions(nativeHeight: 540) == Dimensions(width: 854, height: 480))
+    }
+
     @Test("an unknown native height still applies the preset")
     func unknownNativeHeight() {
         #expect(ResolutionPreset.p720.dimensions(nativeHeight: 0) == Dimensions(width: 1280, height: 720))
