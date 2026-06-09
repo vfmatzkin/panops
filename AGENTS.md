@@ -41,7 +41,7 @@ gh issue list --label type:debt --state open --limit 50
 gh project item-list 1 --owner vfmatzkin --format json
 ```
 
-Mac app build commands land in slice 06.
+Mac app: `swift build --package-path apps/Panops` + `swift test --package-path apps/Panops`. Quick UI run: `scripts/dev.sh`. Signed bundle (needed for capture permissions): `scripts/package.sh` then open `dist/Panops.app`.
 
 ## Execution discipline (MUST follow)
 

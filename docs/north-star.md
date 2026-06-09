@@ -8,7 +8,7 @@
 
 That sentence is a compressed restatement of the maintainer's genesis charter (verbatim source: `docs/superpowers/conversations/2026-04-30-f0690f89.md:53`). It is the highest-priority source of truth in the repo, above any spec, plan, or AGENTS.md rule.
 
-**Amendment 2026-06-09 (maintainer decision): video-first capture, deferred processing.** The recording (video + audio) is the primary artifact. Stopping a recording must always yield a saved, playable recording — no processing step can put that at risk. Transcription, diarization, and notes are a second step that runs on demand and fully offline, minutes or days later. Organization (Spaces / Projects / Tags, calendar-style views) is the shell around the recordings. Screenshots are derived from the recorded video, not captured as a parallel system. There is no live-transcription requirement of any kind.
+**Amendment 2026-06-09 (maintainer decision): video-first capture, deferred processing.** The recording (video + audio) is the primary artifact. Stopping a recording must always yield a saved, playable recording; no processing step can put that at risk. Transcription, diarization, and notes are a second step that runs on demand and fully offline, minutes or days later. Organization (Spaces / Projects / Tags, calendar-style views) is the shell around the recordings. Screenshots are derived from the recorded video, not captured as a parallel system. There is no live-transcription requirement of any kind.
 
 ## Why it exists
 
@@ -45,7 +45,7 @@ Criterion #5 is the only one not mechanically verifiable — it's the gate that 
 Two architectural surfaces that must exist for v0.1 to be v0.1:
 
 - **Anchor A — Mac shell + ASR sidecar.** SwiftUI app + WhisperKit / FluidAudio sidecars. Without this, panops is a CLI for devs, not a product.
-- **Anchor B — Live capture.** ScreenCaptureKit + audio + screenshot sampling. Without this, criteria #1-2 are unmet.
+- **Anchor B — Live capture.** ScreenCaptureKit + audio + video recording, with screenshots extracted from the recorded video (2026-06-09 amendment). Without this, criteria #1-2 are unmet.
 
 Anchors block v0.1. Trajectory slices toward them are amendable (see `AGENTS.md` → Trajectory and anchors).
 

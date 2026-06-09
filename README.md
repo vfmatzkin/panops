@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/account-not%20required-brightgreen.svg" alt="No account required" />
 </p>
 
-Panops is an open-source, local-first macOS recorder with screenshot-anchored meeting notes. It records your meeting as video + audio (mic, system, per-app). The recording is the artifact: stop and it's saved, playable, done. Then, whenever you want and fully offline, a second step transcribes it (multilingual, diarized), extracts the screenshots that mattered from the video, and emits markdown notes with embedded screenshots via a BYO local-or-cloud LLM.
+Panops is an open-source, local-first macOS recorder with screenshot-anchored meeting notes. It records your meeting as video + audio (mic, system, per-app). The recording is the artifact: stop and the file is saved and playable. Then, whenever you want and fully offline, a second step transcribes it (multilingual, diarized), extracts the screenshots that mattered from the video, and emits markdown notes with embedded screenshots via a BYO local-or-cloud LLM.
 
 The wedge no other OSS tool occupies: **screen + audio + screenshot-anchored notes, fully local, BYO-everything, no account required.**
 
