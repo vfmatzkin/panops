@@ -36,6 +36,54 @@ if CommandLine.arguments.contains("--list-windows") {
     exit(0)
 }
 
+/// Value of a `--flag <value>` option, or nil if absent / missing its value.
+func optionValue(_ args: [String], _ name: String) -> String? {
+    guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
+    return args[i + 1]
+}
+
+/// One-shot screenshot extraction: decode `<mov>` at `--interval-ms` cadence,
+/// run the shared `ChangeDetector`, write kept frames as JPEGs into `<out_dir>`
+/// (same naming + format as live screenshots), and print
+/// `[{timestamp_ms, path}, …]` JSON to stdout. Mirrors `--list-windows`: a
+/// stateless subcommand that runs and exits before any capture session. On any
+/// failure it emits `[]` so the engine always parses valid JSON.
+func runExtractScreenshots(_ args: [String]) async -> Int32 {
+    guard let flagIdx = args.firstIndex(of: "--extract-screenshots"), flagIdx + 2 < args.count else {
+        FileHandle.standardError.write(Data(
+            "usage: --extract-screenshots <mov> <out_dir> [--interval-ms N] [--threshold T]\n".utf8))
+        print("[]"); fflush(stdout)
+        return 2
+    }
+    let movPath = args[flagIdx + 1]
+    let outDir = args[flagIdx + 2]
+    let intervalMs = optionValue(args, "--interval-ms").flatMap(UInt64.init) ?? 500
+    let threshold = optionValue(args, "--threshold").flatMap(Float.init) ?? 0.15
+
+    do {
+        let shots = try await ScreenshotExtractor.extract(
+            movPath: movPath, outDir: outDir, intervalMs: intervalMs, threshold: threshold)
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.withoutEscapingSlashes]
+        if let data = try? enc.encode(shots), let line = String(data: data, encoding: .utf8) {
+            print(line)
+        } else {
+            print("[]")
+        }
+        fflush(stdout)
+        return 0
+    } catch {
+        FileHandle.standardError.write(Data("--extract-screenshots failed: \(error)\n".utf8))
+        print("[]"); fflush(stdout)
+        return 1
+    }
+}
+
+if CommandLine.arguments.contains("--extract-screenshots") {
+    let code = await runExtractScreenshots(CommandLine.arguments)
+    exit(code)
+}
+
 /// A live capture: the SCStream recorder + the screen-frame screenshotter,
 /// keyed by the meeting that started it.
 final class CaptureSession {
