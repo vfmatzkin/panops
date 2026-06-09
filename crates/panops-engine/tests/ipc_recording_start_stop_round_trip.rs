@@ -133,11 +133,13 @@ async fn recording_start_stop_round_trip() {
     assert!(stopped.mic_audio_path.is_some(), "mic track present");
     assert!(stopped.duration_ms > 0, "duration should be positive");
 
-    // Verify screenshot paths are present (FakeCapture copies fixtures).
-    assert!(
-        !stopped.screenshot_paths.is_empty(),
-        "should have screenshots"
-    );
+    // Verify screenshot paths + recording.mov. Stage B (screenshots-from-video):
+    // when `record_video == true` the live `Screenshotter` is skipped and
+    // screenshots come from a post-recording `--extract-screenshots` pass
+    // that needs the packaged sidecar. Under `PANOPS_TEST_CAPTURE=1` there
+    // is no sidecar binary, so extraction degrades gracefully to an empty
+    // list — the meeting is still usable without screenshot anchors. The
+    // recording.mov itself is still produced by the fake.
     assert!(
         data_dir_for_assert
             .join("meetings")
@@ -145,6 +147,11 @@ async fn recording_start_stop_round_trip() {
             .join("recording.mov")
             .exists(),
         "record_video=true should produce recording.mov"
+    );
+    assert!(
+        stopped.screenshot_paths.is_empty(),
+        "video recording without sidecar: extraction degrades to empty; got {:?}",
+        stopped.screenshot_paths
     );
 
     let _ = shutdown_tx.send(true);

@@ -374,6 +374,9 @@ impl Capture for ScreenCaptureKitCapture {
             meeting_id: meeting_id.to_string(),
             started_at_ms: started.started_at_ms,
             capture_target: config.capture_target.clone(),
+            record_video: config.record_video,
+            screenshot_interval_ms: config.screenshot_interval_ms,
+            screenshot_threshold: config.screenshot_threshold,
         })
     }
 
@@ -500,6 +503,67 @@ fn capture_target_json(target: &CaptureTarget) -> serde_json::Value {
     }
 }
 
+/// One-shot wire shape emitted by `panops-capture-mac --extract-screenshots`:
+/// `[{timestamp_ms, path}, …]` JSON array. Mirrors `ScreenshotExtractor`'s
+/// `ExtractedScreenshot` struct in the sidecar. Kept private; only the
+/// `path` field is surfaced to callers.
+#[derive(serde::Deserialize)]
+struct ExtractedScreenshotWire {
+    #[allow(dead_code)]
+    timestamp_ms: u64,
+    path: String,
+}
+
+/// Post-recording counterpart to the live `Screenshotter`: invoke the
+/// sidecar in `--extract-screenshots` mode against an already-written
+/// `recording.mov`, writing change-detected JPEGs into `out_dir`. Returns
+/// the written screenshot paths (empty on sidecar-reported empty result;
+/// error when the sidecar can't be spawned or its output is malformed).
+///
+/// The engine calls this from `recording.stop` for video recordings so
+/// screenshots come from the recorded `.mov` (single source of truth)
+/// instead of the live sampler. `binary` is the resolved sidecar path
+/// (same one [`ScreenCaptureKitCapture`] uses for live capture); passing
+/// it explicitly keeps this function free of resolver state and easy to
+/// unit-test at the command-build layer.
+pub fn extract_screenshots_from_video(
+    binary: &Path,
+    mov: &Path,
+    out_dir: &Path,
+    interval_ms: u64,
+    threshold: f32,
+) -> Result<Vec<PathBuf>, CaptureError> {
+    // Ensure the output dir exists; the sidecar writes into it but does
+    // not create it. The live `Screenshotter` path gets its dir created
+    // by the engine at meeting allocation; this mirrors that so both
+    // paths share the same expectation.
+    std::fs::create_dir_all(out_dir).map_err(CaptureError::Io)?;
+
+    let output = Command::new(binary)
+        .arg("--extract-screenshots")
+        .arg(mov.as_os_str())
+        .arg(out_dir.as_os_str())
+        .arg("--interval-ms")
+        .arg(interval_ms.to_string())
+        .arg("--threshold")
+        .arg(threshold.to_string())
+        .stdout(Stdio::piped())
+        // Sidecar stderr inherits to Console.app; the engine surfaces an
+        // opaque error over the wire, matching the live-capture path.
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|e| CaptureError::Sidecar(format!("extract-screenshots spawn: {e}")))?;
+    if !output.status.success() {
+        return Err(CaptureError::Sidecar(format!(
+            "extract-screenshots exited with status {}",
+            output.status
+        )));
+    }
+    let shots: Vec<ExtractedScreenshotWire> = serde_json::from_slice(&output.stdout)
+        .map_err(|e| CaptureError::Sidecar(format!("extract-screenshots decode: {e}")))?;
+    Ok(shots.into_iter().map(|s| PathBuf::from(s.path)).collect())
+}
+
 /// Map a sidecar JSON-RPC error code to an opaque `CaptureError`. Full
 /// detail is logged via `tracing`; only the code shapes the variant.
 fn map_sidecar_error(code: i32) -> CaptureError {
@@ -610,6 +674,9 @@ mod tests {
             meeting_id: "never_started".into(),
             started_at_ms: 0,
             capture_target: CaptureTarget::Display { display_id: 0 },
+            record_video: false,
+            screenshot_interval_ms: 500,
+            screenshot_threshold: 0.15,
         };
         let err = cap.stop_capture(&session).expect_err("should fail");
         assert!(matches!(err, CaptureError::SessionNotFound(id) if id == "never_started"));

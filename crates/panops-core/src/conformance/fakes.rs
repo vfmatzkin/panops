@@ -1227,6 +1227,9 @@ impl Capture for FakeCapture {
             meeting_id: meeting_id.to_string(),
             started_at_ms,
             capture_target: config.capture_target.clone(),
+            record_video: config.record_video,
+            screenshot_interval_ms: config.screenshot_interval_ms,
+            screenshot_threshold: config.screenshot_threshold,
         })
     }
 
@@ -1282,6 +1285,12 @@ impl Capture for FakeCapture {
         // old ancestor-walk failed there). Emit a minimal embedded JPEG
         // (SOI + JFIF APP0 + EOI) instead — enough for the contract, which
         // only requires the screenshot paths to exist.
+        //
+        // Stage B (screenshots-from-video): when the session recorded
+        // video, the live `Screenshotter` equivalent is skipped — the
+        // engine's post-recording `--extract-screenshots` pass is the
+        // single source of screenshot truth. Matching that here keeps the
+        // fake's contract aligned with the real sidecar's.
         let screenshots_dir = fake_session.meeting_dir.join("screenshots");
         std::fs::create_dir_all(&screenshots_dir).map_err(CaptureError::Io)?;
 
@@ -1290,10 +1299,12 @@ impl Capture for FakeCapture {
             0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9,
         ];
         let mut screenshot_paths: Vec<PathBuf> = Vec::new();
-        for i in 1..=3 {
-            let dest_path = screenshots_dir.join(format!("{:03}.jpg", i));
-            std::fs::write(&dest_path, FAKE_JPEG).map_err(CaptureError::Io)?;
-            screenshot_paths.push(dest_path);
+        if !fake_session.record_video {
+            for i in 1..=3 {
+                let dest_path = screenshots_dir.join(format!("{:03}.jpg", i));
+                std::fs::write(&dest_path, FAKE_JPEG).map_err(CaptureError::Io)?;
+                screenshot_paths.push(dest_path);
+            }
         }
 
         if fake_session.record_video {

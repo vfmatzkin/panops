@@ -91,13 +91,27 @@ impl Default for CaptureConfig {
 }
 
 /// Handle returned by `start_capture`. Used to identify the session
-/// for `stop_capture`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// for `stop_capture`. Carries the subset of the originating
+/// [`CaptureConfig`] the stop path (and the engine above it) needs to
+/// decide what to do with the captured artifacts — e.g. whether a
+/// `recording.mov` was written that needs post-processing into
+/// screenshots.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CaptureSession {
     pub meeting_id: String,
     pub started_at_ms: u64,
     /// Screen target selected when the session was started.
     pub capture_target: CaptureTarget,
+    /// Whether the session is muxing a screen-video file. The engine's
+    /// stop path uses this to decide between live-screenshot delivery
+    /// (no-video) and post-recording frame extraction (video).
+    pub record_video: bool,
+    /// Vision FeaturePrint cadence + threshold used by the live
+    /// Screenshotter / the extractor. Persisted on the session so
+    /// `stop_capture` (and the engine above it) can re-derive the
+    /// extraction parameters without re-reading the originating config.
+    pub screenshot_interval_ms: u64,
+    pub screenshot_threshold: f32,
 }
 
 /// Result returned by `stop_capture`. Contains paths to captured artifacts.
@@ -234,10 +248,16 @@ mod tests {
             meeting_id: "abc123".into(),
             started_at_ms: 1_700_000_000_000,
             capture_target: CaptureTarget::Display { display_id: 0 },
+            record_video: true,
+            screenshot_interval_ms: 500,
+            screenshot_threshold: 0.15,
         };
         assert_eq!(s.meeting_id, "abc123");
         assert_eq!(s.started_at_ms, 1_700_000_000_000);
         assert_eq!(s.capture_target, CaptureTarget::Display { display_id: 0 });
+        assert!(s.record_video);
+        assert_eq!(s.screenshot_interval_ms, 500);
+        assert!((s.screenshot_threshold - 0.15).abs() < f32::EPSILON);
     }
 
     #[test]
