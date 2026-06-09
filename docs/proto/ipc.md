@@ -159,7 +159,7 @@ At the JSON-RPC boundary, errors flowing back as `ErrorObjectOwned` use code `-3
 ## What's NOT shipped (still deferred)
 
 - IPC: `asr.post_pass` / `asr.cancel`, `notes.export`, `llm.probe` / `llm.providers` / `llm.test`, `settings.get` / `settings.set`.
-- Live-capture events: none planned. Live transcription is out of scope per the 2026-06-09 north-star amendment (recording is live; processing is an offline second step).
+- Live-capture events: none planned. Recording is live; transcription and notes run as an offline second step, so there is nothing to stream.
 - Token auth, WS reconnection, event replay buffer.
 - `CancellationToken` plumbed through `LlmRequest` (the `spawn_blocking` task is uncancellable today).
 - Push events for storage mutations (`meeting.created`, `meeting.deleted`).

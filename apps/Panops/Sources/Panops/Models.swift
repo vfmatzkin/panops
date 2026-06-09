@@ -157,8 +157,7 @@ enum AudioSourcesWire: String, Codable {
 
 /// Outgoing params for `ipc.meeting.start`. Mirrors `panops-protocol::MeetingConfig`.
 /// Both fields optional; the engine applies defaults (title="", language="auto").
-/// `nil` fields are omitted by `JSONEncoder`, so an all-`nil` config encodes to
-/// `{}` — identical to the previous `EmptyParams()` path.
+/// `nil` fields are omitted by `JSONEncoder`, so an all-`nil` config encodes to `{}`.
 struct MeetingConfig: Encodable {
     let title: String?
     let language: String?
@@ -396,11 +395,6 @@ struct JsonRpcNotification: Decodable {
         // here; omit it so its numeric type can't break event decoding.
         let result: IpcEvent
     }
-}
-
-/// Empty params for RPCs that take no arguments.
-struct EmptyParams: Encodable {
-    init() {}
 }
 
 /// Outgoing params for `ipc.meeting.get`.
