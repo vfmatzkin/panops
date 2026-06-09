@@ -231,7 +231,9 @@ impl IpcServer for IpcImpl {
             // mid-write can't leave a partial notes.md that the
             // rendered view would then fail to parse. Same pattern
             // as `write_structured_notes_json` below.
-            let partial = meeting_dir.join("notes.md.partial");
+            // Unique temp suffix so a concurrent notes.save for the same
+            // meeting can't clobber another's in-flight partial file.
+            let partial = meeting_dir.join(format!("notes.md.{}.partial", uuid::Uuid::new_v4()));
             std::fs::write(&partial, params.markdown.as_bytes()).map_err(|e| {
                 tracing::error!(
                     error = %e,
