@@ -48,6 +48,12 @@ final class CapturePreviewController: NSObject, ObservableObject {
     @Published private(set) var systemDb: Float = -120
     /// Live microphone level (dBFS) from the preview stream (macOS 15+).
     @Published private(set) var micDb: Float = -120
+    /// Set when the picker returns a selection we can't map to a serializable
+    /// target — an unknown style, or macOS < 15.2 where the chosen
+    /// window/display/app can't be read back off the filter. The New Recording
+    /// sheet surfaces it and no recording starts against a substituted source.
+    /// Cleared on the next mappable pick.
+    @Published private(set) var selectionError: String?
 
     private let sampleQueue = DispatchQueue(label: "ar.tzk.panops.preview.samples")
     private let audioQueue = DispatchQueue(label: "ar.tzk.panops.preview.audio")
@@ -128,13 +134,18 @@ final class CapturePreviewController: NSObject, ObservableObject {
         sourceContentSize = .zero
         systemDb = -120
         micDb = -120
+        selectionError = nil
     }
 
     // MARK: - Picker observer callbacks (hopped to the main actor)
 
     fileprivate func didPick(_ filter: SCContentFilter) {
+        guard let dto = Self.captureTarget(from: filter) else {
+            rejectUnsupportedSelection()
+            return
+        }
         currentFilter = filter
-        let dto = Self.captureTarget(from: filter)
+        selectionError = nil
         target = dto
         if case let .display(displayID) = dto {
             isDisplayTarget = true
@@ -150,6 +161,31 @@ final class CapturePreviewController: NSObject, ObservableObject {
         sourceRect = nil
         isCropped = false
         Task { await restartPreview(with: filter) }
+    }
+
+    /// Reject a picker selection we can't map to a serializable target: tear down
+    /// any running preview, clear the selection, and surface a user-facing error.
+    /// Substituting the primary display (the old silent fallback) would start a
+    /// recording against the wrong source, so refuse instead.
+    private func rejectUnsupportedSelection() {
+        // Invalidate any in-flight restart and stop the prior stream so no stale
+        // preview implies this rejected selection is live.
+        previewEpoch += 1
+        let stopping = stream
+        stream = nil
+        output = nil
+        Task { try? await stopping?.stopCapture() }
+        // Don't retain the unmappable filter — Retry should re-open the picker,
+        // not re-attempt a selection we still can't map.
+        currentFilter = nil
+        selectionError = "That selection isn't supported — pick a window, display, or app."
+        target = nil
+        isDisplayTarget = false
+        isCropped = false
+        sourceRect = nil
+        nativePixelHeight = 0
+        sourceContentSize = .zero
+        state = .idle
     }
 
     // MARK: - Drag-crop region (display targets only)
@@ -292,11 +328,13 @@ final class CapturePreviewController: NSObject, ObservableObject {
         return .failed(error.localizedDescription)
     }
 
-    /// Extract a serializable target from the picker's opaque filter. The exact
-    /// ids need `includedWindows`/`includedDisplays`/`includedApplications`
-    /// (macOS 15.2+); on older systems only `style` is readable, so window/app
-    /// selections fall back to the primary display.
-    private static func captureTarget(from filter: SCContentFilter) -> CaptureTargetDTO {
+    /// Extract a serializable target from the picker's opaque filter, or `nil`
+    /// when the selection can't be mapped to a supported Display/Window/App. The
+    /// exact ids need `includedWindows`/`includedDisplays`/`includedApplications`
+    /// (macOS 15.2+); on older systems only `style` is readable, so every
+    /// selection is unmappable and the caller rejects it rather than silently
+    /// substituting a default target.
+    private static func captureTarget(from filter: SCContentFilter) -> CaptureTargetDTO? {
         if #available(macOS 15.2, *) {
             switch filter.style {
             case .window:
@@ -315,7 +353,7 @@ final class CapturePreviewController: NSObject, ObservableObject {
                 break
             }
         }
-        return .display(displayID: 0)
+        return nil
     }
 }
 
