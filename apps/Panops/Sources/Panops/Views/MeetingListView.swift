@@ -53,6 +53,7 @@ struct MeetingListView: View {
                                     tagNames: meeting.tags.map { vm.tagName($0) }
                                 )
                                 .tag(meeting.id)
+                                .draggable(MeetingDragPayload(meetingId: meeting.id))
                                 .contextMenu {
                                     MeetingContextMenu(vm: vm, meeting: meeting, status: status)
                                 }

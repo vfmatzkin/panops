@@ -673,22 +673,31 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Assign a meeting to a space/project (both `nil` ⇒ move to Inbox), then
-    /// refresh so the list and tag/space chips reflect the change.
+    /// refresh so the list and tag/space chips reflect the change. Drives
+    /// `saveStatus` so the status chip surfaces success/failure.
     func assignMeeting(meetingId: String, spaceId: String?, projectId: String?) async {
+        saveStatus = .saving
         do {
             try await client.meetingAssign(meetingId: meetingId, spaceId: spaceId, projectId: projectId)
+            saveStatus = .saved
         } catch {
             Self.logFullError("meeting.assign", error)
+            saveStatus = .failed(message: Self.describeSaveError(error, operation: "move meeting"))
             return
         }
         await refreshMeetings()
     }
 
+    /// Attach a tag to a meeting. Drives `saveStatus` so the status chip
+    /// reflects success/failure, then refreshes the list so tag chips update.
     func addTag(meetingId: String, tagId: String) async {
+        saveStatus = .saving
         do {
             try await client.tagAssign(meetingId: meetingId, tagId: tagId)
+            saveStatus = .saved
         } catch {
             Self.logFullError("tag.assign", error)
+            saveStatus = .failed(message: Self.describeSaveError(error, operation: "add tag"))
             return
         }
         await refreshMeetings()
@@ -701,6 +710,39 @@ final class AppViewModel: ObservableObject {
             Self.logFullError("tag.unassign", error)
             return
         }
+        await refreshMeetings()
+    }
+
+    /// Execute a meeting-row drop on an org sidebar row. Maps the drop target
+    /// to the right IPC call (meeting.assign for spaces/projects, tag.assign
+    /// for tags), drives saveStatus, then refreshes org + meetings.
+    func performDrop(meetingId: String, target: MeetingDropTarget) async {
+        saveStatus = .saving
+        do {
+            switch target {
+            case .space(let spaceId):
+                try await client.meetingAssign(
+                    meetingId: meetingId, spaceId: spaceId, projectId: nil
+                )
+            case .project(let projectId):
+                // Engine sets the space from the project.
+                try await client.meetingAssign(
+                    meetingId: meetingId, spaceId: nil, projectId: projectId
+                )
+            case .tag(let tagId):
+                try await client.tagAssign(meetingId: meetingId, tagId: tagId)
+            }
+            saveStatus = .saved
+        } catch {
+            Self.logFullError("drop.assign", error)
+            saveStatus = .failed(
+                message: Self.describeSaveError(
+                    error, operation: "move to \(target.operationNoun)"
+                )
+            )
+            return
+        }
+        await refreshOrganization()
         await refreshMeetings()
     }
 
