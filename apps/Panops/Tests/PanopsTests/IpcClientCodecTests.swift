@@ -222,14 +222,14 @@ struct IpcClientCodecTests {
     @Test("unknown event type does not throw")
     func unknownEventType_doesNotThrow() throws {
         let json = #"""
-        { "type": "asr.partial", "job_id": "j", "text": "..." }
+        { "type": "future.event", "job_id": "j", "text": "..." }
         """#
         let event = try decoder.decode(IpcEvent.self, from: json.data(using: .utf8)!)
         guard case .unknown(let type) = event else {
             Issue.record("expected .unknown, got \(event)")
             return
         }
-        #expect(type == "asr.partial")
+        #expect(type == "future.event")
     }
 
     // MARK: - WebSocket frame parser tests
@@ -359,55 +359,6 @@ struct IpcClientCodecTests {
         let result = try decoder.decode(MeetingDeleteVideoResult.self, from: json.data(using: .utf8)!)
         #expect(result.deleted == false)
         #expect(result.freedBytes == 0)
-    }
-
-    @Test("WindowInfo decodes from engine response")
-    func windowInfo_decodes() throws {
-        let json = #"""
-        {
-          "window_id": 123,
-          "app_name": "Safari",
-          "title": "Example Window"
-        }
-        """#
-        let window = try decoder.decode(WindowInfo.self, from: json.data(using: .utf8)!)
-        #expect(window.windowId == 123)
-        #expect(window.appName == "Safari")
-        #expect(window.title == "Example Window")
-    }
-
-    @Test("CaptureWindowsResult decodes the {windows:[...]} wrapper")
-    func captureWindowsResult_decodes() throws {
-        let json = #"""
-        {
-          "windows": [
-            { "window_id": 42, "app_name": "Safari", "title": "Panops" },
-            { "window_id": 7, "app_name": "Xcode", "title": "App.swift" }
-          ]
-        }
-        """#
-        let result = try decoder.decode(CaptureWindowsResult.self, from: json.data(using: .utf8)!)
-        #expect(result.windows.count == 2)
-        #expect(result.windows[0] == WindowInfo(windowId: 42, appName: "Safari", title: "Panops"))
-        #expect(result.windows[1].windowId == 7)
-    }
-
-    @Test("CaptureWindowsResult decodes an empty window list")
-    func captureWindowsResult_decodesEmpty() throws {
-        let json = #"{ "windows": [] }"#
-        let result = try decoder.decode(CaptureWindowsResult.self, from: json.data(using: .utf8)!)
-        #expect(result.windows.isEmpty)
-    }
-
-    @Test("capture.windows request encodes empty params as a positional array")
-    func captureWindowsRequest_encodesEmptyParams() throws {
-        // The engine handler takes a `CaptureWindowsParams {}` arg: the param must
-        // be a 1-element positional array holding an empty object, not omitted.
-        let req = JsonRpcRequest(id: 1, method: "ipc.capture.windows", param: EmptyParams())
-        let data = try encoder.encode(req)
-        let json = String(data: data, encoding: .utf8)!
-        #expect(json.contains("\"method\":\"ipc.capture.windows\""), "method missing: \(json)")
-        #expect(json.contains("\"params\":[{}]"), "expected [{}] params, got: \(json)")
     }
 
     @Test("recording.start params nest the kind-tagged capture target")

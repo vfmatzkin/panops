@@ -22,7 +22,6 @@ pub trait Storage: Send + Sync {
         ended_at: &str,
         duration_ms: u64,
     ) -> Result<Meeting, StorageError>;
-    fn update_meeting_language(&self, id: &str, language: &str) -> Result<Meeting, StorageError>;
     fn rename_meeting(&self, id: &str, title: &str) -> Result<Meeting, StorageError>;
     fn delete_meeting(&self, id: &str) -> Result<(), StorageError>;
     fn create_note(&self, draft: NoteDraft) -> Result<Note, StorageError>;

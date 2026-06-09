@@ -49,14 +49,6 @@ impl Default for CaptureTarget {
     }
 }
 
-/// Window metadata returned by [`Capture::list_windows`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowInfo {
-    pub window_id: u32,
-    pub app_name: String,
-    pub title: String,
-}
-
 /// Configuration for a capture session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaptureConfig {
@@ -159,9 +151,6 @@ pub enum CaptureError {
 /// runs ScreenCaptureKit + AVFoundation. Fake adapters (FakeCapture)
 /// yield synthetic PCM frames and pre-generated screenshot fixtures.
 pub trait Capture: Send + Sync {
-    /// List capturable windows.
-    fn list_windows(&self) -> Result<Vec<WindowInfo>, CaptureError>;
-
     /// Start capturing audio + screenshots for a meeting.
     /// Returns a session handle. Audio + screenshots stream as IPC events
     /// (implemented at the engine layer, not here).

@@ -353,13 +353,6 @@ final class AppViewModel: ObservableObject {
         try await client.meetingDeleteVideo(meetingId: meetingId)
     }
 
-    /// Fetch the engine's list of capturable windows for the New Recording
-    /// sheet's window picker. Thin passthrough to the IPC client (mirrors
-    /// `deleteVideoForMeeting`), so the sheet can be handed a real fetch closure
-    /// without exposing the private client.
-    func captureWindows() async throws -> [WindowInfo] {
-        try await client.captureWindows()
-    }
 
     /// Open a path (typically a meeting directory) in Finder, guarded to the
     /// panops data dir.

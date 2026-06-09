@@ -279,10 +279,6 @@ private actor FakeLiveRecordingIpcClient: LiveRecordingIpcClient {
         (startCalls, lastRecordVideo, lastAutoGenerateNotes)
     }
 
-    func captureWindows() async throws -> [WindowInfo] {
-        []
-    }
-
     func lastCaptureTargetValue() -> CaptureTargetDTO {
         lastCaptureTarget
     }

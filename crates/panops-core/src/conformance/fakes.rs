@@ -34,7 +34,6 @@ impl Default for TranscriptFileFake {
                     text: String::new(),
                     language_detected: Some("en".to_string()),
                     confidence: 1.0,
-                    is_partial: false,
                     speaker_id: None,
                 }],
             },
@@ -65,7 +64,6 @@ impl TranscriptFileFake {
                     text: text.to_string(),
                     language_detected: language.map(str::to_string),
                     confidence: 1.0,
-                    is_partial: false,
                     speaker_id: None,
                 }],
             },
@@ -125,7 +123,6 @@ pub fn read_canned_sidecar(audio_path: &Path) -> Transcript {
             text,
             language_detected: language,
             confidence: 1.0,
-            is_partial: false,
             speaker_id: None,
         }],
     }
@@ -598,19 +595,6 @@ impl Storage for InMemoryStorage {
             })?;
         m.ended_at = Some(ended_at.into());
         m.duration_ms = Some(duration_ms);
-        Ok(m.clone())
-    }
-
-    fn update_meeting_language(&self, id: &str, language: &str) -> Result<Meeting, StorageError> {
-        let mut inner = self.inner.lock().unwrap();
-        let m = inner
-            .meetings
-            .get_mut(id)
-            .ok_or_else(|| StorageError::NotFound {
-                id: id.into(),
-                kind: "meeting",
-            })?;
-        m.language = language.into();
         Ok(m.clone())
     }
 
@@ -1146,7 +1130,7 @@ use std::path::PathBuf;
 
 use crate::capture::{
     AudioSources, Capture, CaptureConfig, CaptureError, CaptureResult, CaptureSession,
-    CaptureTarget, WindowInfo,
+    CaptureTarget,
 };
 
 /// A fake `Capture` adapter for testing. Produces:
@@ -1181,21 +1165,6 @@ impl FakeCapture {
 }
 
 impl Capture for FakeCapture {
-    fn list_windows(&self) -> Result<Vec<WindowInfo>, CaptureError> {
-        Ok(vec![
-            WindowInfo {
-                window_id: 101,
-                app_name: "Safari".into(),
-                title: "Panops Fixture Window".into(),
-            },
-            WindowInfo {
-                window_id: 202,
-                app_name: "Notes".into(),
-                title: "Meeting Notes".into(),
-            },
-        ])
-    }
-
     fn start_capture(
         &self,
         meeting_id: &str,

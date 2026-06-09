@@ -489,24 +489,6 @@ impl Storage for RusqliteStorage {
         self.get_meeting(id)
     }
 
-    fn update_meeting_language(&self, id: &str, language: &str) -> Result<Meeting, StorageError> {
-        let conn = lock(&self.conn)?;
-        let n = conn
-            .execute(
-                "UPDATE meeting SET language = ?2 WHERE id = ?1",
-                params![id, language],
-            )
-            .map_err(StorageError::sql)?;
-        if n == 0 {
-            return Err(StorageError::NotFound {
-                id: id.into(),
-                kind: "meeting",
-            });
-        }
-        drop(conn);
-        self.get_meeting(id)
-    }
-
     fn rename_meeting(&self, id: &str, title: &str) -> Result<Meeting, StorageError> {
         let conn = lock(&self.conn)?;
         let n = conn

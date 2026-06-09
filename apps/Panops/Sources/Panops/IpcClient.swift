@@ -775,19 +775,6 @@ actor IpcClient {
         )
     }
 
-    /// `ipc.capture.windows` — fetches available windows for capture.
-    /// Sends an empty params object (`{}`, positional like every other method);
-    /// the engine replies with a `{"windows":[...]}` wrapper. Sending no params
-    /// at all yields jsonrpsee -32602 (the handler takes a `CaptureWindowsParams`
-    /// arg), and the result is a wrapper object, not a bare array.
-    func captureWindows() async throws -> [WindowInfo] {
-        let result: CaptureWindowsResult = try await sendRequest(
-            method: "ipc.capture.windows",
-            params: EmptyParams()
-        )
-        return result.windows
-    }
-
     /// `ipc.recording.start` — starts live capture for an existing meeting.
     /// Returns the engine-issued recording session id used by
     /// `ipc.recording.stop`.

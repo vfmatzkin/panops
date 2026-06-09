@@ -8,34 +8,6 @@ import ScreenCaptureKit
 
 FileHandle.standardError.write(Data("panops-capture-mac starting\n".utf8))
 
-/// One-shot window enumeration: print the on-screen windows as a JSON array to
-/// stdout and exit, before any capture session. On enumeration failure (e.g.
-/// Screen-Recording denied) emit `[]` so the engine always parses valid JSON.
-func runListWindows() async {
-    let windows: [WindowInfo]
-    do {
-        windows = try await listShareableWindows()
-    } catch {
-        FileHandle.standardError.write(Data("--list-windows enumeration failed: \(error)\n".utf8))
-        print("[]")
-        fflush(stdout)
-        return
-    }
-    let enc = JSONEncoder()
-    enc.outputFormatting = [.withoutEscapingSlashes]
-    if let data = try? enc.encode(windows), let line = String(data: data, encoding: .utf8) {
-        print(line)
-    } else {
-        print("[]")
-    }
-    fflush(stdout)
-}
-
-if CommandLine.arguments.contains("--list-windows") {
-    await runListWindows()
-    exit(0)
-}
-
 /// Value of a `--flag <value>` option, or nil if absent / missing its value.
 func optionValue(_ args: [String], _ name: String) -> String? {
     guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
@@ -45,9 +17,9 @@ func optionValue(_ args: [String], _ name: String) -> String? {
 /// One-shot screenshot extraction: decode `<mov>` at `--interval-ms` cadence,
 /// run the shared `ChangeDetector`, write kept frames as JPEGs into `<out_dir>`
 /// (same naming + format as live screenshots), and print
-/// `[{timestamp_ms, path}, …]` JSON to stdout. Mirrors `--list-windows`: a
-/// stateless subcommand that runs and exits before any capture session. On any
-/// failure it emits `[]` so the engine always parses valid JSON.
+/// `[{timestamp_ms, path}, …]` JSON to stdout. A stateless subcommand that
+/// runs and exits before any capture session. On any failure it emits `[]` so
+/// the engine always parses valid JSON.
 func runExtractScreenshots(_ args: [String]) async -> Int32 {
     guard let flagIdx = args.firstIndex(of: "--extract-screenshots"), flagIdx + 2 < args.count else {
         FileHandle.standardError.write(Data(
