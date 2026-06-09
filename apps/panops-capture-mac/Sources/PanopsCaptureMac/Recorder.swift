@@ -65,6 +65,11 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
     private var micConverter: AVAudioConverter?
     private var videoWriter: VideoWriter?
     private let sampleQueue = DispatchQueue(label: "ar.tzk.panops.capture.audio")
+    /// `.screen` delivery queue for the video-only path (screenshotter nil but
+    /// `videoPath != nil`). Kept separate from `sampleQueue` so video-frame
+    /// handling never blocks audio resampling. Unused when a screenshotter is
+    /// present (it taps `.screen` on its own queue instead).
+    private let screenQueue = DispatchQueue(label: "ar.tzk.panops.capture.recorder-screen")
     private(set) var startedAtMs: UInt64 = 0
 
     init(
@@ -238,9 +243,12 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         if plan.wantsMic {
             try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: sampleQueue)
         }
+        // Wire the single `.screen` output. Video-frame capture is decoupled
+        // from the screenshotter: a video recording must reach the writer even
+        // when the live sampler is skipped (Stage B).
         if let s = screenshotter {
-            // Tap the EXISTING `.screen` callback: the screenshotter forwards
-            // each complete frame to the video writer. No second stream/output.
+            // Screenshotter present: it owns `.screen` and taps each complete
+            // frame to the writer (if any). No second stream/output.
             if let w = writer {
                 s.videoTap = { [weak w] sample in
                     guard VideoWriter.isCompleteFrame(sample) else { return }
@@ -248,6 +256,11 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
                 }
             }
             try stream.addStreamOutput(s, type: .screen, sampleHandlerQueue: s.queue)
+        } else if videoPath != nil {
+            // Stage B video path: no screenshotter, but we still need video
+            // frames. Register `.screen` on the recorder itself; its
+            // `didOutputSampleBuffer` forwards complete frames to the writer.
+            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: screenQueue)
         }
         do {
             try await stream.startCapture()
@@ -306,7 +319,15 @@ final class Recorder: NSObject, SCStreamOutput, @unchecked Sendable {
         case .microphone:
             if !plan.wantsSystem { writer?.appendAudio(sampleBuffer) }
             appendAudio(sampleBuffer, system: false)
-        default: break   // `.screen` is handled by the Screenshotter output
+        case .screen:
+            // Reached only on the Stage B video path: screenshotter nil but
+            // recording video, so the recorder owns `.screen` and forwards
+            // complete frames to the writer. (With a screenshotter present, IT
+            // taps `.screen` instead and this never fires on `self`.) Idle/blank
+            // frames carry no fresh pixels — skip them.
+            guard VideoWriter.isCompleteFrame(sampleBuffer) else { break }
+            writer?.appendVideo(sampleBuffer)
+        @unknown default: break
         }
     }
 
