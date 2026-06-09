@@ -9,7 +9,6 @@ pub struct Segment {
     pub text: String,
     pub language_detected: Option<String>,
     pub confidence: f32,
-    pub is_partial: bool,
     #[serde(default)]
     pub speaker_id: Option<u32>,
 }
@@ -47,7 +46,6 @@ mod tests {
                 text: "hello world".to_string(),
                 language_detected: Some("en".to_string()),
                 confidence: 0.91,
-                is_partial: false,
                 speaker_id: Some(0),
             }],
         };
@@ -71,8 +69,7 @@ mod tests {
                 "end_ms": 4500,
                 "text": "hello",
                 "language_detected": "en",
-                "confidence": 0.9,
-                "is_partial": false
+                "confidence": 0.9
             }]
         }"#;
         let t: Transcript = serde_json::from_str(json).unwrap();

@@ -81,7 +81,6 @@ mod tests {
                 text: "Hello, everyone.".into(),
                 language_detected: Some("en".into()),
                 confidence: 0.95,
-                is_partial: false,
                 speaker_id: Some(0),
             },
             Segment {
@@ -90,7 +89,6 @@ mod tests {
                 text: "  Hola a todos.  ".into(),
                 language_detected: Some("es".into()),
                 confidence: 0.91,
-                is_partial: false,
                 speaker_id: Some(1),
             },
             Segment {
@@ -99,7 +97,6 @@ mod tests {
                 text: "Crosses a\nline break.".into(),
                 language_detected: None,
                 confidence: 0.5,
-                is_partial: false,
                 speaker_id: None,
             },
         ]

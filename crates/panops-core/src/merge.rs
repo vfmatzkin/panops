@@ -78,7 +78,6 @@ mod tests {
             text: String::new(),
             language_detected: None,
             confidence: 1.0,
-            is_partial: false,
             speaker_id: None,
         }
     }

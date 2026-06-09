@@ -67,7 +67,7 @@ Response:
 {"jsonrpc":"2.0","id":1,"result":{"schema_version":2,"model":"whisperkit-openai_whisper-base","audio_path":"...","audio_duration_ms":26160,"diarized":false,"segments":[...]}}
 ```
 
-The `WireSegment` shape mirrors `panops_core::Segment`: `start_ms`, `end_ms`, `text`, `language_detected`, `confidence`, `is_partial`, `speaker_id`. Times are in milliseconds (converted from WhisperKit's float-seconds at the adapter boundary). Whisper special tokens (`<|startoftranscript|><|en|><|transcribe|><|0.00|>` etc.) are stripped from `text` via a regex.
+The `WireSegment` shape mirrors `panops_core::Segment`: `start_ms`, `end_ms`, `text`, `language_detected`, `confidence`, `speaker_id`. Times are in milliseconds (converted from WhisperKit's float-seconds at the adapter boundary). Whisper special tokens (`<|startoftranscript|><|en|><|transcribe|><|0.00|>` etc.) are stripped from `text` via a regex.
 
 ## Known limitations
 

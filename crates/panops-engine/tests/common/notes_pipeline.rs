@@ -37,7 +37,6 @@ pub fn golden_segments() -> Vec<Segment> {
                 .into(),
             language_detected: Some("en".into()),
             confidence: 1.0,
-            is_partial: false,
             speaker_id: Some(0),
         },
         Segment {
@@ -48,7 +47,6 @@ pub fn golden_segments() -> Vec<Segment> {
                 .into(),
             language_detected: Some("en".into()),
             confidence: 1.0,
-            is_partial: false,
             speaker_id: Some(1),
         },
         Segment {
@@ -59,7 +57,6 @@ pub fn golden_segments() -> Vec<Segment> {
                 .into(),
             language_detected: Some("en".into()),
             confidence: 1.0,
-            is_partial: false,
             speaker_id: Some(0),
         },
     ]

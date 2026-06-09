@@ -16,7 +16,6 @@ fn segment(start_ms: u64, end_ms: u64, lang: &str, confidence: f32) -> Segment {
         text: format!("{lang} text"),
         language_detected: Some(lang.into()),
         confidence,
-        is_partial: false,
         speaker_id: None,
     }
 }

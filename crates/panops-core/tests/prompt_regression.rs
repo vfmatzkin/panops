@@ -25,7 +25,6 @@ fn sample_segments() -> Vec<Segment> {
             text: "Hello, let's discuss the quarterly review.".into(),
             language_detected: Some("en".into()),
             confidence: 1.0,
-            is_partial: false,
             speaker_id: Some(0),
         },
         Segment {
@@ -34,7 +33,6 @@ fn sample_segments() -> Vec<Segment> {
             text: "Thanks. I'll cover the budget items first.".into(),
             language_detected: Some("en".into()),
             confidence: 1.0,
-            is_partial: false,
             speaker_id: Some(1),
         },
     ]

@@ -696,7 +696,6 @@ mod tests {
                 text: "hello".into(),
                 language_detected: Some("en".into()),
                 confidence: 1.0,
-                is_partial: false,
                 speaker_id: Some(0),
             },
             Segment {
@@ -705,7 +704,6 @@ mod tests {
                 text: "hola".into(),
                 language_detected: Some("es".into()),
                 confidence: 1.0,
-                is_partial: false,
                 speaker_id: Some(1),
             },
             Segment {
@@ -714,7 +712,6 @@ mod tests {
                 text: "world".into(),
                 language_detected: Some("en".into()),
                 confidence: 1.0,
-                is_partial: false,
                 speaker_id: Some(0),
             },
             Segment {
@@ -723,7 +720,6 @@ mod tests {
                 text: "mundo".into(),
                 language_detected: Some("es".into()),
                 confidence: 1.0,
-                is_partial: false,
                 speaker_id: Some(1),
             },
         ];
@@ -739,7 +735,6 @@ mod tests {
             text: "hello".into(),
             language_detected: None,
             confidence: 1.0,
-            is_partial: false,
             speaker_id: None,
         }];
         let langs = unique_languages(&segs);

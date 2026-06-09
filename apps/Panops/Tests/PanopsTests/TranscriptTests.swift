@@ -20,7 +20,6 @@ struct TranscriptTests {
               "text": "Hello from a real transcript.",
               "language_detected": "en",
               "confidence": 0.92,
-              "is_partial": false,
               "speaker_id": 0
             },
             {
@@ -29,7 +28,6 @@ struct TranscriptTests {
               "text": "Segundo segmento cargado.",
               "language_detected": "es",
               "confidence": 0.87,
-              "is_partial": false,
               "speaker_id": 1
             },
             {
@@ -38,7 +36,6 @@ struct TranscriptTests {
               "text": "No diarization for this segment.",
               "language_detected": null,
               "confidence": 0.74,
-              "is_partial": false,
               "speaker_id": null
             }
           ]
@@ -56,7 +53,6 @@ struct TranscriptTests {
         let diarizedSegment = transcript.segments[0]
         #expect(diarizedSegment.languageDetected == "en")
         #expect(diarizedSegment.confidence == 0.92)
-        #expect(diarizedSegment.isPartial == false)
         #expect(diarizedSegment.speakerId == 0)
         #expect(diarizedSegment.speakerLabel == "Speaker 1")
         #expect(diarizedSegment.speakerLabel != "?")

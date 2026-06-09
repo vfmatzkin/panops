@@ -103,7 +103,6 @@ actor Transcriber {
                     text: stripSpecialTokens(s.text),
                     languageDetected: resultLanguage,
                     confidence: 1.0,
-                    isPartial: false,
                     speakerId: nil
                 ))
             }
