@@ -96,9 +96,12 @@ final class ChangeDetector {
         // underflow-safe for any non-monotonic sample times; live wall-clock is
         // monotonic, so the guard never fires there and behavior is identical.
         if let last = lastSampleMs, nowMs >= last, nowMs - last < intervalMs { return false }
-        lastSampleMs = nowMs
 
+        // Only advance the interval clock after a SUCCESSFUL feature print: a
+        // Vision failure must not gate out the next good frame (a streak of
+        // failures would otherwise permanently suppress capture).
         guard let vector = featurePrint() else { return false }
+        lastSampleMs = nowMs
         if let prev = lastKeptVector, cosineDistance(vector, prev) < threshold {
             return false   // near-duplicate of the last kept frame
         }
