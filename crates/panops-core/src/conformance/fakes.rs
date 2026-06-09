@@ -700,7 +700,11 @@ impl Storage for InMemoryStorage {
         // (this meeting's notes are deleted next), so check before mutating —
         // matching the rusqlite DELETE-then-INSERT transaction, whose rollback
         // leaves the meeting's original notes intact on a collision.
-        if inner.notes.get(&draft.id).is_some_and(|n| n.meeting_id != meeting_id) {
+        if inner
+            .notes
+            .get(&draft.id)
+            .is_some_and(|n| n.meeting_id != meeting_id)
+        {
             return Err(StorageError::AlreadyExists {
                 id: draft.id,
                 kind: "note",
