@@ -596,4 +596,56 @@ struct IpcClientCodecTests {
         let scoped = String(data: try encoder.encode(ProjectListParams(spaceId: "s1")), encoding: .utf8)!
         #expect(scoped.contains("\"space_id\":\"s1\""))
     }
+
+    // MARK: - Editing-save slice (stage 1/2 wire types)
+
+    @Test("MeetingRenameParams encodes meeting_id + title (snake_case)")
+    func meetingRenameParams_encodes() throws {
+        let req = JsonRpcRequest(
+            id: 7,
+            method: "ipc.meeting.rename",
+            param: MeetingRenameParams(meetingId: "m-42", title: "Q3 planning")
+        )
+        let data = try encoder.encode(req)
+        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"method\":\"ipc.meeting.rename\""))
+        #expect(json.contains("\"meeting_id\":\"m-42\""))
+        #expect(json.contains("\"title\":\"Q3 planning\""))
+        #expect(json.contains("\"params\":[{"), "expected positional-array params: \(json)")
+    }
+
+    @Test("MeetingRenameParams allows an empty title (engine validates non-emptiness)")
+    func meetingRenameParams_emptyTitleAllowed() throws {
+        // Empty title encoding matches the engine's round-trip test which
+        // accepts an empty string. Wire-level we just need to confirm the
+        // field is present, not rejected by JSONEncoder.
+        let data = try encoder.encode(MeetingRenameParams(meetingId: "m", title: ""))
+        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"title\":\"\""))
+        #expect(json.contains("\"meeting_id\":\"m\""))
+    }
+
+    @Test("NotesSaveParams encodes meeting_id + markdown with newlines preserved")
+    func notesSaveParams_encodes() throws {
+        let markdown = "# Heading\n\nBody with \"quotes\" and \\backslash."
+        let req = JsonRpcRequest(
+            id: 8,
+            method: "ipc.notes.save",
+            param: NotesSaveParams(meetingId: "m-42", markdown: markdown)
+        )
+        let data = try encoder.encode(req)
+        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"method\":\"ipc.notes.save\""))
+        #expect(json.contains("\"meeting_id\":\"m-42\""))
+        #expect(json.contains("\"markdown\":"))
+        // Newlines are JSON-escaped as \n; quotes/backslashes also escaped.
+        #expect(json.contains("\\n"), "expected escaped newline in: \(json)")
+    }
+
+    @Test("NotesSaveParams allows empty markdown (clears the notes content)")
+    func notesSaveParams_emptyMarkdownAllowed() throws {
+        let data = try encoder.encode(NotesSaveParams(meetingId: "m", markdown: ""))
+        let json = String(data: data, encoding: .utf8)!
+        #expect(json.contains("\"markdown\":\"\""))
+    }
 }
