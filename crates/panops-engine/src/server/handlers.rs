@@ -28,12 +28,13 @@ use panops_core::notes::raw_transcript::write_raw_transcript;
 use panops_protocol::{
     CaptureWindowsParams, CaptureWindowsResult, Event, IpcError, JobAccepted, JobDoneEvent,
     JobErrorEvent, JobProgressEvent, Meeting, MeetingAssignParams, MeetingConfig,
-    MeetingDeleteVideoParams, MeetingDeleteVideoResult, MeetingListParams, MeetingSummary,
-    NotesDialect, NotesGenerateParams, NotesGenerateResult, Project, ProjectCreateParams,
-    ProjectDeleteParams, ProjectListParams, ProjectListResult, ProjectRenameParams,
-    RecordingAccepted, RecordingStartParams, RecordingStopParams, RecordingStopped, ServerInfo,
-    Space, SpaceCreateParams, SpaceDeleteParams, SpaceListResult, SpaceRenameParams, Tag,
-    TagAssignParams, TagCreateParams, TagDeleteParams, TagListResult, WindowInfo,
+    MeetingDeleteVideoParams, MeetingDeleteVideoResult, MeetingListParams, MeetingRenameParams,
+    MeetingSummary, NotesDialect, NotesGenerateParams, NotesGenerateResult, NotesSaveParams,
+    Project, ProjectCreateParams, ProjectDeleteParams, ProjectListParams, ProjectListResult,
+    ProjectRenameParams, RecordingAccepted, RecordingStartParams, RecordingStopParams,
+    RecordingStopped, ServerInfo, Space, SpaceCreateParams, SpaceDeleteParams, SpaceListResult,
+    SpaceRenameParams, Tag, TagAssignParams, TagCreateParams, TagDeleteParams, TagListResult,
+    WindowInfo,
 };
 use tokio::sync::broadcast;
 
@@ -60,6 +61,9 @@ pub(super) trait Ipc {
         params: NotesGenerateParams,
     ) -> Result<JobAccepted, ErrorObjectOwned>;
 
+    #[method(name = "notes.save")]
+    async fn notes_save(&self, params: NotesSaveParams) -> Result<(), ErrorObjectOwned>;
+
     #[method(name = "meeting.list")]
     async fn meeting_list(
         &self,
@@ -82,6 +86,12 @@ pub(super) trait Ipc {
     async fn meeting_set_language(
         &self,
         params: MeetingSetLanguageParams,
+    ) -> Result<Meeting, ErrorObjectOwned>;
+
+    #[method(name = "meeting.rename")]
+    async fn meeting_rename(
+        &self,
+        params: MeetingRenameParams,
     ) -> Result<Meeting, ErrorObjectOwned>;
 
     #[method(name = "meeting.delete")]
@@ -203,6 +213,67 @@ impl IpcServer for IpcImpl {
         ))
     }
 
+    async fn notes_save(&self, params: NotesSaveParams) -> Result<(), ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        let data_dir = self.services.data_dir.clone();
+        spawn_blocking_into_ipc("notes.save", move || {
+            // Verify meeting exists AND derive the safe on-disk dir
+            // from the registry row (same defense as notes.generate
+            // and meeting.delete — never trust a path-like id, never
+            // follow a tampered dir_path).
+            let m = storage
+                .get_meeting(&params.meeting_id)
+                .map_err(IpcError::from)?;
+            let meeting_dir = validate_meeting_dir(&data_dir, &m.dir_path)?;
+            let notes_path = meeting_dir.join("notes.md");
+
+            // Atomic write: temp sibling + rename, so a crash
+            // mid-write can't leave a partial notes.md that the
+            // rendered view would then fail to parse. Same pattern
+            // as `write_structured_notes_json` below.
+            let partial = meeting_dir.join("notes.md.partial");
+            std::fs::write(&partial, params.markdown.as_bytes()).map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    path = ?partial,
+                    "notes.save: write notes.md.partial failed"
+                );
+                IpcError::Internal {
+                    message: "write notes.md failed".into(),
+                }
+            })?;
+            std::fs::rename(&partial, &notes_path).map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    from = ?partial,
+                    to = ?notes_path,
+                    "notes.save: rename notes.md.partial -> notes.md failed"
+                );
+                IpcError::Internal {
+                    message: "save notes.md failed".into(),
+                }
+            })?;
+
+            // Replace the meeting's note row with a single fresh row
+            // pointing at the just-written file. Dialect is "basic"
+            // because user-edited markdown is unstructured.
+            let meeting_id = params.meeting_id.clone();
+            let draft = panops_core::storage::NoteDraft {
+                id: uuid::Uuid::new_v4().simple().to_string(),
+                meeting_id: params.meeting_id,
+                dialect: "basic".into(),
+                content_md: params.markdown,
+                primary_path: notes_path.to_string_lossy().into_owned(),
+            };
+            storage
+                .replace_meeting_note(&meeting_id, draft)
+                .map_err(IpcError::from)?;
+
+            Ok(())
+        })
+        .await
+    }
+
     async fn meeting_list(
         &self,
         params: Option<MeetingListParams>,
@@ -295,6 +366,20 @@ impl IpcServer for IpcImpl {
         spawn_blocking_into_ipc("meeting.set_language", move || {
             storage
                 .update_meeting_language(&params.id, &params.language)
+                .map(to_protocol_meeting)
+                .map_err(IpcError::from)
+        })
+        .await
+    }
+
+    async fn meeting_rename(
+        &self,
+        params: MeetingRenameParams,
+    ) -> Result<Meeting, ErrorObjectOwned> {
+        let storage = self.services.storage.clone();
+        spawn_blocking_into_ipc("meeting.rename", move || {
+            storage
+                .rename_meeting(&params.meeting_id, &params.title)
                 .map(to_protocol_meeting)
                 .map_err(IpcError::from)
         })
