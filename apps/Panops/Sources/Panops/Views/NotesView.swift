@@ -15,12 +15,13 @@ import SwiftUI
 ///
 /// When `onSave` is supplied, a small Edit toggle appears in the top-right.
 /// Turning it on swaps the rendered view for a markdown `TextEditor` bound to
-/// the raw `notes.md` source. Turning it off (or otherwise exiting edit mode)
-/// autosaves the buffer via `onSave`; on success the view re-renders from the
-/// saved markdown (structured IR is bypassed until the next regeneration,
-/// which writes fresh `notes.json` + `notes.md`). On failure the edited text
-/// stays in the editor and the SaveStatus chip surfaces Retry — edits are
-/// never silently lost.
+/// the raw `notes.md` source. Turning it off — or the view being torn down
+/// mid-edit (a meeting switch or notes regeneration both reset NotesView's
+/// identity) — autosaves the buffer via `onSave`; on success the view
+/// re-renders from the saved markdown (structured IR is bypassed until the next
+/// regeneration, which writes fresh `notes.json` + `notes.md`). On failure the
+/// edited text stays in the editor and the SaveStatus chip surfaces Retry —
+/// edits are never silently lost.
 struct NotesView: View {
     let notes: StructuredNotes?
     let markdownFallback: String?
@@ -40,6 +41,13 @@ struct NotesView: View {
     /// manual edit is reflected immediately, even when `notes.json` still
     /// exists on disk (the structured IR becomes stale until regeneration).
     @State private var overriddenMarkdown: String? = nil
+    /// True once the editor buffer has been populated from an edit session.
+    /// Guards `commitIfDirty` so a teardown or toggle never persists the empty
+    /// initial buffer over real notes when the user never entered edit mode.
+    @State private var bufferLoaded = false
+    /// True while an autosave is in flight, so an edit-toggle racing a teardown
+    /// can't spawn two concurrent saves of the same buffer.
+    @State private var isSaving = false
 
     init(
         notes: StructuredNotes?,
@@ -107,13 +115,20 @@ struct NotesView: View {
                 // intact across subsequent toggle flaps within the same
                 // meeting so the user's in-progress text isn't lost if
                 // they flip Edit off and back on before saving.
-                if editorBuffer.isEmpty {
+                if !bufferLoaded {
                     editorBuffer = renderedMarkdown ?? ""
+                    bufferLoaded = true
                 }
             } else if wasEditing {
                 commitIfDirty()
             }
         }
+        // Persist on teardown. NotesView is identity-bound to the meeting +
+        // notesReloadTick in MeetingDetailView, so switching meetings or a
+        // notes regeneration tears this view down *without* `editing` toggling
+        // off — `commitIfDirty` would otherwise never run and an in-progress
+        // edit would be silently discarded.
+        .onDisappear { commitIfDirty() }
     }
 
     // MARK: - Edit toggle bar
@@ -147,17 +162,25 @@ struct NotesView: View {
 
     // MARK: - Save
 
-    /// Persist the buffer via the parent's `onSave`. No-op when the buffer
-    /// equals the current rendered markdown (nothing to save) or when a save
-    /// is already in flight. On failure, re-enters edit mode so the user can
-    /// Retry; on success, swaps the rendered view to the saved markdown.
+    /// Persist the buffer via the parent's `onSave`. No-op when the user never
+    /// entered edit mode, when the buffer equals the current rendered markdown
+    /// (nothing to save), or when a save is already in flight. On failure,
+    /// re-enters edit mode so the user can Retry; on success, swaps the
+    /// rendered view to the saved markdown.
     private func commitIfDirty() {
+        // Only persist content the user actually edited. Without this a
+        // teardown before the user ever entered edit mode would save the empty
+        // initial buffer over the real notes.
+        guard bufferLoaded else { return }
+        guard !isSaving else { return }
         let current = renderedMarkdown ?? ""
         guard editorBuffer != current else { return }
         guard let onSave else { return }
         let buffer = editorBuffer
+        isSaving = true
         Task {
             let ok = await onSave(buffer)
+            isSaving = false
             if ok {
                 overriddenMarkdown = buffer
             } else {
