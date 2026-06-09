@@ -993,6 +993,9 @@ fn extract_screenshots_post_recording(
 /// dir fails validation, the sidecar binary isn't resolvable, or the
 /// `recording.mov` the session claimed to write isn't on disk (a sign
 /// the sidecar's video writer silently failed).
+// Only the mac path (and the tests) build the plan; gate it so the
+// non-mac lib build doesn't flag it dead.
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, PartialEq)]
 struct ExtractPlan {
     sidecar_binary: std::path::PathBuf,
@@ -1002,6 +1005,7 @@ struct ExtractPlan {
     threshold: f32,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn resolve_extract_plan(
     services: &crate::server::EngineServices,
     meeting_id: &str,
