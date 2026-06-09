@@ -58,7 +58,13 @@ final class CapturePreviewController: NSObject, ObservableObject {
     private let sampleQueue = DispatchQueue(label: "ar.tzk.panops.preview.samples")
     private let audioQueue = DispatchQueue(label: "ar.tzk.panops.preview.audio")
     private lazy var observer = CapturePickerObserver(controller: self)
-    private var stream: SCStream?
+    /// Thread-safe `SCStream` storage held `nonisolated(unsafe)`. `SCStream`'s
+    /// async lifecycle methods (`updateConfiguration`/`stopCapture`) are
+    /// themselves nonisolated, so reading this slot to call them must not pull a
+    /// main-actor-region value into a background execution context (Swift 6.1
+    /// region isolation flags that). The slot is only ever mutated on the main
+    /// actor, so the unsynchronized access is safe in practice.
+    private nonisolated(unsafe) var stream: SCStream?
     private var output: PreviewStreamOutput?
     /// Bumped on every preview restart and on teardown. A `restartPreview` whose
     /// epoch is stale when `startCapture()` returns lost the race (a newer pick or
@@ -219,8 +225,12 @@ final class CapturePreviewController: NSObject, ObservableObject {
 
     private func updateStreamConfig() async {
         guard let filter = currentFilter, let stream else { return }
+        // Build the config before the await: `makeConfig` is nonisolated and
+        // returns a fresh (disconnected-region) value, so passing it to the
+        // nonisolated `updateConfiguration` doesn't send main-actor state.
+        let config = makeConfig(for: filter, sourceRect: sourceRect)
         do {
-            try await stream.updateConfiguration(makeConfig(for: filter))
+            try await stream.updateConfiguration(config)
         } catch {
             state = Self.mapStartError(error)
         }
@@ -243,23 +253,27 @@ final class CapturePreviewController: NSObject, ObservableObject {
         // A newer pick (or a teardown) superseded us while stopping the old stream.
         guard epoch == previewEpoch else { return }
         state = .starting
-        let config = makeConfig(for: filter)
+        let config = makeConfig(for: filter, sourceRect: sourceRect)
         let newOutput = PreviewStreamOutput(displayLayer: displayLayer, onAudioLevel: makeLevelSink())
-        let newStream = SCStream(filter: filter, configuration: config, delegate: nil)
         do {
-            try newStream.addStreamOutput(newOutput, type: .screen, sampleHandlerQueue: sampleQueue)
-            try newStream.addStreamOutput(newOutput, type: .audio, sampleHandlerQueue: audioQueue)
-            if #available(macOS 15.0, *) {
-                try newStream.addStreamOutput(newOutput, type: .microphone, sampleHandlerQueue: audioQueue)
-            }
-            try await newStream.startCapture()
+            // Create, wire, and start the stream off the main actor so its
+            // nonisolated async lifecycle methods never receive a main-actor
+            // value. `filter`/`config` cross in a Sendable box; the started
+            // stream comes back in a disconnected region we can adopt or stop.
+            let started = try await Self.makeStartedStream(
+                filter: UncheckedSendableBox(filter),
+                config: UncheckedSendableBox(config),
+                output: newOutput,
+                sampleQueue: sampleQueue,
+                audioQueue: audioQueue
+            )
             // If we lost the race during startCapture (newer pick or teardown),
             // discard this stream rather than overwriting the current state.
             guard epoch == previewEpoch else {
-                try? await newStream.stopCapture()
+                try? await started.stopCapture()
                 return
             }
-            stream = newStream
+            stream = started
             output = newOutput
             state = .live
         } catch {
@@ -267,6 +281,29 @@ final class CapturePreviewController: NSObject, ObservableObject {
             guard epoch == previewEpoch else { return }
             state = Self.mapStartError(error)
         }
+    }
+
+    /// Build, wire, and start an `SCStream` entirely off the main actor. The
+    /// stream and its non-`Sendable` `filter`/`config` are created and consumed
+    /// inside this `nonisolated` body, so `addStreamOutput`/`startCapture` (all
+    /// nonisolated) never receive a main-actor-isolated value. The
+    /// `@unchecked Sendable` `output` and the Sendable queues cross in freely;
+    /// the started stream returns in a disconnected region the caller adopts.
+    private nonisolated static func makeStartedStream(
+        filter: UncheckedSendableBox<SCContentFilter>,
+        config: UncheckedSendableBox<SCStreamConfiguration>,
+        output: PreviewStreamOutput,
+        sampleQueue: DispatchQueue,
+        audioQueue: DispatchQueue
+    ) async throws -> SCStream {
+        let stream = SCStream(filter: filter.value, configuration: config.value, delegate: nil)
+        try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: sampleQueue)
+        try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: audioQueue)
+        if #available(macOS 15.0, *) {
+            try stream.addStreamOutput(output, type: .microphone, sampleHandlerQueue: audioQueue)
+        }
+        try await stream.startCapture()
+        return stream
     }
 
     /// A `@Sendable` audio-level sink that hops each per-buffer dBFS reading back
@@ -287,7 +324,11 @@ final class CapturePreviewController: NSObject, ObservableObject {
         try? await stopping.stopCapture()
     }
 
-    private func makeConfig(for filter: SCContentFilter) -> SCStreamConfiguration {
+    /// `nonisolated` so its fresh `SCStreamConfiguration` lands in a
+    /// disconnected region and can be sent to the nonisolated stream lifecycle
+    /// methods without dragging main-actor state along. It reads only the filter
+    /// and the caller-supplied crop rect, never mutable instance state.
+    private nonisolated func makeConfig(for filter: SCContentFilter, sourceRect: CGRect?) -> SCStreamConfiguration {
         let scale = CGFloat(filter.pointPixelScale)
         let nativeW = max(filter.contentRect.width * scale, 1)
         let nativeH = max(filter.contentRect.height * scale, 1)
