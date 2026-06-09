@@ -23,9 +23,20 @@ pub trait Storage: Send + Sync {
         duration_ms: u64,
     ) -> Result<Meeting, StorageError>;
     fn update_meeting_language(&self, id: &str, language: &str) -> Result<Meeting, StorageError>;
+    fn rename_meeting(&self, id: &str, title: &str) -> Result<Meeting, StorageError>;
     fn delete_meeting(&self, id: &str) -> Result<(), StorageError>;
     fn create_note(&self, draft: NoteDraft) -> Result<Note, StorageError>;
     fn list_notes_for_meeting(&self, meeting_id: &str) -> Result<Vec<Note>, StorageError>;
+    /// Delete all existing note rows for `meeting_id` and insert the
+    /// supplied draft as the single current note. Returns the newly
+    /// inserted `Note` (with its `created_at` populated by the
+    /// adapter). Used by `notes.save` so a manual edit replaces the
+    /// pipeline-generated note rather than appending a second row.
+    fn replace_meeting_note(
+        &self,
+        meeting_id: &str,
+        draft: NoteDraft,
+    ) -> Result<Note, StorageError>;
     fn create_space(&self, name: &str) -> Result<Space, StorageError>;
     fn list_spaces(&self) -> Result<Vec<Space>, StorageError>;
     fn rename_space(&self, id: &str, name: &str) -> Result<(), StorageError>;

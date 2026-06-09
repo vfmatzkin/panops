@@ -25,8 +25,11 @@ pub fn run_suite<S: Storage>(adapter: &S) {
     list_returns_started_at_desc(adapter);
     update_meeting_ended_writes_duration(adapter);
     update_meeting_language_persists(adapter);
+    rename_meeting_persists_title(adapter);
     delete_meeting_cascades_to_notes(adapter);
     create_and_list_notes_for_meeting(adapter);
+    replace_meeting_note_replaces_existing(adapter);
+    replace_meeting_note_unknown_meeting_is_not_found(adapter);
     create_meeting_with_note_atomic_happy_path(adapter);
     create_meeting_with_note_rolls_back_on_note_collision(adapter);
     spaces_create_list_rename_delete(adapter);
@@ -213,6 +216,34 @@ fn update_meeting_language_persists<S: Storage>(adapter: &S) {
     assert_eq!(round.language, "es");
 }
 
+fn rename_meeting_persists_title<S: Storage>(adapter: &S) {
+    let id = "m_rename";
+    let _ = adapter
+        .create_meeting(draft(id, "Before", "2026-05-05T10:00:00+00:00"))
+        .unwrap();
+    let updated = adapter
+        .rename_meeting(id, "After")
+        .expect("rename_meeting should succeed");
+    assert_eq!(updated.title, "After");
+    // Other fields unchanged.
+    assert_eq!(updated.id, id);
+    assert_eq!(updated.language, "auto");
+
+    let round = adapter.get_meeting(id).unwrap();
+    assert_eq!(round.title, "After");
+
+    let err = adapter
+        .rename_meeting("does-not-exist", "X")
+        .expect_err("rename of unknown id should fail");
+    assert!(matches!(
+        err,
+        StorageError::NotFound {
+            kind: "meeting",
+            ..
+        }
+    ));
+}
+
 fn delete_meeting_cascades_to_notes<S: Storage>(adapter: &S) {
     let m = "m_del";
     let n = "n_del";
@@ -265,6 +296,93 @@ fn create_and_list_notes_for_meeting<S: Storage>(adapter: &S) {
         .expect("list_notes should succeed");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, "n_one");
+}
+
+fn replace_meeting_note_replaces_existing<S: Storage>(adapter: &S) {
+    let m = "m_replace_note";
+    let _ = adapter
+        .create_meeting(draft(m, "Replace Note", "2026-05-05T10:00:00+00:00"))
+        .unwrap();
+    let original = adapter
+        .create_note(NoteDraft {
+            id: "n_original".into(),
+            meeting_id: m.into(),
+            dialect: "notion-enhanced".into(),
+            content_md: "# original".into(),
+            primary_path: "/tmp/m_replace_note/notes.md".into(),
+        })
+        .expect("create original note");
+
+    let replaced = adapter
+        .replace_meeting_note(
+            m,
+            NoteDraft {
+                id: "n_replaced".into(),
+                meeting_id: m.into(),
+                dialect: "basic".into(),
+                content_md: "# edited by user".into(),
+                primary_path: "/tmp/m_replace_note/notes.md".into(),
+            },
+        )
+        .expect("replace_meeting_note should succeed");
+    assert_eq!(replaced.id, "n_replaced");
+    assert_eq!(replaced.content_md, "# edited by user");
+    assert_eq!(replaced.dialect, "basic");
+    assert!(!replaced.created_at.is_empty());
+    // created_at of the replacement must not be earlier than the
+    // original's — the replace is a fresh insert.
+    assert!(replaced.created_at >= original.created_at);
+
+    let rows = adapter
+        .list_notes_for_meeting(m)
+        .expect("list after replace");
+    assert_eq!(rows.len(), 1, "replace must leave exactly one note row");
+    assert_eq!(rows[0].id, "n_replaced");
+    assert_eq!(rows[0].content_md, "# edited by user");
+
+    // Replace again without any pre-existing row — should create.
+    adapter.delete_meeting(m).unwrap();
+    let m2 = "m_replace_note_fresh";
+    let _ = adapter
+        .create_meeting(draft(m2, "Fresh", "2026-05-05T11:00:00+00:00"))
+        .unwrap();
+    let fresh = adapter
+        .replace_meeting_note(
+            m2,
+            NoteDraft {
+                id: "n_fresh".into(),
+                meeting_id: m2.into(),
+                dialect: "basic".into(),
+                content_md: "# fresh".into(),
+                primary_path: "/tmp/m_fresh/notes.md".into(),
+            },
+        )
+        .expect("replace on meeting with no notes should create");
+    assert_eq!(fresh.content_md, "# fresh");
+    let rows = adapter.list_notes_for_meeting(m2).unwrap();
+    assert_eq!(rows.len(), 1);
+}
+
+fn replace_meeting_note_unknown_meeting_is_not_found<S: Storage>(adapter: &S) {
+    let err = adapter
+        .replace_meeting_note(
+            "does-not-exist",
+            NoteDraft {
+                id: "n_orphan".into(),
+                meeting_id: "does-not-exist".into(),
+                dialect: "basic".into(),
+                content_md: "x".into(),
+                primary_path: "/tmp/x.md".into(),
+            },
+        )
+        .expect_err("replace for unknown meeting must fail");
+    assert!(matches!(
+        err,
+        StorageError::NotFound {
+            kind: "meeting",
+            ..
+        }
+    ));
 }
 
 fn create_meeting_with_note_atomic_happy_path<S: Storage>(adapter: &S) {

@@ -614,6 +614,19 @@ impl Storage for InMemoryStorage {
         Ok(m.clone())
     }
 
+    fn rename_meeting(&self, id: &str, title: &str) -> Result<Meeting, StorageError> {
+        let mut inner = self.inner.lock().unwrap();
+        let m = inner
+            .meetings
+            .get_mut(id)
+            .ok_or_else(|| StorageError::NotFound {
+                id: id.into(),
+                kind: "meeting",
+            })?;
+        m.title = title.into();
+        Ok(m.clone())
+    }
+
     fn delete_meeting(&self, id: &str) -> Result<(), StorageError> {
         let mut inner = self.inner.lock().unwrap();
         if inner.meetings.remove(id).is_none() {
@@ -664,6 +677,44 @@ impl Storage for InMemoryStorage {
             .filter(|n| n.meeting_id == meeting_id)
             .cloned()
             .collect())
+    }
+
+    fn replace_meeting_note(
+        &self,
+        meeting_id: &str,
+        draft: NoteDraft,
+    ) -> Result<Note, StorageError> {
+        if draft.meeting_id != meeting_id {
+            return Err(StorageError::Sql {
+                message: "replace_meeting_note: draft.meeting_id must match meeting_id".into(),
+            });
+        }
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.meetings.contains_key(meeting_id) {
+            return Err(StorageError::NotFound {
+                id: meeting_id.into(),
+                kind: "meeting",
+            });
+        }
+        // Remove any existing notes for this meeting, mirroring the
+        // rusqlite adapter's DELETE-before-INSERT transaction.
+        inner.notes.retain(|_, n| n.meeting_id != meeting_id);
+        if inner.notes.contains_key(&draft.id) {
+            return Err(StorageError::AlreadyExists {
+                id: draft.id,
+                kind: "note",
+            });
+        }
+        let n = Note {
+            id: draft.id.clone(),
+            meeting_id: draft.meeting_id,
+            dialect: draft.dialect,
+            content_md: draft.content_md,
+            primary_path: draft.primary_path,
+            created_at: Utc::now().to_rfc3339(),
+        };
+        inner.notes.insert(draft.id, n.clone());
+        Ok(n)
     }
 
     fn create_space(&self, name: &str) -> Result<Space, StorageError> {

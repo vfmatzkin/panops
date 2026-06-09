@@ -507,6 +507,24 @@ impl Storage for RusqliteStorage {
         self.get_meeting(id)
     }
 
+    fn rename_meeting(&self, id: &str, title: &str) -> Result<Meeting, StorageError> {
+        let conn = lock(&self.conn)?;
+        let n = conn
+            .execute(
+                "UPDATE meeting SET title = ?2 WHERE id = ?1",
+                params![id, title],
+            )
+            .map_err(StorageError::sql)?;
+        if n == 0 {
+            return Err(StorageError::NotFound {
+                id: id.into(),
+                kind: "meeting",
+            });
+        }
+        drop(conn);
+        self.get_meeting(id)
+    }
+
     fn delete_meeting(&self, id: &str) -> Result<(), StorageError> {
         let conn = lock(&self.conn)?;
         let n = conn
@@ -599,6 +617,82 @@ impl Storage for RusqliteStorage {
             out.push(r.map_err(StorageError::sql)?);
         }
         Ok(out)
+    }
+
+    fn replace_meeting_note(
+        &self,
+        meeting_id: &str,
+        draft: NoteDraft,
+    ) -> Result<Note, StorageError> {
+        if draft.meeting_id != meeting_id {
+            return Err(StorageError::Sql {
+                message: "replace_meeting_note: draft.meeting_id must match meeting_id".into(),
+            });
+        }
+        let mut conn = lock(&self.conn)?;
+        let tx = conn.transaction().map_err(StorageError::sql)?;
+        // FK guard: surface NotFound instead of a raw FK error if the
+        // meeting row doesn't exist.
+        let exists: bool = tx
+            .query_row(
+                "SELECT 1 FROM meeting WHERE id = ?1",
+                params![meeting_id],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(StorageError::sql)?
+            .unwrap_or(false);
+        if !exists {
+            return Err(StorageError::NotFound {
+                id: meeting_id.into(),
+                kind: "meeting",
+            });
+        }
+        // Delete any prior notes for this meeting. The FK cascade
+        // would do this on meeting delete, but here the meeting stays
+        // and the note row is replaced wholesale.
+        tx.execute(
+            "DELETE FROM note WHERE meeting_id = ?1",
+            params![meeting_id],
+        )
+        .map_err(StorageError::sql)?;
+
+        let created_at = Utc::now().to_rfc3339();
+        let result = tx.execute(
+            "INSERT INTO note (id, meeting_id, dialect, content_md, primary_path, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                draft.id,
+                draft.meeting_id,
+                draft.dialect,
+                draft.content_md,
+                draft.primary_path,
+                created_at
+            ],
+        );
+        if let Err(e) = result {
+            return Err(match e {
+                rusqlite::Error::SqliteFailure(c, _)
+                    if c.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    StorageError::AlreadyExists {
+                        id: draft.id,
+                        kind: "note",
+                    }
+                }
+                other => StorageError::sql(other),
+            });
+        }
+        tx.commit().map_err(StorageError::sql)?;
+
+        Ok(Note {
+            id: draft.id,
+            meeting_id: draft.meeting_id,
+            dialect: draft.dialect,
+            content_md: draft.content_md,
+            primary_path: draft.primary_path,
+            created_at,
+        })
     }
 
     fn create_space(&self, name: &str) -> Result<Space, StorageError> {
