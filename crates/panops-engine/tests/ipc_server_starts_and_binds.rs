@@ -2,15 +2,13 @@
 
 mod common;
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
 use tokio::net::UnixStream;
 
-use common::wait_with_timeout;
-
-const BIN: &str = env!("CARGO_BIN_EXE_panops-engine");
+use common::{engine_serve_command, wait_with_timeout};
 
 fn wait_for_socket(path: &std::path::Path, deadline: Duration) -> bool {
     let start = Instant::now();
@@ -28,9 +26,7 @@ fn server_binds_socket_and_shuts_down_on_sigterm() {
     let dir = tempdir().unwrap();
     let socket = dir.path().join("engine.sock");
 
-    let mut child = Command::new(BIN)
-        .args(["serve", "--socket"])
-        .arg(&socket)
+    let mut child = engine_serve_command(&dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

@@ -16,7 +16,7 @@
 pub mod notes_pipeline;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, ExitStatus};
+use std::process::{Child, Command, ExitStatus};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,27 @@ use panops_core::conformance::fakes::InMemoryStorage;
 use panops_core::storage::Storage;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
+
+const ENGINE_BIN: &str = env!("CARGO_BIN_EXE_panops-engine");
+
+/// Returns a `Command` for `panops-engine serve` with `--socket` and
+/// `--data-dir` pre-filled from the given `TempDir`. The socket path
+/// is `<dir>/engine.sock`. Tests MUST hold the `TempDir` until after
+/// the spawned engine exits — otherwise the dir is reaped while the
+/// engine still expects it.
+///
+/// Centralizing the subprocess builder here prevents regression of
+/// issue #228: a test that spawns the engine without `--data-dir`
+/// opens the user's REAL registry at `~/Library/Application Support/panops/`.
+pub fn engine_serve_command(dir: &TempDir) -> Command {
+    let socket = dir.path().join("engine.sock");
+    let mut cmd = Command::new(ENGINE_BIN);
+    cmd.args(["serve", "--socket"])
+        .arg(&socket)
+        .arg("--data-dir")
+        .arg(dir.path());
+    cmd
+}
 
 /// Returns a `(TempDir, Arc<dyn Storage>, PathBuf)` triple for tests.
 /// The caller MUST hold the `TempDir` until after the test ends so the
