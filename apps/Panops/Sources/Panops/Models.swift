@@ -688,6 +688,32 @@ struct MeetingAssignParams: Encodable {
     }
 }
 
+/// Outgoing params for `ipc.meeting.rename`. Mirrors
+/// `panops_protocol::MeetingRenameParams` — the engine updates the
+/// `meeting.title` column and returns the refreshed `Meeting`.
+struct MeetingRenameParams: Encodable {
+    let meetingId: String
+    let title: String
+
+    enum CodingKeys: String, CodingKey {
+        case meetingId = "meeting_id"
+        case title
+    }
+}
+
+/// Outgoing params for `ipc.notes.save`. Mirrors
+/// `panops_protocol::NotesSaveParams` — the engine writes the markdown to
+/// `<meeting_dir>/notes.md` (atomic rename) and replaces the `note` row.
+struct NotesSaveParams: Encodable {
+    let meetingId: String
+    let markdown: String
+
+    enum CodingKeys: String, CodingKey {
+        case meetingId = "meeting_id"
+        case markdown
+    }
+}
+
 /// Optional filters for `ipc.meeting.list`. Mirrors
 /// `panops-protocol::MeetingListParams`. Unset filter fields are omitted on
 /// the wire (synthesized `encodeIfPresent`), which the engine treats as "no

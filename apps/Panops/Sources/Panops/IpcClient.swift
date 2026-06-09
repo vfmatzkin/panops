@@ -648,6 +648,25 @@ actor IpcClient {
         )
     }
 
+    /// `ipc.meeting.rename` — update a meeting's title. Returns the refreshed
+    /// `Meeting` row so the caller can update local state without a follow-up
+    /// `meeting.get`.
+    func renameMeeting(meetingId: String, title: String) async throws -> Meeting {
+        return try await sendRequest(
+            method: "ipc.meeting.rename",
+            params: MeetingRenameParams(meetingId: meetingId, title: title)
+        )
+    }
+
+    /// `ipc.notes.save` — write the supplied markdown to `<meeting_dir>/notes.md`
+    /// and replace the meeting's `note` row. Void result.
+    func saveNotes(meetingId: String, markdown: String) async throws {
+        try await sendRequestVoid(
+            method: "ipc.notes.save",
+            params: NotesSaveParams(meetingId: meetingId, markdown: markdown)
+        )
+    }
+
     /// `ipc.space.create` — create a space, returns the new `Space`.
     func spaceCreate(name: String) async throws -> Space {
         return try await sendRequest(
