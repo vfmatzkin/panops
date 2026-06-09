@@ -8,6 +8,8 @@
 
 That sentence is a compressed restatement of the maintainer's genesis charter (verbatim source: `docs/superpowers/conversations/2026-04-30-f0690f89.md:53`). It is the highest-priority source of truth in the repo, above any spec, plan, or AGENTS.md rule.
 
+**Amendment 2026-06-09 (maintainer decision): video-first capture, deferred processing.** The recording (video + audio) is the primary artifact. Stopping a recording must always yield a saved, playable recording; no processing step can put that at risk. Transcription, diarization, and notes are a second step that runs on demand and fully offline, minutes or days later. Organization (Spaces / Projects / Tags, calendar-style views) is the shell around the recordings. Screenshots are derived from the recorded video, not captured as a parallel system. There is no live-transcription requirement of any kind.
+
 ## Why it exists
 
 - **For the maintainer first.** A tool he'll actually use for his own bilingual (EN/ES) meetings, on his own Mac. Dogfooding is the validation.
@@ -18,9 +20,9 @@ That sentence is a compressed restatement of the maintainer's genesis charter (v
 
 v0.1 is **not** "all 7 slices shipped." It's **a Mac app the maintainer would actually use for his next meeting.** Six observable criteria:
 
-1. ☐ Open the Mac app, hit "record", run a real bilingual meeting → audio + screenshots captured.
-2. ☐ Stop recording → diarized transcript appears in the app.
-3. ☐ "Generate notes" → markdown file with frontmatter, sections with screenshots, action items, no narrative/key-points duplication.
+1. ☐ Open the Mac app, hit "record", run a real bilingual meeting → video + audio captured.
+2. ☐ Stop recording → the recording is saved and playable immediately; a diarized transcript can be generated from it on demand, offline.
+3. ☐ "Generate notes" → markdown file with frontmatter, sections with screenshots extracted from the recording, action items, no narrative/key-points duplication.
 4. ☐ Notes file persists across app restarts (SQLite + on-disk markdown).
 5. ☐ Output passes the maintainer's *"would I actually use this for my next meeting?"* test on a real bilingual meeting.
 6. ☐ Ad-hoc-signed `.app`, **brew-installable** (`brew install --cask vfmatzkin/panops/panops`), runs on a clean Mac that has Homebrew; a Developer-ID-**notarized** `.app` is a later distribution channel once a paid account exists.
@@ -34,7 +36,7 @@ Criterion #5 is the only one not mechanically verifiable — it's the gate that 
 - Not Notion/Slack/Obsidian export (filed as debt; future).
 - Not Linux or Windows.
 - Not iOS / iPad.
-- Not real-time streaming UI (live transcript shows during recording is fine; live partials are bonus, not required).
+- Not real-time transcription. Recording is live; transcription and notes are an offline second step (2026-06-09 amendment). No live transcript UI, no partials.
 - Not a Notion-style enhanced-markdown viewer (the markdown gets WRITTEN as `NotionEnhanced` dialect by default; opening it elsewhere is the user's problem).
 - Not Developer-ID-notarized (ad-hoc signed for v0.1; notarized `.app` is a later distribution channel — see slice 16 deferred items).
 
@@ -43,7 +45,7 @@ Criterion #5 is the only one not mechanically verifiable — it's the gate that 
 Two architectural surfaces that must exist for v0.1 to be v0.1:
 
 - **Anchor A — Mac shell + ASR sidecar.** SwiftUI app + WhisperKit / FluidAudio sidecars. Without this, panops is a CLI for devs, not a product.
-- **Anchor B — Live capture.** ScreenCaptureKit + audio + screenshot sampling. Without this, criteria #1-2 are unmet.
+- **Anchor B — Live capture.** ScreenCaptureKit + audio + video recording, with screenshots extracted from the recorded video (2026-06-09 amendment). Without this, criteria #1-2 are unmet.
 
 Anchors block v0.1. Trajectory slices toward them are amendable (see `AGENTS.md` → Trajectory and anchors).
 
@@ -66,4 +68,4 @@ These are absolute. They apply to every slice. Any drift away from them is a nor
 - **If a slice surfaces a constraint that conflicts with a north-star item**: that's a *blocking* alignment-audit finding. Amendment requires a maintainer decision recorded in this file with a date stamp. Mid-slice silent amendments are forbidden.
 - **If trajectory shifts** (a slice gets added/removed/reordered): amend `AGENTS.md` → Trajectory and anchors, NOT this file. Trajectory is amendable; the goal isn't.
 
-Last amended: 2026-06-06 (criterion #6: brew-installable for v0.1, notarized deferred).
+Last amended: 2026-06-09 (video-first capture + deferred offline processing; criteria #1-3 reworded to match).

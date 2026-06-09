@@ -41,7 +41,7 @@ gh issue list --label type:debt --state open --limit 50
 gh project item-list 1 --owner vfmatzkin --format json
 ```
 
-Mac app build commands land in slice 06.
+Mac app: `swift build --package-path apps/Panops` + `swift test --package-path apps/Panops`. Quick UI run: `scripts/dev.sh`. Signed bundle (needed for capture permissions): `scripts/package.sh` then open `dist/Panops.app`.
 
 ## Execution discipline (MUST follow)
 
@@ -151,10 +151,10 @@ When Copilot reviewer is rate-limited (or absent), the trio above replaces the s
 
 The path to v0.1 is **not** a fixed cascade. Slices are plot points that get added, reordered, or split as alignment audits surface drift. Two **anchors** are non-negotiable for v0.1:
 
-- **Anchor A — Mac shell + ASR sidecar.** First time the product is usable in app form. SwiftUI app under `apps/Panops/`, sidecars `apps/panops-asr-mac/` and `apps/panops-llm-mac/`.
-- **Anchor B — Live capture.** ScreenCaptureKit + audio + screenshot sampling. Risk-last surface.
+- **Anchor A — Mac shell + ASR sidecar.** First time the product is usable in app form. SwiftUI app under `apps/Panops/`, sidecars `apps/panops-asr-mac/` and `apps/panops-llm-mac/`. ✅ Shipped (slices 09–10).
+- **Anchor B — Live capture.** ScreenCaptureKit + audio + video recording + screenshots extracted from the video. Risk-last surface. ✅ Shipped (slice 11).
 
-Everything else is composable trajectory toward v0.1, decided slice-by-slice. **NEVER** treat the trajectory list below as commitment — it's current best understanding, amendable at every audit.
+Both anchors are shipped. Per the 2026-06-09 north-star amendment, the product model is **video-first capture + deferred offline processing**: the recording is the primary artifact, organization (Spaces/Projects/Tags) is the shell, and transcription/notes are an on-demand second step. Everything else is composable trajectory toward v0.1, decided slice-by-slice. **NEVER** treat the trajectory list below as commitment — it's current best understanding, amendable at every audit.
 
 ### Shipped (history)
 
@@ -165,13 +165,17 @@ Everything else is composable trajectory toward v0.1, decided slice-by-slice. **
 5. IPC — JSON-RPC + WebSocket over UDS, Rust test client.
 6. SQLite storage + meeting lifecycle — `Storage` port, single `panops.db` registry with `meeting + note` tables, six new IPC `meeting.*` methods, per-meeting directories at `meetings/<uuid>/`. Per-meeting `meeting.db` (segment/speaker/screenshot/job tables) deferred to Anchor B.
 7. VAD-aware multilingual ASR — `Vad` port, `WhisperVad` adapter, samples-based `AsrProvider`, per-region language detection. Closes the multilingual-day-1 north-star gap confirmed on `2026-05-08 19-04-03.mov`.
+8. Confidence-recursive ASR — hybrid trigger (per-segment confidence + 30s duration force-split) for continuous-speech bilingual code-switching. Closes the mid-utterance EN↔ES gap slice 07 left open.
+9. Mac shell walking skeleton — SwiftUI app at `apps/Panops/` driving the engine over UDS (one-shot HTTP-POST JSON-RPC + filesystem polling for job completion). First time panops is usable as an app. **Anchor A, part 1.**
+10. WhisperKit ASR sidecar — `apps/panops-asr-mac/`, CoreML+Metal-backed `AsrProvider`; the macOS engine selects it over `whisper-rs` automatically (`whisper-rs` stays for CI + portable fallback). Closes the Apple-Silicon perf gap. **Anchor A, part 2.**
+11. Live capture + video recording — capture sidecar `apps/panops-capture-mac/` (ScreenCaptureKit), source picker + preview in the app, `recording.mov` as the primary artifact, screenshots extracted from the video post-recording. Plus Phase B organization (Spaces/Projects/Tags), rendered notes, editing + autosave. **Anchor B.**
 
 ### Current trajectory toward v0.1 (amendable)
 
-- **Real-meeting calibration** — #14 ASR threshold, #18 model fallback, #19 diar coverage. Run on a real bilingual meeting. Blocks v0.1 acceptance #5. Followup: confidence-based per-region recursion (deferred from slice 07) — if VAD+ASR returns low-confidence segments, re-run with a tighter VAD gap threshold or larger region window.
-- **Anchor A — Mac shell + ASR sidecar.** First time the product is usable in app form. SwiftUI app under `apps/Panops/`, sidecars `apps/panops-asr-mac/` and `apps/panops-llm-mac/`.
-- **Anchor B — Live capture.** ScreenCaptureKit + audio + screenshot sampling. Risk-last surface.
+- **Real-meeting calibration** — #14 ASR threshold, #18 model fallback, #19 diar coverage. Run on a real bilingual meeting. Blocks v0.1 acceptance #5. (Confidence-based per-region recursion, the slice-07 follow-up, shipped in slice 08.)
+- **Codebase cleanup** — dead-code purge (window-picker chain, dormant event variants, `meeting.set_language`, `is_partial`), god-file splits (`ContentView.swift`, `handlers.rs`), CLI/IPC notes-pipeline unification, #238/#228 hardening. Aligns the codebase with the video-first pivot. **Active.**
 - **Real-meeting smoke** — end-to-end real bilingual meeting. Inevitably surfaces issues. Don't pre-empt.
+- **Calendar view** — calendar-style browsing of recordings on top of the Phase B org model (Spaces/Projects/Tags). Additive UI slice.
 - **Package + sign + notarize** — `scripts/package.sh`, code signing, notarization. v0.1 acceptance #6.
 - **v0.1 release** — tag, release notes, public README polish.
 
