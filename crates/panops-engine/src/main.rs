@@ -284,14 +284,15 @@ fn run_notes(
         }
     };
 
-    // CLI-specific: the user passed an explicit `--screenshots` dir, so
-    // a missing dir is a real mistake worth surfacing. The shared
-    // helper treats missing-as-empty (the IPC path needs that for
-    // freshly-started meetings) — we do the existence check up front
-    // to preserve the CLI's loud-failure contract.
+    // CLI-specific: the user passed an explicit `--screenshots` dir, so a
+    // missing path OR a non-directory (e.g. a file) is a real mistake worth
+    // surfacing loudly. The shared helper treats missing-as-empty (the IPC
+    // path needs that for freshly-started meetings) and swallows mid-read
+    // errors as empty, so we do the up-front `is_dir` check here to keep the
+    // CLI's loud-failure behavior for a bad `--screenshots` argument.
     let screenshots = match screenshots_dir.as_ref() {
-        Some(d) if !d.exists() => {
-            return Err((1, format!("screenshots dir not found: {d:?}")));
+        Some(d) if !d.is_dir() => {
+            return Err((1, format!("--screenshots is not a directory: {d:?}")));
         }
         Some(d) => panops_engine::screenshots::collect_screenshots(d, transcript.audio_duration_ms),
         None => Vec::new(),
