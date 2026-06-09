@@ -12,5 +12,5 @@ mod screencapturekit_capture;
 mod whisperkit_asr;
 
 pub use foundation_llm::{FoundationLlm, ProbeResult};
-pub use screencapturekit_capture::ScreenCaptureKitCapture;
+pub use screencapturekit_capture::{ScreenCaptureKitCapture, extract_screenshots_from_video};
 pub use whisperkit_asr::WhisperKitAsr;

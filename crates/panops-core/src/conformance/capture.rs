@@ -292,6 +292,9 @@ fn stop_session_not_found<C: Capture>(adapter: &C) {
         meeting_id: "nonexistent_session".into(),
         started_at_ms: 0,
         capture_target: CaptureTarget::Display { display_id: 0 },
+        record_video: false,
+        screenshot_interval_ms: 500,
+        screenshot_threshold: 0.15,
     };
     let err = adapter
         .stop_capture(&fake_session)

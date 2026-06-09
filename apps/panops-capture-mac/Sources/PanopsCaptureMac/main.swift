@@ -86,11 +86,17 @@ if CommandLine.arguments.contains("--extract-screenshots") {
 
 /// A live capture: the SCStream recorder + the screen-frame screenshotter,
 /// keyed by the meeting that started it.
+///
+/// `screenshotter` is optional: Stage B of the screenshots-from-video
+/// design skips the live sampler when `record_video == true` so the
+/// engine's post-recording `--extract-screenshots` pass is the single
+/// source of screenshot truth. For no-video recordings (audio-only
+/// fallback) the screenshotter is still constructed and used as before.
 final class CaptureSession {
     let meetingId: String
     let recorder: Recorder
-    let screenshotter: Screenshotter
-    init(meetingId: String, recorder: Recorder, screenshotter: Screenshotter) {
+    let screenshotter: Screenshotter?
+    init(meetingId: String, recorder: Recorder, screenshotter: Screenshotter?) {
         self.meetingId = meetingId
         self.recorder = recorder
         self.screenshotter = screenshotter
@@ -222,11 +228,22 @@ while !shutdownRequested, let line = readLine(strippingNewline: true) {
                 outputHeight: params.height,
                 region: target.regionRect
             )
-            let screenshotter = try Screenshotter(
-                dir: params.screenshotsDir ?? FileManager.default.temporaryDirectory.path,
-                intervalMs: params.screenshotIntervalMs ?? 500,
-                threshold: params.screenshotThreshold ?? 0.15
-            )
+            // Stage B (screenshots-from-video): when `record_video` is on,
+            // the engine's post-recording `--extract-screenshots` pass is
+            // the single source of screenshot truth. Skip the live
+            // `Screenshotter` so the screen isn't sampled twice. For
+            // no-video recordings the live sampler is the only source
+            // and still runs as before.
+            let screenshotter: Screenshotter?
+            if params.recordVideo == true {
+                screenshotter = nil
+            } else {
+                screenshotter = try Screenshotter(
+                    dir: params.screenshotsDir ?? FileManager.default.temporaryDirectory.path,
+                    intervalMs: params.screenshotIntervalMs ?? 500,
+                    threshold: params.screenshotThreshold ?? 0.15
+                )
+            }
             try await recorder.start(screenshotter: screenshotter)
             current = CaptureSession(
                 meetingId: meetingId, recorder: recorder, screenshotter: screenshotter
@@ -254,10 +271,17 @@ while !shutdownRequested, let line = readLine(strippingNewline: true) {
         }
         do {
             let (systemPath, micPath, durationMs) = try await session.recorder.stop()
+            // When the live Screenshotter was skipped (Stage B, video
+            // recordings) this returns `[]` — the engine's post-recording
+            // `--extract-screenshots` pass writes the JPEGs directly into
+            // the same screenshots dir and reports them via its own
+            // stdout. The wire contract is preserved: `screenshot_paths`
+            // is always a (possibly empty) array.
+            let screenshotPaths = session.screenshotter?.keptPaths() ?? []
             let result = StoppedResult(
                 systemAudioPath: systemPath,
                 micAudioPath: micPath,
-                screenshotPaths: session.screenshotter.keptPaths(),
+                screenshotPaths: screenshotPaths,
                 durationMs: durationMs
             )
             current = nil
