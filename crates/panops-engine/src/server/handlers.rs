@@ -732,7 +732,19 @@ impl IpcServer for IpcImpl {
                     match extract_screenshots_post_recording(
                         &services, &recording_id, &session,
                     ) {
-                        Ok(paths) => paths,
+                        Ok(paths) => {
+                            // A video recording that yields zero screenshots is
+                            // almost always a regression: `recording.mov` has no
+                            // video frames to decode (the empty-video failure
+                            // mode). Surface it instead of failing silently.
+                            if paths.is_empty() {
+                                tracing::warn!(
+                                    meeting_id = %recording_id,
+                                    "video recording produced zero screenshots; recording.mov may contain no video frames"
+                                );
+                            }
+                            paths
+                        }
                         Err(message) => {
                             tracing::warn!(
                                 meeting_id = %recording_id,
