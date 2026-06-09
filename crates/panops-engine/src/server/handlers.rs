@@ -1385,9 +1385,18 @@ pub(super) fn run_notes_pipeline(
     };
 
     let started_at = chrono::Local::now().fixed_offset();
+    // Pull any screenshots the capture pipeline dropped into the
+    // meeting's `screenshots/` subdir. Empty vec when the dir is
+    // missing or has no files — same as the pre-fix state for
+    // screenshot-less meetings, so this never regresses the
+    // no-screenshots path.
+    let screenshots = crate::screenshots::collect_screenshots(
+        &out_dir.join("screenshots"),
+        transcript.audio_duration_ms,
+    );
     let input = NotesInput {
         transcript: transcript.segments,
-        screenshots: Vec::new(),
+        screenshots,
         meeting_metadata: MeetingMetadata {
             started_at,
             duration_ms: transcript.audio_duration_ms,
@@ -2225,5 +2234,207 @@ mod recording_auto_generate_tests {
             stopped.notes_job_id.is_some(),
             "auto-generate with a ready provider must surface the enqueued notes job id"
         );
+    }
+}
+
+#[cfg(test)]
+mod notes_screenshots_integration_tests {
+    //! End-to-end regression test for the IPC notes pipeline's screenshot
+    //! wiring. The original bug hardcoded `screenshots: Vec::new()` at
+    //! the NotesInput construction site, so the app's recorded meetings
+    //! got notes with NO screenshots even when the capture sidecar had
+    //! dropped JPEGs into the meeting's `screenshots/` subdir. The CLI
+    //! path worked because it called `collect_screenshots` directly.
+    //!
+    //! These tests run `run_notes_pipeline` end-to-end against
+    //! in-memory fakes and verify the resulting `notes.json` sidecar
+    //! carries (or doesn't carry) screenshots to match what's on disk.
+
+    use super::*;
+    use panops_core::conformance::fakes::{
+        FakeNotesExporter, InMemoryStorage, KnownRegionsFake, KnownTurnsFake, TranscriptFileFake,
+    };
+    use panops_core::llm::{LlmError, LlmProvider, LlmRequest, LlmResponse};
+    use panops_core::notes::ir::StructuredNotes;
+    use std::sync::Arc;
+    use tokio::sync::broadcast;
+
+    /// Canned LLM that returns the right JSON shape for the two system
+    /// prompts the notes pipeline emits (section narrative + frontmatter).
+    /// Mirrors `BlockingSectionLlm` from the concurrency tests but
+    /// without the blocking probe.
+    struct FixedNotesLlm;
+
+    impl LlmProvider for FixedNotesLlm {
+        fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
+            let system = req.system.as_deref().unwrap_or_default();
+            if system.contains("meeting-notes writer") {
+                return Ok(LlmResponse::Json(serde_json::json!({
+                    "title": "Screenshot wiring fix",
+                    "narrative_md": "The team reviewed the notes pipeline fix.",
+                    "key_points": ["Screenshots now reach the notes generator"],
+                    "action_items": [{"description": "Ship the fix", "owner": null}]
+                })));
+            }
+            if system.contains("meeting-notes editor") {
+                return Ok(LlmResponse::Json(serde_json::json!({
+                    "title": "Screenshot wiring review",
+                    "tags": ["notes-pipeline"]
+                })));
+            }
+            Err(LlmError::Provider(format!(
+                "FixedNotesLlm: unexpected prompt system: {system:?}"
+            )))
+        }
+    }
+
+    fn ready_services(data_dir: &std::path::Path) -> crate::server::EngineServices {
+        crate::server::EngineServices::ready(
+            Arc::new(FixedNotesLlm),
+            Arc::new(InMemoryStorage::new()),
+            data_dir.to_path_buf(),
+            Arc::new(TranscriptFileFake::from_text(
+                "The team reviewed the screenshot pipeline fix.",
+                Some("en"),
+            )),
+            Arc::new(KnownTurnsFake),
+            Arc::new(FakeNotesExporter),
+            Arc::new(KnownRegionsFake::default()),
+        )
+    }
+
+    fn audio_fixture() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("repo root above crates/panops-engine")
+            .join("tests")
+            .join("fixtures")
+            .join("audio")
+            .join("en_30s.wav")
+    }
+
+    /// Register a meeting and create its `<data_dir>/meetings/<id>/screenshots/`
+    /// layout. Returns the meeting id and its dir. Mirrors the FS state
+    /// `meeting.start` + capture would produce, minus the sidecar.
+    fn seed_meeting_with_screenshots(
+        services: &crate::server::EngineServices,
+        fixture_shots: &[&str],
+    ) -> (String, PathBuf) {
+        let (id, dir) = create_meeting_dir_and_row(
+            services.storage.as_ref(),
+            &services.data_dir,
+            "screenshot-fix fixture".into(),
+            "en".into(),
+        )
+        .expect("create meeting dir+row");
+        let shots_dir = dir.join("screenshots");
+        for name in fixture_shots {
+            std::fs::write(shots_dir.join(name), b"fake-jpeg-bytes").expect("write fixture");
+        }
+        (id, dir)
+    }
+
+    #[test]
+    fn ipc_notes_pipeline_includes_screenshots_from_meeting_dir() {
+        let data_dir = tempfile::tempdir().expect("temp data dir");
+        let services = ready_services(data_dir.path());
+        let (meeting_id, meeting_dir) =
+            seed_meeting_with_screenshots(&services, &["001.jpg", "002.jpg", "003.jpg"]);
+
+        let (events_tx, _rx) = broadcast::channel(16);
+        let params = NotesGenerateParams {
+            audio: audio_fixture().to_string_lossy().into_owned(),
+            dialect: Some(NotesDialect::Basic),
+            llm_provider: None,
+            llm_model: None,
+            no_diarize: Some(true),
+            language: Some("en".into()),
+            meeting_id: Some(meeting_id),
+        };
+
+        let result = run_notes_pipeline(&services, &params, &events_tx, "test-shot-job")
+            .expect("notes.generate should succeed");
+
+        // The pipeline writes `notes.json` alongside `notes.md`. The
+        // sidecar carries the per-section screenshot list — that's what
+        // we assert on, because the wire-level `NotesGenerateResult`
+        // only surfaces file paths.
+        let sidecar = meeting_dir.join("notes.json");
+        assert!(
+            sidecar.exists(),
+            "notes.json sidecar missing at {sidecar:?}; primary was {}",
+            result.primary_file
+        );
+        let body = std::fs::read_to_string(&sidecar).expect("read notes.json");
+        let notes: StructuredNotes = serde_json::from_str(&body).expect("parse notes.json");
+
+        let all_shots: Vec<_> = notes.sections.iter().flat_map(|s| &s.screenshots).collect();
+        assert!(
+            !all_shots.is_empty(),
+            "notes.json must carry screenshots; got zero across {} sections (the old Vec::new() bug)",
+            notes.sections.len(),
+        );
+        // Every screenshot path must point into the meeting's screenshots subdir.
+        let shots_dir = meeting_dir.join("screenshots");
+        for shot in &all_shots {
+            assert!(
+                shot.path.starts_with(&shots_dir),
+                "screenshot path {:?} does not live under meeting screenshots dir {:?}",
+                shot.path,
+                shots_dir,
+            );
+        }
+        // All three seeded files must show up (timestamps depend on
+        // transcript duration, but paths are deterministic).
+        let basenames: Vec<String> = all_shots
+            .iter()
+            .filter_map(|s| s.path.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        for expected in ["001.jpg", "002.jpg", "003.jpg"] {
+            assert!(
+                basenames.iter().any(|n| n == expected),
+                "expected screenshot {expected} missing from notes; got {basenames:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn ipc_notes_pipeline_succeeds_with_no_screenshots_on_disk() {
+        // Regression guard for the other side of the fix: a meeting
+        // with no screenshots on disk must still produce valid notes.
+        // Before the fix, this path worked only by accident (the
+        // hardcoded Vec::new() happened to be the right answer for
+        // screenshot-less meetings). After the fix it still works
+        // because `collect_screenshots` returns empty on a missing
+        // dir — but we pin that behaviour with an explicit assertion.
+        let data_dir = tempfile::tempdir().expect("temp data dir");
+        let services = ready_services(data_dir.path());
+        let (meeting_id, meeting_dir) = seed_meeting_with_screenshots(&services, &[]);
+
+        let (events_tx, _rx) = broadcast::channel(16);
+        let params = NotesGenerateParams {
+            audio: audio_fixture().to_string_lossy().into_owned(),
+            dialect: Some(NotesDialect::Basic),
+            llm_provider: None,
+            llm_model: None,
+            no_diarize: Some(true),
+            language: Some("en".into()),
+            meeting_id: Some(meeting_id),
+        };
+
+        let result = run_notes_pipeline(&services, &params, &events_tx, "test-no-shots-job")
+            .expect("notes.generate must succeed even with zero screenshots");
+
+        let sidecar = meeting_dir.join("notes.json");
+        let body = std::fs::read_to_string(&sidecar).expect("read notes.json");
+        let notes: StructuredNotes = serde_json::from_str(&body).expect("parse notes.json");
+
+        let total_shots: usize = notes.sections.iter().map(|s| s.screenshots.len()).sum();
+        assert_eq!(
+            total_shots, 0,
+            "no screenshots were seeded; notes must not invent any"
+        );
+        assert!(!result.primary_file.is_empty());
     }
 }
