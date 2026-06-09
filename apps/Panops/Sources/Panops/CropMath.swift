@@ -11,8 +11,9 @@ struct CaptureRect: Equatable {
 
 /// Map a crop rectangle drawn in preview space to a `CaptureRect` in the source's
 /// own coordinate space, by scaling each axis independently by
-/// `displaySize / previewSize`. Negative origins clamp to zero; values round to
-/// the nearest pixel.
+/// `displaySize / previewSize`. The rect is clamped to the source bounds on both
+/// axes — origin >= 0 AND origin + size <= the source size — so an over-extended
+/// drag can't yield an out-of-bounds `sourceRect`. Values round to the nearest pixel.
 ///
 /// `previewRect`/`previewSize` are in the same space (the on-screen preview);
 /// `displaySize` is the source size the rect maps onto (display points).
@@ -20,15 +21,20 @@ func cropRect(previewRect: CGRect, previewSize: CGSize, displaySize: CGSize) -> 
     let scaleX = displaySize.width / max(previewSize.width, 1)
     let scaleY = displaySize.height / max(previewSize.height, 1)
 
-    func clampedPixel(_ value: CGFloat) -> UInt32 {
-        UInt32(max(0, value.rounded()))
-    }
+    // Origin clamps to >= 0; the size then clamps to whatever room is left up to
+    // the far edge, keeping origin + size <= the source size on each axis.
+    let originX = max(0, previewRect.origin.x * scaleX)
+    let originY = max(0, previewRect.origin.y * scaleY)
+    let width = min(previewRect.width * scaleX, max(0, displaySize.width - originX))
+    let height = min(previewRect.height * scaleY, max(0, displaySize.height - originY))
+
+    func pixel(_ value: CGFloat) -> UInt32 { UInt32(max(0, value.rounded())) }
 
     return CaptureRect(
-        x: clampedPixel(previewRect.origin.x * scaleX),
-        y: clampedPixel(previewRect.origin.y * scaleY),
-        w: clampedPixel(previewRect.width * scaleX),
-        h: clampedPixel(previewRect.height * scaleY)
+        x: pixel(originX),
+        y: pixel(originY),
+        w: pixel(width),
+        h: pixel(height)
     )
 }
 

@@ -26,6 +26,19 @@ struct CropMathTests {
         #expect(rect == CaptureRect(x: 0, y: 0, w: 200, h: 100))
     }
 
+    @Test("an over-extended drag clamps to the source far edges")
+    func overDragClampsToBounds() {
+        // 1:1 preview/source 100×100; the drag starts at (60,60) and runs 80×80,
+        // spilling past the right/bottom edges. Width/height clamp so origin+size
+        // lands exactly on the source bounds (40×40), never past them.
+        let rect = cropRect(
+            previewRect: CGRect(x: 60, y: 60, width: 80, height: 80),
+            previewSize: CGSize(width: 100, height: 100),
+            displaySize: CGSize(width: 100, height: 100)
+        )
+        #expect(rect == CaptureRect(x: 60, y: 60, w: 40, h: 40))
+    }
+
     @Test("a 1:1 preview maps through unchanged")
     func identityMapping() {
         let rect = cropRect(
