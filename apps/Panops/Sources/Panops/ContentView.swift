@@ -52,6 +52,10 @@ final class AppViewModel: ObservableObject {
     @Published var sidebarSelection: SidebarSelection = .smart(.all)
     @Published var notesProgress: JobProgressEvent?
     @Published var llmInfo: LlmInfo?
+    /// Autosave lifecycle for the current edit (title, notes). Driven by
+    /// `renameMeeting` and `saveNotes`; consumed by `SaveStatusView` in the
+    /// meeting workspace header / notes toolbar.
+    @Published var saveStatus: SaveStatus = .idle
     /// Which meeting the current/last notes generation targets. Lets the meeting
     /// workspace show processing/error inline for the right meeting (the audio-
     /// file flow targets a freshly-created meeting that isn't selected, so its
@@ -700,6 +704,59 @@ final class AppViewModel: ObservableObject {
         await refreshMeetings()
     }
 
+    // MARK: - Editing & autosave (editing-save slice, stage 2)
+
+    /// Rename a meeting via `ipc.meeting.rename`. Drives `saveStatus` so the
+    /// header chip reflects the save lifecycle. On success, patches
+    /// `selectedMeeting` in place and refreshes the list so the sidebar title
+    /// updates. On failure, leaves the caller's edited text intact and
+    /// surfaces the error for Retry. Returns the updated meeting on success.
+    @discardableResult
+    func renameMeeting(id: String, title: String) async -> Meeting? {
+        saveStatus = .saving
+        do {
+            let updated = try await client.renameMeeting(meetingId: id, title: title)
+            if selectedMeeting?.id == id {
+                selectedMeeting = updated
+            }
+            saveStatus = .saved
+            await refreshMeetings()
+            return updated
+        } catch {
+            Self.logFullError("meeting.rename", error)
+            saveStatus = .failed(message: Self.describeSaveError(error, operation: "save title"))
+            return nil
+        }
+    }
+
+    /// Persist a manual edit to notes markdown via `ipc.notes.save`. Drives
+    /// `saveStatus`. Returns true on success so the caller can swap the
+    /// rendered view to the just-saved markdown; on failure the caller keeps
+    /// the edited text and surfaces Retry.
+    func saveNotes(meetingId: String, markdown: String) async -> Bool {
+        saveStatus = .saving
+        do {
+            try await client.saveNotes(meetingId: meetingId, markdown: markdown)
+            saveStatus = .saved
+            await refreshMeetings()
+            return true
+        } catch {
+            Self.logFullError("notes.save", error)
+            saveStatus = .failed(message: Self.describeSaveError(error, operation: "save notes"))
+            return false
+        }
+    }
+
+    /// Failure copy for save-status chips. Pulls the RPC message when present
+    /// so the user sees the engine's reason; falls back to a short generic
+    /// line for network / transport errors.
+    private static func describeSaveError(_ error: Error, operation: String) -> String {
+        if case let IpcClientError.rpcError(_, message) = error, !message.isEmpty {
+            return "Couldn't \(operation): \(message)"
+        }
+        return "Couldn't \(operation)."
+    }
+
     private func isSelectionUnder(spaceId: String) -> Bool {
         switch sidebarSelection {
         case .space(let id):
@@ -755,6 +812,9 @@ final class AppViewModel: ObservableObject {
             selectedMeeting = nil
             return
         }
+        // New meeting selected — clear any prior autosave status so the status
+        // chip doesn't carry over from the previous meeting's last edit.
+        saveStatus = .idle
         do {
             let meeting = try await client.meetingGet(id: id)
             guard selectedMeetingId == id else { return }
@@ -928,6 +988,7 @@ final class AppViewModel: ObservableObject {
         notesLastProgressAt = nil
         notesGenMeetingId = nil
         deferredNotesHint = nil
+        saveStatus = .idle
         state = .idle(audio: nil)
     }
 
