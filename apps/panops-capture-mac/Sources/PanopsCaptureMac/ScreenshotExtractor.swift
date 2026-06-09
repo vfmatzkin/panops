@@ -62,7 +62,12 @@ enum ScreenshotExtractor {
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
 
-        let detector = ChangeDetector(intervalMs: intervalMs, threshold: threshold)
+        // Cadence is already enforced by `times` (sampleTimes step by intervalMs),
+        // and zero-tolerance decoding returns frames at-or-before each mark, so
+        // re-applying the interval gate on the quantized actualMs would drop
+        // on-cadence frames. Neutralize it (intervalMs: 1 still dedups
+        // identical-timestamp frames); change-detection is the only real filter here.
+        let detector = ChangeDetector(intervalMs: 1, threshold: threshold)
         let ciContext = CIContext()
         var kept: [ExtractedScreenshot] = []
 
