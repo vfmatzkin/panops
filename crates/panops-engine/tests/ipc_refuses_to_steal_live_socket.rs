@@ -2,23 +2,19 @@
 
 mod common;
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use tempfile::tempdir;
 
-use common::wait_with_timeout;
-
-const BIN: &str = env!("CARGO_BIN_EXE_panops-engine");
+use common::{engine_serve_command, wait_with_timeout};
 
 #[test]
 fn second_serve_refuses_when_engine_already_running() {
     let dir = tempdir().unwrap();
     let socket = dir.path().join("engine.sock");
 
-    let mut first = Command::new(BIN)
-        .args(["serve", "--socket"])
-        .arg(&socket)
+    let mut first = engine_serve_command(&dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -32,9 +28,7 @@ fn second_serve_refuses_when_engine_already_running() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    let second = Command::new(BIN)
-        .args(["serve", "--socket"])
-        .arg(&socket)
+    let second = engine_serve_command(&dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

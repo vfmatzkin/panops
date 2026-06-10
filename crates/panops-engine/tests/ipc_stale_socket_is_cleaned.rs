@@ -3,14 +3,12 @@
 mod common;
 
 use std::os::unix::fs::FileTypeExt;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use tempfile::tempdir;
 
-use common::wait_with_timeout;
-
-const BIN: &str = env!("CARGO_BIN_EXE_panops-engine");
+use common::{engine_serve_command, wait_with_timeout};
 
 #[test]
 fn stale_socket_is_unlinked_and_rebound() {
@@ -20,9 +18,7 @@ fn stale_socket_is_unlinked_and_rebound() {
     std::fs::write(&socket, b"stale").unwrap();
     assert!(socket.exists());
 
-    let mut child = Command::new(BIN)
-        .args(["serve", "--socket"])
-        .arg(&socket)
+    let mut child = engine_serve_command(&dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
